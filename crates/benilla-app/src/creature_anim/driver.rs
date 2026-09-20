@@ -595,11 +595,12 @@ pub(super) fn drive_animations(
         // director's hillside capture took exactly that path (`grounded=0 vy=-0.65`, then
         // `vy=+7.96` the next frame).
         //
-        // A launch is visible in the quantity itself: nothing but a jump drives vertical speed
-        // *upward* past the threshold. The mover's own arc bookkeeping already agrees — a
-        // same-frame land+relaunch is a new arc there ([`crate::player::Player::advance_airborne_arc`]).
+        // Prefer the local mover's exact edge. The sampled speed remains the relay-compatible
+        // fallback for remote bodies, but it is only a heuristic: under a short land-and-relaunch
+        // it may never observe the grounded sample between the two arcs.
         let prev_vertical = std::mem::replace(&mut drv.last_vertical_speed, mv.vertical_speed);
-        let launched = mv.vertical_speed > JUMP_ARC_MIN_UP && prev_vertical <= JUMP_ARC_MIN_UP;
+        let launched = mv.jumped
+            || (mv.vertical_speed > JUMP_ARC_MIN_UP && prev_vertical <= JUMP_ARC_MIN_UP);
         // The resting predicate, counted (never acted on — see the counter's note above): mode
         // Gait with nothing in flight, nothing pending, grounded and motionless. A strict lower
         // bound on what an input-memo would skip.
@@ -627,7 +628,7 @@ pub(super) fn drive_animations(
             }
         }
         if falling && (!was_falling || launched) {
-            drv.jump_arc = mv.vertical_speed > JUMP_ARC_MIN_UP;
+            drv.jump_arc = mv.jumped || mv.vertical_speed > JUMP_ARC_MIN_UP;
         }
         // The airborne-freeze's exact gate (`0x5fd8e8`, §5-arbitrated — decision 0868):
         // keep-current iff `FALLING && (FALLINGFAR || vz ≠ 0)`. The vz clause pins every real
@@ -1281,6 +1282,7 @@ pub(super) fn drive_animations(
                 catalog,
                 mv,
                 special,
+                new_jump: launched,
                 moving,
                 relaxed,
                 mounted,

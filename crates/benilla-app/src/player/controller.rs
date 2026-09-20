@@ -1049,6 +1049,7 @@ pub(super) fn control(
             swim_pitch,
             move_flags_now,
             anim_flags,
+            jumped,
             landed,
             stand_now,
         );

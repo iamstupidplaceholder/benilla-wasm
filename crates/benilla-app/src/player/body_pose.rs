@@ -23,6 +23,7 @@ pub(super) fn drive(
     swim_pitch: f32,
     move_flags_now: u32,
     anim_flags: u32,
+    jumped: bool,
     landed: bool,
     stand_now: u8,
 ) -> Option<f32> {
@@ -80,6 +81,10 @@ pub(super) fn drive(
                 player.horiz_vel.length()
             };
             motion.vertical_speed = player.vel_y;
+            // Preserve the mover's launch edge through to the animator. Deriving it solely from
+            // the sampled vertical speed loses a land-and-relaunch when the frame between the two
+            // arcs is not observed by the animation pass.
+            motion.jumped = jumped;
             motion.flags = anim_flags;
             motion.stand_state = stand_now;
         }

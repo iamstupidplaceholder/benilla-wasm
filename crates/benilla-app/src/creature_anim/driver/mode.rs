@@ -38,6 +38,9 @@ pub(super) struct Frame<'a> {
     pub(super) catalog: Option<&'a AnimDataCatalog>,
     pub(super) mv: MovementState,
     pub(super) special: Option<select::Special>,
+    /// A fresh jump launch this frame. Unlike `special`, this is an edge: Jump → Jump must replay
+    /// JumpStart when a landing and relaunch collapse into one animation update.
+    pub(super) new_jump: bool,
     pub(super) moving: bool,
     pub(super) relaxed: bool,
     pub(super) mounted: bool,
@@ -71,6 +74,7 @@ pub(super) fn run(
         catalog,
         mv,
         special,
+        new_jump,
         moving,
         relaxed,
         mounted,
@@ -99,7 +103,22 @@ pub(super) fn run(
                 && special.is_none()
                 && mv.flags & move_flags::SWIMMING != 0
                 && !oneshot_finished(player, anims, sp.enter(), catalog);
-            if swim_relatch_hold {
+            if new_jump && sp == select::Special::Jump && special == Some(sp) {
+                // A new arc can begin before the animation driver ever observes a grounded frame
+                // (most commonly while climbing broken terrain). The state name stays `Jump`, but
+                // the launch event must still restart JumpStart from its first frame.
+                drv.mode = enter_special(
+                    &mut drv.base_lock,
+                    sp,
+                    relaxed,
+                    tr,
+                    player,
+                    anims,
+                    catalog,
+                    rng,
+                    &mut drv.loop_window,
+                );
+            } else if swim_relatch_hold {
                 // Hold: the kick keeps playing; the gait recompute waits at its end.
             } else if special != Some(sp) {
                 // What we're entering is no longer wanted before the enter even finished — preempt
@@ -137,7 +156,19 @@ pub(super) fn run(
             }
         }
         Mode::Looping(sp) => {
-            if special != Some(sp) {
+            if new_jump && sp == select::Special::Jump && special == Some(sp) {
+                drv.mode = enter_special(
+                    &mut drv.base_lock,
+                    sp,
+                    relaxed,
+                    tr,
+                    player,
+                    anims,
+                    catalog,
+                    rng,
+                    &mut drv.loop_window,
+                );
+            } else if special != Some(sp) {
                 drv.mode = leave_special(
                     &mut drv.base_lock,
                     sp,
@@ -207,7 +238,9 @@ pub(super) fn run(
             }
         }
         Mode::Swing { id, under } => {
-            if special != under {
+            let repeated_jump =
+                new_jump && under == Some(select::Special::Jump) && special == under;
+            if special != under || repeated_jump {
                 // The state this one-shot replaced CHANGED — the client's next event play
                 // supersedes it: a fresh jump/pose entry (`None → Some`), the FALLINGFAR
                 // latch's Fall (`Jump → Fall`), the `0x602c60` land pick at touchdown
@@ -232,7 +265,19 @@ pub(super) fn run(
                 if incoming_locomotion {
                     transplant_up(drv, player, tr, anims, entity, id);
                 }
-                drv.mode = if let Some(sp) = under {
+                drv.mode = if repeated_jump {
+                    enter_special(
+                        &mut drv.base_lock,
+                        select::Special::Jump,
+                        relaxed,
+                        tr,
+                        player,
+                        anims,
+                        catalog,
+                        rng,
+                        &mut drv.loop_window,
+                    )
+                } else if let Some(sp) = under {
                     leave_special(
                         &mut drv.base_lock,
                         sp,

@@ -358,6 +358,12 @@ pub(crate) struct MovementState {
     /// gait freeze) — the information the real client carries as the MSG_MOVE_JUMP event vs a bare
     /// StartFalling, which our flag-collapsed machine reads from the launch velocity instead.
     pub(crate) vertical_speed: f32,
+    /// A fresh, local jump launch on this exact frame. This is deliberately an **edge**, rather
+    /// than another interpretation of [`vertical_speed`]: a land-and-relaunch can keep FALLING
+    /// asserted across the seam, and the animation driver must restart JumpStart even when no
+    /// grounded sample reached it between the two arcs. Remote bodies have no local mover edge and
+    /// continue to derive their launch from the relayed velocity.
+    pub(crate) jumped: bool,
     /// CMovement `MOVEMENTFLAGS` subset (see [`move_flags`]).
     pub(crate) flags: u32,
     /// Stand-state (`UNIT_FIELD_BYTES_1` byte 0): 0 Stand · 1 Sit · 3 Sleep · 4/5/6 chair low/med/high ·
