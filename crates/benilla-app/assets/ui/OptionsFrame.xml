@@ -1052,6 +1052,11 @@
             end
             SetCVar(row.cvar, value, row.cvarEvent)
             OptionsRow_WritePartner(row, value)
+            -- The gxWindow dropdown is live from the player's perspective, but the CVar itself
+            -- is latched by the engine.  Commit its staged value in this same UI turn so the
+            -- display-mode selection neither snaps back to its old label nor waits for a console
+            -- command or relaunch.
+            if row.restartGx then RestartGx() end
         end
 
         -- **The PARTNER write (2180).** Three of 1.12's own rows drive a SECOND CVar that
@@ -1275,7 +1280,10 @@
             local dd = UIDropDownMenu_GetCurrentDropDown()
             local row = dd:GetParent()
             OptionsRow_Set(row, this.value)
-            OptionsDropdown_ShowValue(row)
+            -- A latched CVar (gxWindow) is committed after this UI tick, so reading it here
+            -- would paint the OLD choice back into the capsule. The click's value is the source
+            -- of truth for this immediate repaint; later page refreshes still read the CVar.
+            OptionsDropdown_ShowValue(row, this.value)
         end
 
         -- Paint the capsule from the CVar. selectedValue is written as a FIELD, not through
@@ -1286,9 +1294,9 @@
         -- law, dropdown-flavored: control and check agree on the nearest expressible value,
         -- the engine keeps running the config's truth, nothing writes back until the player
         -- actually picks an entry. (A non-numeric stray shows raw and checks nothing.)
-        function OptionsDropdown_ShowValue(row)
+        function OptionsDropdown_ShowValue(row, selected)
             local dd = getglobal(row:GetName() .. "Dropdown")
-            local v = OptionsRow_Get(row)
+            local v = selected or OptionsRow_Get(row)
             local match
             for _, e in ipairs(row.entries) do
                 -- `alt` is a second value the same entry ANSWERS to (1502): 1.12's own Camera
@@ -3061,6 +3069,7 @@
                                                 -- gxRestart = 1 and ours applies on the click.
                                                 OptionsRow_OnLoad(self, "gxWindow", "Display Mode",
                                                     "BENILLA_TOOLTIP_DISPLAY_MODE")
+                                                self.restartGx = true
                                                 OptionsDropdownRow_Setup(self, {
                                                     { text = "Windowed (Fullscreen)", value = "0" },
                                                     { text = "Windowed", value = "1" },
