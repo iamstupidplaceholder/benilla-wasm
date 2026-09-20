@@ -19,3 +19,5 @@ trace-*.json
 .DS_Store
 *.swp
 /.idea/
+/benilla-config
+/.pnpm-store
