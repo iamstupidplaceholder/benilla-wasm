@@ -57,6 +57,10 @@ fn draw_bowstrings(
 ) {
     // A dark waxed-cord tone; the ref's packed vertex color is not decoded (INFERRED, §G2).
     const STRING_COLOR: Color = Color::srgb(0.12, 0.10, 0.08);
+    // The attachment marker span is authored at twice the equipped prop's rendered span. The
+    // visual probe confirmed that halving both posed tip vectors around the prop root makes the
+    // string sit exactly on the limbs; the hand-arrow nock stays in its real owner-space position.
+    const TIP_SCALE: f32 = 0.5;
     for (bs, prop, vis, flex) in &bows {
         if !vis.get() {
             continue;
@@ -68,8 +72,9 @@ fn draw_bowstrings(
             flex.and_then(|p| p.posed_point(prop, bone, offset))
                 .unwrap_or_else(|| prop.transform_point(offset))
         };
-        let top = tip(bs.top);
-        let bottom = tip(bs.bottom);
+        let root = prop.translation();
+        let top = root + (tip(bs.top) - root) * TIP_SCALE;
+        let bottom = root + (tip(bs.bottom) - root) * TIP_SCALE;
         // The middle control point: the owner's HandArrow attach world position while the nock
         // latch holds (the drawn string follows the hand), else the relaxed straight chord.
         let middle = owners
@@ -80,9 +85,10 @@ fn draw_bowstrings(
                 // A pure position read — `posed_point` off the composed pose, no anchor entity
                 // (decision 1355).
                 let &(bone, offset) = bones.points.get(&HAND_ARROW)?;
-                pose.posed_point(joints.get(pose.joints_root).ok()?, bone, offset)
+                let root = joints.get(pose.joints_root).ok()?;
+                pose.posed_point(root, bone, offset)
             })
-            .unwrap_or_else(|| (top + bottom) / 2.0);
+            .unwrap_or((top + bottom) / 2.0);
         gizmos.line(top, middle, STRING_COLOR);
         gizmos.line(middle, bottom, STRING_COLOR);
     }
