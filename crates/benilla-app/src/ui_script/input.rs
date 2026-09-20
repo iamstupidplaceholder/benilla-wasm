@@ -8,7 +8,7 @@ use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use benilla_ui::script::UiScript;
 
@@ -71,7 +71,14 @@ pub(super) fn feed_ui_input(
     // The window's raw handle rides along with it: on Wayland it carries the `wl_display` the
     // clipboard backend is built from (decision 0702). `Option`, because it only appears once
     // winit has actually created the surface.
-    window: Query<(&Window, Option<&bevy::window::RawHandleWrapper>), With<PrimaryWindow>>,
+    window: Query<
+        (
+            &Window,
+            &CursorOptions,
+            Option<&bevy::window::RawHandleWrapper>,
+        ),
+        With<PrimaryWindow>,
+    >,
     buttons: Res<ButtonInput<MouseButton>>,
     scroll: Res<AccumulatedMouseScroll>,
     // One [`PointerFeed`] (clippy's argument ceiling): the hover + click-consumed outputs this
@@ -114,7 +121,7 @@ pub(super) fn feed_ui_input(
         payload_held.0 = false;
         return;
     };
-    let Ok((window, raw_handle)) = window.single() else {
+    let Ok((window, cursor_options, raw_handle)) = window.single() else {
         capture.typing = false;
         capture.arrows_fall_through = false;
         capture.consumed.clear();
@@ -123,6 +130,10 @@ pub(super) fn feed_ui_input(
     };
     // `Some` only on a Wayland session — the signal the clipboard backend picks itself by.
     let wl_display = textinput::wayland_display(raw_handle);
+    // Locked mouse-look keeps a stale logical cursor position in winit.  It is not a pointer over
+    // that position: feeding it to the UI keeps bags and action buttons hovered while the hidden
+    // cursor turns the camera.  Route it through the existing leave arm below instead.
+    let cursor_locked = cursor_options.grab_mode == CursorGrabMode::Locked;
     // The engine's world-drop routing (decisions 0571 + 0574): an object pick keeps every
     // payload (the reference's object leg dispatches SELECT with the item still held), terrain
     // drops items only, nothing drops any arm.
@@ -147,7 +158,7 @@ pub(super) fn feed_ui_input(
     if let Some(cursor) = window
         .cursor_position()
         .or_else(crate::target::hover_probe_point)
-        .filter(|_| !ui_hidden && !synthetic)
+        .filter(|_| !ui_hidden && !synthetic && !cursor_locked)
     {
         // Window cursor is logical px, y-down from top-left; the UI is y-up 768-virtual units
         // (decisions 0582 + 0584's uiScale dial) — flip through the window height, then ÷s into
