@@ -530,6 +530,26 @@ impl WidgetArena {
         &self.ticked_kinds
     }
 
+    /// Read a named model without walking unrelated UI frames. All model-family
+    /// kinds are already in the per-tick roster; hidden panes remain readable.
+    pub(crate) fn named_model_state(&self, name: &str) -> Option<&ModelState> {
+        self.ticked_kinds
+            .iter()
+            .filter_map(|&handle| {
+                let frame = self.frame(handle)?;
+                match &frame.kind_state {
+                    KindState::Model(state) if frame.name.as_deref() == Some(name) => {
+                        Some((handle.index, state))
+                    }
+                    _ => None,
+                }
+            })
+            // Creation-ordered roster, but the former iter_frames scan used
+            // slot order. Preserve its first match after duplicates/slot reuse.
+            .min_by_key(|&(index, _)| index)
+            .map(|(_, state)| state)
+    }
+
     /// The live GameTooltip frames (see the field note).
     pub fn tooltip_kinds(&self) -> &[FrameHandle] {
         &self.tooltip_kinds

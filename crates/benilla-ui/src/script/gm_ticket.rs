@@ -30,7 +30,7 @@
 //! it needs in its own frame fields. So nothing here holds a ticket snapshot — the same shape as
 //! [`super::duel`] and [`super::binder`], and for the same reason.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -84,25 +84,20 @@ impl super::UiScript {
 }
 
 /// Register the seven Help-window globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetGMTicketCategories() — the flat (id, name) vararg list, consumed by
     // `HelpFrameGM_UpdateCategories` as `arg[i]`/`arg[i+1]` pairs. Empty until the app has pushed
     // the DBC (a bare-XML harness, or a run with no client data): the window then simply paints no
     // category rows, which is the honest rendering of "we have no catalog" and cannot error.
-    g.set(
-        "GetGMTicketCategories",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::with_capacity(model.gm_ticket_categories.len() * 2);
-            for (id, name) in &model.gm_ticket_categories {
-                out.push(Value::Integer(i64::from(*id)));
-                out.push(Value::String(lua.create_string(name)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetGMTicketCategories", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::with_capacity(model.gm_ticket_categories.len() * 2);
+        for (id, name) in &model.gm_ticket_categories {
+            out.push(Value::Integer(i64::from(*id)));
+            out.push(Value::from(name.as_str()));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // The three payload-free verbs. Each pushes onto the ONE ordered queue, so a chunk that calls
     // two of them sends two packets in the order it called them.
@@ -114,51 +109,42 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("GetGMStatus", GmTicketIntent::AskStatus),
         ("DeleteGMTicket", GmTicketIntent::Delete),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, ()| {
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .gm_ticket_intents
-                    .push(intent.clone());
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .gm_ticket_intents
+                .push(intent.clone());
+            Ok(())
+        })?;
     }
 
     // NewGMTicket(category, text) / UpdateGMTicket(category, text) — the window's Submit and its
     // Save Changes. Same signature, different opcode; the reference's own usage string is
     // `Usage: UpdateGMTicket(type, text)`, so (number, string) is the declared arity for both.
     for (name, is_new) in [("NewGMTicket", true), ("UpdateGMTicket", false)] {
-        g.set(
-            name,
-            lua.create_function(move |lua, (category, text): (u32, String)| {
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .gm_ticket_intents
-                    .push(GmTicketIntent::Write(GmTicketWrite {
-                        category,
-                        text,
-                        is_new,
-                    }));
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, (category, text): (u32, String)| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .gm_ticket_intents
+                .push(GmTicketIntent::Write(GmTicketWrite {
+                    category,
+                    text,
+                    is_new,
+                }));
+            Ok(())
+        })?;
     }
 
     // Stuck() — the Help window's "Auto-Unstuck". NOT a ticket verb despite living only in this
     // window: it casts spell 7355 "Stuck", whose SPELL_EFFECT_STUCK teleports the player to their
     // last safe position server-side. It is registered here because HelpFrame is its only caller
     // in the whole shipped UI, and a module for one binding would be worse than this note.
-    g.set(
-        "Stuck",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .stuck_casts += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("Stuck", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .stuck_casts += 1;
+        Ok(())
+    })?;
 
     Ok(())
 }

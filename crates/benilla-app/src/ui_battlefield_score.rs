@@ -16,7 +16,7 @@
 //!   the queue flags — BEFORE the queue feed fires `UPDATE_BATTLEFIELD_STATUS` (§4.2's order).
 //! - **The request is throttled to 5000 ms** (§5.1) and the leave carries the active map (§5.3).
 
-use std::time::{Duration, Instant};
+use benilla_time::{Duration, Instant};
 
 use bevy::prelude::*;
 

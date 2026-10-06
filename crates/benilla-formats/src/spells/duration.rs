@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -81,7 +81,7 @@ const SPELL_DURATION: &str = "DBFilesClient\\SpellDuration.dbc";
 const SPELL_DURATION_FIELDS: usize = 4;
 
 /// Load `SpellDuration.dbc` off the patch chain ([`SpellDuration`]'s row law).
-pub fn load_spell_durations(chain: &mut Chain) -> Result<SpellDurationCatalog> {
+pub fn load_spell_durations(chain: &mut impl FileSource) -> Result<SpellDurationCatalog> {
     let bytes = chain
         .read_file(SPELL_DURATION)
         .context("reading SpellDuration.dbc")?;

@@ -74,10 +74,14 @@ use bevy::prelude::*;
 use benilla_assets::coords::bevy_to_wow;
 use benilla_formats::{DeathThudCatalog, FootstepCatalog};
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::creature_anim::AnimSoundEvent;
 use crate::entities::Creatures;
 use crate::net::NetEntity;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::footsteps::Footsteps;
@@ -113,11 +117,12 @@ fn pick_kit(
 #[derive(Resource)]
 pub(crate) struct DeathThuds(pub(crate) DeathThudCatalog);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_death_thuds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_death_thud_catalog(&mut chain)
+        benilla_formats::load_death_thud_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -209,8 +214,9 @@ fn death_thud_sounds(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, load_death_thuds.after(AssetSet::Open))
-        .add_systems(Update, death_thud_sounds.in_set(WorldStage::Present));
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_death_thuds.after(AssetSet::Open));
+    app.add_systems(Update, death_thud_sounds.in_set(WorldStage::Present));
 }
 
 #[cfg(test)]

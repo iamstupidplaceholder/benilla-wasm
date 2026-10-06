@@ -44,6 +44,9 @@ mod arc;
 // Writing the frame onto the body we drive — pose, MovementState, the counter-twist gap.
 mod body_pose;
 pub(crate) mod camera;
+#[cfg_attr(target_arch = "wasm32", path = "player/cursor_host/browser.rs")]
+#[cfg_attr(not(target_arch = "wasm32"), path = "player/cursor_host/native.rs")]
+mod cursor_host;
 // The one smoothed-scalar channel the reference instantiates four times (wow-re
 // `camera-cvar-gates.md` §8) — pitch, pitch-bias, ground tilt and the pivot height, one template.
 mod camera_channel;
@@ -51,6 +54,8 @@ mod camera_channel;
 pub(crate) mod camera_dynamics;
 // The per-frame controller itself — the one system, split out so the root stays the map.
 mod controller;
+#[cfg(feature = "port-gates")]
+pub(crate) mod port_gates;
 mod world_focus;
 // The remembered camera pose (decision 1131) — it lives inside `player/` so it can read the rig's
 // own `pub(super)` fields instead of widening them for a module outside.

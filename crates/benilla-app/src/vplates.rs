@@ -321,14 +321,14 @@ pub(crate) fn text_px(h: f32, basis: f32) -> f32 {
 /// So the globals are kept TRUE, which makes the stock replay a value-preserving no-op — and is
 /// what a third-party addon reading `NAMEPLATES_ON` is owed anyway, which was 2115's whole
 /// argument for loading the stock window in the first place.
-pub(crate) fn push_plate_globals(script: &benilla_ui::script::UiScript, mode: VPlateMode) {
+pub(crate) fn push_plate_globals(script: &mut benilla_ui::script::UiScript, mode: VPlateMode) {
     // The reference's own truthiness for these two: the number `1`, or nil. Never `0` — a Lua
     // `0` is truthy, so `NAMEPLATES_ON = 0` would read as ON in `UpdateNameplates`'s `if`.
     let on = |b: bool| b.then_some(1i64);
-    let g = script.lua().globals();
-    if let Err(e) = g
-        .set("NAMEPLATES_ON", on(mode.enemies))
-        .and_then(|()| g.set("FRIENDNAMEPLATES_ON", on(mode.friends)))
+    let vm = script.vm_mut();
+    if let Err(e) = vm
+        .set_global("NAMEPLATES_ON", on(mode.enemies))
+        .and_then(|()| vm.set_global("FRIENDNAMEPLATES_ON", on(mode.friends)))
     {
         warn!("nameplates: FrameXML globals: {e}");
     }
@@ -345,14 +345,14 @@ fn feed_plate_globals(
     mode: Res<VPlateMode>,
     mut told: Local<crate::ui_script::VmMemo<Option<(bool, bool)>>>,
 ) {
-    let Some(script) = script else {
+    let Some(mut script) = script else {
         return;
     };
     let now = (mode.enemies, mode.friends);
     let told = told.get(&script);
     if *told != Some(now) {
         *told = Some(now);
-        push_plate_globals(&script, *mode);
+        push_plate_globals(&mut script, *mode);
     }
 }
 
@@ -1073,16 +1073,15 @@ mod tests {
     /// are handed to a rebuilt VM (a `/reload`) without one.
     #[test]
     fn the_plate_globals_follow_the_mode_and_survive_a_rebuilt_vm() {
+        // mlua's `get::<Option<i64>>` shape through the neutral door: a number
+        // reads `Some(Some(n))`, a nil/missing global reads `Some(None)`.
         let read = |app: &mut App| {
-            let s = app
+            let mut s = app
                 .world_mut()
                 .non_send_resource_mut::<benilla_ui::script::UiScript>();
             (
-                s.lua().globals().get::<Option<i64>>("NAMEPLATES_ON").ok(),
-                s.lua()
-                    .globals()
-                    .get::<Option<i64>>("FRIENDNAMEPLATES_ON")
-                    .ok(),
+                s.eval::<Option<i64>>("return NAMEPLATES_ON").ok(),
+                s.eval::<Option<i64>>("return FRIENDNAMEPLATES_ON").ok(),
             )
         };
         let mut app = App::new();

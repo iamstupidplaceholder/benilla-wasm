@@ -51,11 +51,11 @@
 //! use (three *raw* `f32` — no clamp, no quantize, zero `fcom` in its body), because the drag path
 //! needs exactly that.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table, Value, Vm};
 
-use super::object::{draw_layer_from_str, frame_handle_of};
+use super::object::{draw_layer_from_str, frame_handle_of_context};
 use super::pointer::point_in_rect;
-use super::region::region_wrapper;
+use super::region::region_wrapper_context;
 use super::{event, Model, RegionData};
 use crate::layout::Rect;
 use crate::order::DrawLayer;
@@ -69,19 +69,19 @@ pub(super) const REG_COLORSELECT_METHODS: &str = "__benilla_colorselect_methods"
 /// live ColorSelect (unreachable through the kind dispatcher, but the method table is a plain Lua
 /// value — a caller could fish it out and misapply it).
 fn with_colorselect<T>(
-    lua: &Lua,
+    lua: &mut impl LuaContext,
     this: &Table,
     f: impl FnOnce(&mut ColorSelectState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::ColorSelect(s) => Ok(f(s)),
-        _ => Err(mlua::Error::runtime("not a ColorSelect")),
+        _ => Err(benilla_lua::Error::runtime("not a ColorSelect")),
     }
 }
 
@@ -129,18 +129,23 @@ impl Slot {
 
 /// Get-or-create one slot's texture region; `layer` re-layers an existing one. Returns the region
 /// id (for wrapper lookup). The Slider's `ensure_thumb` is the same function one slot wider.
-fn ensure_slot(lua: &Lua, this: &Table, slot: Slot, layer: Option<DrawLayer>) -> mlua::Result<u32> {
-    let h = frame_handle_of(lua, this)?;
+fn ensure_slot(
+    lua: &mut impl LuaContext,
+    this: &Table,
+    slot: Slot,
+    layer: Option<DrawLayer>,
+) -> benilla_lua::Result<u32> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
 
     let existing = match &model
         .arena
         .frame(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?
         .kind_state
     {
         KindState::ColorSelect(s) => slot.get(s),
-        _ => return Err(mlua::Error::runtime("not a ColorSelect")),
+        _ => return Err(benilla_lua::Error::runtime("not a ColorSelect")),
     };
 
     let rh = match existing {
@@ -154,7 +159,7 @@ fn ensure_slot(lua: &Lua, this: &Table, slot: Slot, layer: Option<DrawLayer>) ->
             let rh = model
                 .arena
                 .create_region(h, RegionKind::Texture, layer.unwrap_or(slot.layer()), 0)
-                .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+                .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
             model.region_data.insert(rh, RegionData::default());
             model.touch_layout(); // a region entered the layout gate's read set (decision 0740)
             if let Some(frame) = model.arena.frame_mut(h) {
@@ -173,65 +178,66 @@ fn ensure_slot(lua: &Lua, this: &Table, slot: Slot, layer: Option<DrawLayer>) ->
 /// convenience — it is the only one the two file-less elements can use, and it is what
 /// `<ColorWheelTexture/>` means. A slot left file-less is where the app renderer paints.
 fn install_slot_texture(
-    lua: &Lua,
+    lua: &mut Vm,
     m: &Table,
     slot: Slot,
     setter: &str,
     getter: &str,
-) -> mlua::Result<()> {
-    m.set(
+) -> benilla_lua::Result<()> {
+    let function = lua.create_function(
         setter,
-        lua.create_function(
-            move |lua, (this, a1, a2, a3, a4): (Table, Value, Value, Value, Value)| {
-                let layer = match &a2 {
-                    Value::String(s) => s.to_str().ok().and_then(|l| draw_layer_from_str(&l)),
-                    _ => None,
-                };
-                let id = ensure_slot(lua, &this, slot, layer)?;
-                let rh = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    *model.id_to_region.get(&id).expect("colorselect region id")
-                };
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let data = model.region_data.entry(rh).or_default();
-                match &a1 {
-                    Value::String(s) => {
-                        data.texture = Some(s.to_str()?.to_string());
-                        data.fill = None;
-                    }
-                    Value::Number(_) | Value::Integer(_) => {
-                        data.texture = None;
-                        data.fill = Some([
-                            num_f32(&a1),
-                            num_f32(&a2),
-                            num_f32(&a3),
-                            match &a4 {
-                                Value::Nil => 1.0,
-                                v => num_f32(v),
-                            },
-                        ]);
-                    }
-                    // The empty form: the region now exists and stays file-less.
-                    _ => {}
-                }
-                Ok(())
-            },
-        )?,
-    )?;
-    m.set(
-        getter,
-        lua.create_function(move |lua, this: Table| {
-            let existing = with_colorselect(lua, &this, |s| slot.get(s))?;
-            let id = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                existing.map(|rh| model.region_id(rh))
+        move |lua, (this, a1, a2, a3, a4): (Table, Value, Value, Value, Value)| {
+            let layer = match &a2 {
+                Value::String(s) => s.as_str().ok().and_then(draw_layer_from_str),
+                _ => None,
             };
-            match id {
-                Some(id) => Ok(Value::Table(region_wrapper(lua, id)?)),
-                None => Ok(Value::Nil),
+            let id = ensure_slot(lua, &this, slot, layer)?;
+            let rh = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                *model.id_to_region.get(&id).expect("colorselect region id")
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let data = model.region_data.entry(rh).or_default();
+            match &a1 {
+                Value::String(s) => {
+                    data.texture = Some(
+                        s.as_str()
+                            .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?
+                            .to_string(),
+                    );
+                    data.fill = None;
+                }
+                Value::Number(_) | Value::Integer(_) => {
+                    data.texture = None;
+                    data.fill = Some([
+                        num_f32(&a1),
+                        num_f32(&a2),
+                        num_f32(&a3),
+                        match &a4 {
+                            Value::Nil => 1.0,
+                            v => num_f32(v),
+                        },
+                    ]);
+                }
+                // The empty form: the region now exists and stays file-less.
+                _ => {}
             }
-        })?,
+            Ok(())
+        },
     )?;
+    lua.table_set_function(m, setter, &function)?;
+    let function = lua.create_function(getter, move |lua, this: Table| {
+        let existing = with_colorselect(lua, &this, |s| slot.get(s))?;
+        let id = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            existing.map(|rh| model.region_id(rh))
+        };
+        match id {
+            Some(id) => Ok(Value::Table(region_wrapper_context(lua, id)?)),
+            None => Ok(Value::Nil),
+        }
+    })?;
+    lua.table_set_function(m, getter, &function)?;
     Ok(())
 }
 
@@ -244,19 +250,15 @@ fn num_f32(v: &Value) -> f32 {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     let m = lua.create_table()?;
 
-    m.set(
+    let function = lua.create_function(
         "SetColorRGB",
         // Shape C on r, g, b (`ColorSelect:SetColorRGB 0x78eae0`, `2=C 3=C 4=C 5=B`, wow-re
         // `numeric-arg-coercion-law.md`): bare `lua_tonumber`, nil → 0.0, no raise.
-        lua.create_function(|lua, (this, r, g, b): (Table, Value, Value, Value)| {
-            let (r, g, b) = (
-                crate::script::object::as_f64(&r),
-                crate::script::object::as_f64(&g),
-                crate::script::object::as_f64(&b),
-            );
+        |lua, (this, r, g, b): (Table, Value, Value, Value)| {
+            let (r, g, b) = (num_f64(&r), num_f64(&g), num_f64(&b));
             // Store through the client's quantize, then fire with what the widget now *holds* —
             // the round-tripped values, identical to the next GetColorRGB, not the raw arguments.
             let (qr, qg, qb) = with_colorselect(lua, &this, |s| {
@@ -264,12 +266,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 s.rgb_f64()
             })?;
             fire_color_select(lua, &this, qr, qg, qb)
-        })?,
+        },
     )?;
-    m.set(
-        "GetColorRGB",
-        lua.create_function(|lua, this: Table| with_colorselect(lua, &this, |s| s.rgb_f64()))?,
-    )?;
+    lua.table_set_function(&m, "SetColorRGB", &function)?;
+    let function = lua.create_function("GetColorRGB", |lua, this: Table| {
+        with_colorselect(lua, &this, |s| s.rgb_f64())
+    })?;
+    lua.table_set_function(&m, "GetColorRGB", &function)?;
 
     // The four texture accessors (`0x78de90`/`0x78e160`/`0x78e450`/`0x78e720` and the getters
     // `0x78dd80`/`0x78e070`). They had zero corpus callers and waited for one (decision 1195); the
@@ -304,24 +307,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetColorValueThumbTexture",
     )?;
 
-    lua.set_named_registry_value(REG_COLORSELECT_METHODS, m)?;
+    lua.set_named_registry_value(REG_COLORSELECT_METHODS, Value::Table(m))?;
     Ok(())
 }
 
 /// Fire `OnColorSelect(self, r, g, b)` — the widget's own script slot (`+0x338`, RF-28). Fired
 /// outside the model borrow; a handler error goes to [`Model::errors`] rather than back to the
 /// setter's caller, the same posture as the Slider's `OnValueChanged`.
-fn fire_color_select(lua: &Lua, this: &Table, r: f64, g: f64, b: f64) -> mlua::Result<()> {
+fn fire_color_select(
+    lua: &mut impl LuaContext,
+    this: &Table,
+    r: f64,
+    g: f64,
+    b: f64,
+) -> benilla_lua::Result<()> {
     let id = {
-        let h = frame_handle_of(lua, this)?;
+        let h = frame_handle_of_context(lua, this)?;
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         model.frame_id(h)
     };
-    if let Err(e) = event::fire_widget_handler(
+    if let Err(e) = event::fire_widget_handler_context(
         lua,
         id,
         "OnColorSelect",
-        vec![Value::Number(r), Value::Number(g), Value::Number(b)],
+        vec![
+            benilla_lua::Value::Number(r),
+            benilla_lua::Value::Number(g),
+            benilla_lua::Value::Number(b),
+        ],
     ) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
@@ -519,13 +532,31 @@ pub(super) fn end_drag(model: &mut Model) {
 /// Fire `OnColorSelect` for a frame the pointer path just recoloured. The setter's own
 /// [`fire_color_select`] needs the caller's `this` table; the pointer has only an id, so this is the
 /// same two lines against [`event::fire_widget_handler`] directly.
-pub(super) fn fire_by_id(lua: &Lua, id: u32, r: f64, g: f64, b: f64) -> mlua::Result<()> {
-    event::fire_widget_handler(
+pub(super) fn fire_by_id(
+    lua: &mut impl LuaContext,
+    id: u32,
+    r: f64,
+    g: f64,
+    b: f64,
+) -> benilla_lua::Result<()> {
+    event::fire_widget_handler_context(
         lua,
         id,
         "OnColorSelect",
-        vec![Value::Number(r), Value::Number(g), Value::Number(b)],
+        vec![
+            benilla_lua::Value::Number(r),
+            benilla_lua::Value::Number(g),
+            benilla_lua::Value::Number(b),
+        ],
     )
+}
+
+fn num_f64(value: &Value) -> f64 {
+    match value {
+        Value::Number(value) => *value,
+        Value::Integer(value) => *value as f64,
+        _ => 0.0,
+    }
 }
 
 #[cfg(test)]
@@ -537,7 +568,7 @@ mod tests {
     /// would have made it black, which is the tell that the state is HSV and not RGB.
     #[test]
     fn a_fresh_color_select_is_white() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(r#"cs = CreateFrame("ColorSelect", "TestColorSelectNew")"#)
             .unwrap();
         let (r, g, b): (f64, f64, f64) = s.eval("return cs:GetColorRGB()").unwrap();
@@ -549,7 +580,7 @@ mod tests {
     /// wow-re's exhaustive sweep names. Greys are its control class and never lose.
     #[test]
     fn the_round_trip_loses_exactly_one_step_on_the_witness_colour() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(r#"cs = CreateFrame("ColorSelect", "TestColorSelectRT")"#)
             .unwrap();
         s.run("cs:SetColorRGB(0, 1, 1)").unwrap();
@@ -573,7 +604,7 @@ mod tests {
     /// per open-and-accept, so this is the shape of a real player-visible drift and it is deliberate.
     #[test]
     fn the_read_back_ratchets_a_channel_downward() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(r#"cs = CreateFrame("ColorSelect", "TestColorSelectRatchet")"#)
             .unwrap();
         s.run("cs:SetColorRGB(0/255, 8/255, 132/255)").unwrap();
@@ -624,7 +655,7 @@ mod tests {
     /// when the same colour is set — no change-gate (the module doc's byte-verified reason).
     #[test]
     fn set_color_rgb_fires_on_color_select_every_time() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             r#"
             fired = {}
@@ -654,7 +685,7 @@ mod tests {
     /// `if frame.SetColorRGB then` reads in an addon.
     #[test]
     fn the_methods_do_not_leak_onto_other_kinds() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(r#"plain = CreateFrame("Frame", "TestPlainFrame")"#)
             .unwrap();
         assert!(s.eval::<bool>("return plain.SetColorRGB == nil").unwrap());
@@ -691,7 +722,7 @@ mod tests {
             </ColorSelect>
         </Ui>"#;
         let doc = crate::framexml::parse(xml).unwrap();
-        let report = crate::loader::load(&s, &doc, &|_| None);
+        let report = crate::loader::load(&mut s, &doc, &|_| None);
         assert!(
             report.errors.is_empty(),
             "loader errors: {:?}",

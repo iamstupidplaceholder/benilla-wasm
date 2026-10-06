@@ -119,12 +119,8 @@ fn feed_binder(
         return;
     }
     binder.ask = false;
-    let name = area_name(&world, areas.as_deref(), &|key: &str| {
-        script
-            .lua()
-            .globals()
-            .get::<String>(key)
-            .ok()
+    let name = area_name(&world, areas.as_deref(), &mut |key: &str| {
+        benilla_ui::strings::global_context(script.vm_mut(), key)
             .filter(|t| !t.is_empty())
     });
     script.fire_event("CONFIRM_BINDER", vec![ScriptValue::Str(name)]);
@@ -140,7 +136,7 @@ fn feed_binder(
 fn area_name(
     world: &benilla_world::world_point::WorldPoint,
     areas: Option<&AreaTableRes>,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> String {
     area_name_of(world.area(), areas, get)
 }
@@ -155,7 +151,7 @@ fn area_name(
 fn area_name_of(
     leaf: Option<u32>,
     areas: Option<&AreaTableRes>,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> String {
     let named = |id: u32| {
         areas
@@ -347,24 +343,21 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let vm = UiScript::new().expect("VM");
+        let mut vm = UiScript::new().expect("VM");
         vm.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let get = |key: &str| {
-            vm.lua()
-                .globals()
-                .get::<String>(key)
-                .ok()
+        let mut get = |key: &str| {
+            vm.global_string(key)
                 .filter(|t| !t.is_empty())
         };
         let inn = get("HOME_INN").expect("HOME_INN ships");
 
-        assert_eq!(area_name_of(Some(186), Some(&areas), &get), "Dolanaar");
+        assert_eq!(area_name_of(Some(186), Some(&areas), &mut get), "Dolanaar");
         // No row, no catalog, no id at all — all three reach the GlobalString rather than "".
-        assert_eq!(area_name_of(Some(0xffff), Some(&areas), &get), inn);
-        assert_eq!(area_name_of(Some(186), None, &get), inn);
-        assert_eq!(area_name_of(None, Some(&areas), &get), inn);
+        assert_eq!(area_name_of(Some(0xffff), Some(&areas), &mut get), inn);
+        assert_eq!(area_name_of(Some(186), None, &mut get), inn);
+        assert_eq!(area_name_of(None, Some(&areas), &mut get), inn);
         // …and an install with no such key withholds the *name*, never the question.
-        assert_eq!(area_name_of(None, None, &|_| None), "");
+        assert_eq!(area_name_of(None, None, &mut |_| None), "");
     }
 
     /// The line the bind lands with — the feedback half of B249, since "accepting appears to change
@@ -381,14 +374,14 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let vm = UiScript::new().expect("VM");
+        let mut vm = UiScript::new().expect("VM");
         vm.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| vm.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| vm.global_string(key);
 
         let msg = crate::ui_action::UiError::s("ERR_DEATHBIND_SUCCESS_S", "Dolanaar");
         assert_eq!(msg.key, "ERR_DEATHBIND_SUCCESS_S");
         assert_eq!(
-            crate::ui_action::ui_error_text(&msg, &g).as_deref(),
+            crate::ui_action::ui_error_text(&msg, &mut g).as_deref(),
             Some("Dolanaar is now your home.")
         );
     }

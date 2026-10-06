@@ -21,7 +21,6 @@ use crate::char_select::{race_name, wow_font};
 use crate::entities::CharCreate;
 use crate::glue_strings::GlueStrings;
 use crate::portrait::{GlueLook, GluePreview, PortraitImages, PortraitSource, GLUE_SLOT};
-use benilla_assets::WorldAssets;
 
 use super::parts::{CharCreateUi, DialRow, DynIcon, DynText, DynTint, StatusLine};
 use super::{CreateAction, CreateSelection, ALLIANCE, HORDE, INITIAL_FACING};
@@ -44,10 +43,7 @@ pub(super) fn enter_create(
     portraits: Res<PortraitImages>,
     mut sel: ResMut<CreateSelection>,
     mut preview: ResMut<GluePreview>,
-    mut art: ResMut<GlueArt>,
-    world_assets: Option<ResMut<WorldAssets>>,
-    mut images: ResMut<Assets<Image>>,
-    mut add_mats: ResMut<Assets<crate::glue::add_material::AddUiMaterial>>,
+    art: Res<GlueArt>,
     strings: Option<Res<GlueStrings>>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
@@ -55,9 +51,6 @@ pub(super) fn enter_create(
     preview.scene = Some(crate::portrait::GlueScene::Race(sel.race));
     preview.look = Some(GlueLook::Create(sel.look()));
     preview.yaw = INITIAL_FACING;
-    if let Some(mut wa) = world_assets {
-        art.ensure_loaded(&mut wa, &mut images, &mut add_mats);
-    }
     spawn_screen(
         &mut commands,
         &assets,
@@ -68,9 +61,9 @@ pub(super) fn enter_create(
     );
 }
 
-/// Rebuild the tree when a window resize (mac fullscreen, a drag) has changed the glue scale it
-/// was baked at — the create screen has no per-frame materialize (it spawns on entry, after the
-/// boot-order traps the other screens dodge), so the rescale watch lives here. Selection and the
+/// Rebuild the tree when a window resize changes its glue scale, or when the complete
+/// art set becomes ready after entry. The create screen spawns on entry, so its late-art
+/// and rescale watch live here. Selection and the
 /// typed name live in resources and repaint via [`super::refresh`], so the rebuild loses nothing.
 pub(super) fn rescale_screen(
     mut commands: Commands,
@@ -83,7 +76,7 @@ pub(super) fn rescale_screen(
 ) {
     let s = crate::glue::screen_scale(window.single().ok());
     for (root, ui) in &existing {
-        if ui.s != s {
+        if ui.s != s || (art.is_changed() && art.ready()) {
             commands.entity(root).despawn();
             spawn_screen(
                 &mut commands,

@@ -61,9 +61,9 @@
 
 use std::collections::HashMap;
 
-use mlua::{FromLua, Lua, MultiValue, Table, Value};
+use benilla_lua::{FromLua, LuaContext, MultiValue, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::object::frame_handle_of;
+use super::object::frame_handle_of_context;
 use super::{FontObject, FontShadow, Model, Outline, RegionData};
 use crate::justify::{self, Justify};
 use crate::layout::{Anchor, Point};
@@ -433,20 +433,21 @@ fn free_block(model: &mut Model, rh: RegionHandle) {
 /// Apply the font parts an **XML** `<FontString>`/`<FontStringHeaderN>` child of a `<SimpleHTML>`
 /// supplies — `font=`, `<FontHeight>`, `outline=` — any subset of which may be absent.
 ///
-/// The region-side twin of this is [`super::apply_font_parts`], and it exists for the same reason:
+/// The region-side twin of this is [`super::region::apply_font_parts_context`], and it exists for
+/// the same reason:
 /// the reference applies XML font attributes in C++ (`CSimpleFont::LoadXML 0x783c30`, reached from
 /// `0x78a1fe`…`0x78a26e`), never through the Lua `SetFont`, whose usage string *requires* both a
 /// path and a height. Routing the loader through the binding is what forces the binding to be
 /// lenient; keeping them separate lets each be right.
-pub(crate) fn apply_element_font_parts(
-    lua: &Lua,
-    this: &Table,
+pub(crate) fn apply_element_font_parts_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     elem: usize,
     path: Option<String>,
     height: Option<f32>,
     flags: Option<String>,
-) -> mlua::Result<()> {
-    let fh = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<()> {
+    let fh = super::object::frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
     let ef = &mut model.simple_html.entry(fh).or_default().fonts[elem];
     if let Some(p) = path.filter(|p| !p.is_empty()) {
@@ -487,12 +488,12 @@ pub(crate) fn element_of_xml_tag(tag: &str) -> Option<usize> {
 /// Resolve `this` to a live `SimpleHTML` frame. Reached through the kind dispatcher, so the guard
 /// only fires when a caller fishes the method table out and misapplies it — the same posture
 /// `script::scrollframe`'s `with_scroll` takes.
-fn html_handle(lua: &Lua, this: &Table) -> mlua::Result<FrameHandle> {
-    let h = frame_handle_of(lua, this)?;
+fn html_handle(lua: &mut impl LuaContext, this: &LuaTable) -> benilla_lua::Result<FrameHandle> {
+    let h = frame_handle_of_context(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model");
     match model.arena.frame(h).map(|f| f.kind) {
         Some(FrameKind::SimpleHtml) => Ok(h),
-        _ => Err(mlua::Error::runtime("not a SimpleHTML")),
+        _ => Err(benilla_lua::Error::runtime("not a SimpleHTML")),
     }
 }
 
@@ -513,17 +514,16 @@ fn html_handle(lua: &Lua, this: &Table) -> mlua::Result<FrameHandle> {
 /// removed — it stays and is consumed as the shared implementation's first real argument, so
 /// `SetFont("h4", path, 15)` targets `P` and hands `"h4"` to `SetFont` as the path.
 fn take_element(args: &mut MultiValue) -> usize {
-    let matched = match args.front() {
-        Some(Value::String(s)) => s.to_str().ok().and_then(|s| {
-            ELEMENT_NAMES
-                .iter()
-                .position(|e| s.as_ref().eq_ignore_ascii_case(e))
-        }),
+    let matched = match args.first() {
+        Some(LuaValue::String(s)) => s
+            .as_str()
+            .ok()
+            .and_then(|s| ELEMENT_NAMES.iter().position(|e| s.eq_ignore_ascii_case(e))),
         _ => None,
     };
     match matched {
         Some(i) => {
-            args.pop_front();
+            args.remove(0);
             i
         }
         None => ELEM_P,
@@ -531,18 +531,18 @@ fn take_element(args: &mut MultiValue) -> usize {
 }
 
 /// Read argument `i` of the post-element list, or `nil`.
-fn arg(args: &MultiValue, i: usize) -> Value {
-    args.get(i).cloned().unwrap_or(Value::Nil)
+fn arg(args: &MultiValue, i: usize) -> LuaValue {
+    args.get(i).cloned().unwrap_or(LuaValue::Nil)
 }
 
 /// Run `f` over one element font under a short write borrow, then dirty the layout — every one of
 /// these can change what the *next* `SetText` draws with, and several change nothing until then.
 fn edit_font<T>(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     elem: usize,
     f: impl FnOnce(&mut ElementFont) -> T,
-) -> mlua::Result<T> {
+) -> benilla_lua::Result<T> {
     let h = html_handle(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
     Ok(f(&mut model.simple_html.entry(h).or_default().fonts[elem]))
@@ -550,7 +550,11 @@ fn edit_font<T>(
 
 /// Read one element font's **resolved** paint (the object it inherits, with its own sets on top) —
 /// what the getters answer and what a block would be built with.
-fn read_font(lua: &Lua, this: &Table, elem: usize) -> mlua::Result<BlockPaint> {
+fn read_font(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    elem: usize,
+) -> benilla_lua::Result<BlockPaint> {
     let h = html_handle(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model");
     let st = model.simple_html.get(&h);
@@ -560,22 +564,23 @@ fn read_font(lua: &Lua, this: &Table, elem: usize) -> mlua::Result<BlockPaint> {
     })
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let m = vm.create_table()?;
 
     // ── 0/1 · the font object, and the live link to it ──────────────────────────────────────
     // `SetFontObject([element,] font | "font" | nil)` → 0 values. Unlike a region's, this cannot
     // repaint anything already on screen: the element fonts are prototypes, and only the next
     // `SetText` copies them into blocks (§4.6 — a built block is never re-fonted).
-    m.set(
+    let set_font_object = vm.create_function(
         "SetFontObject",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
-            let name = super::font::resolve("SetFontObject", &arg(&rest, 0))?;
+            let font = arg(&rest, 0);
+            let name = super::font::resolve_context(lua, "SetFontObject", &font)?;
             if let Some(n) = &name {
                 let model = lua.app_data_ref::<Model>().expect("model");
                 if model.font_object(n).is_none() {
-                    return Err(mlua::Error::runtime(format!(
+                    return Err(benilla_lua::Error::runtime(format!(
                         "SetFontObject: no font object named '{n}' is registered"
                     )));
                 }
@@ -615,11 +620,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 // `SetFontObject`. The two sides of one law must not disagree.
                 ef.font_object = name;
             })
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetFontObject", &set_font_object)?;
+    let get_font_object = vm.create_function(
         "GetFontObject",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             let h = html_handle(lua, &this)?;
             let name = {
@@ -631,24 +637,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     .filter(|n| model.font_object(n).is_some())
             };
             match name {
-                Some(n) => Ok(Value::Table(super::font::wrapper(lua, &n)?)),
-                None => Ok(Value::Nil),
+                Some(n) => Ok(LuaValue::Table(super::font::wrapper_context(lua, &n)?)),
+                None => Ok(LuaValue::Nil),
             }
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "GetFontObject", &get_font_object)?;
 
     // ── 2/3 · the face ──────────────────────────────────────────────────────────────────────
     // `SetFont([element,] file, height [, flags])` → the NUMBER 1, or nil on an empty path (the
     // load-failure probe shape); the argument gate is the shared `0x79f210` entry, so a numeric
     // string is accepted for either and anything else raises `0x87c69c`'s usage string.
-    m.set(
+    let set_font = vm.create_function(
         "SetFont",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
+            let file = arg(&rest, 0);
+            let height = arg(&rest, 1);
             let (path, height) =
-                super::font_block::set_font_args(&arg(&rest, 0), &arg(&rest, 1), "SimpleHTML")?;
+                super::font_block::set_font_args_context(&file, &height, "SimpleHTML")?;
             let flags = match arg(&rest, 2) {
-                Value::String(s) => Some(s.to_str()?.to_string()),
+                LuaValue::String(s) => Some(s.to_string_lossy().into_owned()),
                 _ => None,
             };
             let ok = !path.is_empty();
@@ -666,79 +675,89 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     ef.explicit.outline = true;
                 }
             })?;
-            Ok(if ok { Value::Number(1.0) } else { Value::Nil })
-        })?,
+            Ok(if ok {
+                LuaValue::Number(1.0)
+            } else {
+                LuaValue::Nil
+            })
+        },
     )?;
+    vm.table_set_function(&m, "SetFont", &set_font)?;
     // `GetFont([element])` → 3 values: path, height, flags string (`""`, never nil).
-    m.set(
+    let get_font = vm.create_function(
         "GetFont",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             let p = read_font(lua, &this, elem)?;
             let path = match p.font_path {
-                Some(path) => Value::String(lua.create_string(&path)?),
-                None => Value::Nil,
+                Some(path) => LuaValue::from(path),
+                None => LuaValue::Nil,
             };
             Ok((path, p.font_height, p.outline.as_str()))
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "GetFont", &get_font)?;
 
     // ── 4/5 · the text colour ───────────────────────────────────────────────────────────────
-    m.set(
+    let set_text_color = vm.create_function(
         "SetTextColor",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
-            let c = rgba(lua, &rest)?;
+            let c = rgba(&rest)?;
             edit_font(lua, &this, elem, |ef| {
                 ef.color = Some(c);
                 ef.explicit.color = true;
             })
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetTextColor", &set_text_color)?;
+    let get_text_color = vm.create_function(
         "GetTextColor",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             let c = read_font(lua, &this, elem)?
                 .color
                 .unwrap_or([1.0, 1.0, 1.0, 1.0]);
             Ok((c[0], c[1], c[2], c[3]))
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "GetTextColor", &get_text_color)?;
 
     // ── 6..9 · the shadow ───────────────────────────────────────────────────────────────────
     // `GetShadowColor` returns **four** values (`0x79f9b3 mov eax,0x4`), `GetShadowOffset` two.
     // Either half may be set before the other, so each starts from whatever is already there.
-    m.set(
+    let set_shadow_color = vm.create_function(
         "SetShadowColor",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
-            let c = rgba(lua, &rest)?;
+            let c = rgba(&rest)?;
             edit_font(lua, &this, elem, |ef| {
                 let offset = ef.shadow.map_or([0.0, 0.0], |s| s.offset);
                 ef.shadow = Some(FontShadow { offset, color: c });
                 ef.explicit.shadow = true;
             })
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetShadowColor", &set_shadow_color)?;
+    let get_shadow_color = vm.create_function(
         "GetShadowColor",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             let c = read_font(lua, &this, elem)?
                 .shadow
                 .map_or([0.0, 0.0, 0.0, 1.0], |s| s.color);
             Ok((c[0], c[1], c[2], c[3]))
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "GetShadowColor", &get_shadow_color)?;
     // Both arguments are required — the shared impl raises `Usage: %s:SetShadowOffset(x, y)`
     // (`0x87c6e8`) rather than defaulting the missing one.
-    m.set(
+    let set_shadow_offset = vm.create_function(
         "SetShadowOffset",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
-            let x = f32::from_lua(arg(&rest, 0), lua)?;
-            let y = f32::from_lua(arg(&rest, 1), lua)?;
+            let x = <f32 as benilla_lua::FromLua>::from_lua(arg(&rest, 0))?;
+            let y = <f32 as benilla_lua::FromLua>::from_lua(arg(&rest, 1))?;
             edit_font(lua, &this, elem, |ef| {
                 let color = ef.shadow.map_or([0.0, 0.0, 0.0, 1.0], |s| s.color);
                 ef.shadow = Some(FontShadow {
@@ -747,39 +766,43 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 });
                 ef.explicit.shadow = true;
             })
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetShadowOffset", &set_shadow_offset)?;
+    let get_shadow_offset = vm.create_function(
         "GetShadowOffset",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             let o = read_font(lua, &this, elem)?
                 .shadow
                 .map_or([0.0, 0.0], |s| s.offset);
             Ok((o[0], o[1]))
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "GetShadowOffset", &get_shadow_offset)?;
 
     // ── 10/11 · spacing ─────────────────────────────────────────────────────────────────────
     // `SetSpacing([element,] n)` — `0x772240` clamps a negative argument to 0 before storing
     // (`0x772246 fcomp [0x7ffd74 = 0.0]`). This is the ONE way to open a gap between blocks: the
     // ctor default is 0, so out of the box they stack perfectly flush, with no per-element
     // constant, no half-line and no margin anywhere.
-    m.set(
+    let set_spacing = vm.create_function(
         "SetSpacing",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
-            let n = f32::from_lua(arg(&rest, 0), lua)?.max(0.0);
+            let n = <f32 as benilla_lua::FromLua>::from_lua(arg(&rest, 0))?.max(0.0);
             edit_font(lua, &this, elem, |ef| ef.spacing = n)
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetSpacing", &set_spacing)?;
+    let get_spacing = vm.create_function(
         "GetSpacing",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             Ok(read_font(lua, &this, elem)?.spacing)
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "GetSpacing", &get_spacing)?;
 
     // ── 12..15 · justification ──────────────────────────────────────────────────────────────
     // Both resolve through the same `0x811ad0` table as `align`, masked `&7` / `&0x38`, so a
@@ -789,86 +812,94 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // it writes the element font's justify, which `0x78adb0` overwrites on every block it builds
     // with the tag's own `align`. It is installed because the table has it and `GetJustifyH` must
     // answer what was stored.
-    m.set(
+    let set_justify_h = vm.create_function(
         "SetJustifyH",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
-            let s =
-                String::from_lua(arg(&rest, 0), lua).map_err(|_| justify::usage_h("SimpleHTML"))?;
-            let bits = justify::parse_bits(&s).ok_or_else(|| justify::usage_h("SimpleHTML"))?;
+            let s = String::from_lua(arg(&rest, 0))
+                .map_err(|_| benilla_lua::Error::runtime(justify::usage_h_message("SimpleHTML")))?;
+            let bits = justify::parse_bits(&s).ok_or_else(|| {
+                benilla_lua::Error::runtime(justify::usage_h_message("SimpleHTML"))
+            })?;
             edit_font(lua, &this, elem, |ef| {
                 ef.justify.0 = justify::set_axis(ef.justify.0, justify::H_MASK, bits);
                 ef.explicit.justify_h = true;
             })
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetJustifyH", &set_justify_h)?;
+    let get_justify_h = vm.create_function(
         "GetJustifyH",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             Ok(read_font(lua, &this, elem)?.justify.name_h())
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "GetJustifyH", &get_justify_h)?;
+    let set_justify_v = vm.create_function(
         "SetJustifyV",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
-            let s =
-                String::from_lua(arg(&rest, 0), lua).map_err(|_| justify::usage_v("SimpleHTML"))?;
-            let bits = justify::parse_bits(&s).ok_or_else(|| justify::usage_v("SimpleHTML"))?;
+            let s = String::from_lua(arg(&rest, 0))
+                .map_err(|_| benilla_lua::Error::runtime(justify::usage_v_message("SimpleHTML")))?;
+            let bits = justify::parse_bits(&s).ok_or_else(|| {
+                benilla_lua::Error::runtime(justify::usage_v_message("SimpleHTML"))
+            })?;
             edit_font(lua, &this, elem, |ef| {
                 ef.justify.0 = justify::set_axis(ef.justify.0, justify::V_MASK, bits);
                 ef.explicit.justify_v = true;
             })
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetJustifyV", &set_justify_v)?;
+    let get_justify_v = vm.create_function(
         "GetJustifyV",
-        lua.create_function(|lua, (this, mut rest): (Table, MultiValue)| {
+        |lua, (this, mut rest): (LuaTable, MultiValue)| {
             let elem = take_element(&mut rest);
             Ok(read_font(lua, &this, elem)?.justify.name_v())
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "GetJustifyV", &get_justify_v)?;
 
     // ── 16..18 · the three with NO element argument ─────────────────────────────────────────
     // `SetText(s)` → 0 values (`0x796a90` discards the shared implementation's `usedMarkup`).
     // A nil argument reaches `lua_tostring` as NULL; an empty string is the closest thing to that
     // this engine can hand a parser, and it takes the same fallback route a NULL would.
-    m.set(
-        "SetText",
-        lua.create_function(|lua, (this, text): (Table, Value)| {
+    let set_text_fn =
+        vm.create_function("SetText", |lua, (this, text): (LuaTable, LuaValue)| {
             let raw = match &text {
                 // Bytes, lossily — never a raise (2138).
-                Value::String(s) => s.to_string_lossy(),
-                Value::Number(_) | Value::Integer(_) => super::object::as_f32(&text).to_string(),
+                LuaValue::String(s) => s.to_string_lossy().into_owned(),
+                LuaValue::Number(n) => (*n as f32).to_string(),
+                LuaValue::Integer(i) => (*i as f32).to_string(),
                 _ => String::new(),
             };
             let h = html_handle(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             set_text(&mut model, h, &raw);
             Ok(())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetText", &set_text_fn)?;
     // `SetHyperlinkFormat(s)` raises `Usage: %s:SetHyperlinkFormat("format")` (`0x87bb40`) if
     // argument 2 is not a string (`0x796bcc`–`0x796c29`). It takes effect on the NEXT parse.
-    m.set(
+    let set_hyperlink_format = vm.create_function(
         "SetHyperlinkFormat",
-        lua.create_function(|lua, (this, fmt): (Table, Value)| {
-            let Value::String(s) = &fmt else {
-                return Err(mlua::Error::runtime(
+        |lua, (this, fmt): (LuaTable, LuaValue)| {
+            let LuaValue::String(s) = &fmt else {
+                return Err(benilla_lua::Error::runtime(
                     "Usage: <SimpleHTML>:SetHyperlinkFormat(\"format\")",
                 ));
             };
-            let fmt = s.to_str()?.to_string();
+            let fmt = s.to_string_lossy().into_owned();
             let h = html_handle(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             model.simple_html.entry(h).or_default().hyperlink_format = fmt;
             Ok(())
-        })?,
+        },
     )?;
-    m.set(
-        "GetHyperlinkFormat",
-        lua.create_function(|lua, this: Table| {
+    vm.table_set_function(&m, "SetHyperlinkFormat", &set_hyperlink_format)?;
+    let get_hyperlink_format =
+        vm.create_function("GetHyperlinkFormat", |lua, this: LuaTable| {
             let h = html_handle(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model");
             Ok(model
@@ -876,21 +907,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .get(&h)
                 .map(|s| s.hyperlink_format.clone())
                 .unwrap_or_else(|| parse::DEFAULT_HYPERLINK_FORMAT.to_string()))
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "GetHyperlinkFormat", &get_hyperlink_format)?;
 
-    lua.set_named_registry_value(REG_SIMPLEHTML_METHODS, m)?;
+    vm.set_named_registry_value(REG_SIMPLEHTML_METHODS, &m)?;
     Ok(())
 }
 
 /// `(r, g, b [, a])` off the post-element argument list — alpha `lua_isnumber`-gated with the
 /// default `1.0`, r/g/b required, exactly as the shared colour setters take them.
-fn rgba(lua: &Lua, rest: &MultiValue) -> mlua::Result<[f32; 4]> {
-    let r = f32::from_lua(arg(rest, 0), lua)?;
-    let g = f32::from_lua(arg(rest, 1), lua)?;
-    let b = f32::from_lua(arg(rest, 2), lua)?;
+fn rgba(rest: &MultiValue) -> benilla_lua::Result<[f32; 4]> {
+    let r = <f32 as benilla_lua::FromLua>::from_lua(arg(rest, 0))?;
+    let g = <f32 as benilla_lua::FromLua>::from_lua(arg(rest, 1))?;
+    let b = <f32 as benilla_lua::FromLua>::from_lua(arg(rest, 2))?;
     let a = match arg(rest, 3) {
-        v @ (Value::Number(_) | Value::Integer(_)) => f32::from_lua(v, lua)?,
+        v @ (LuaValue::Number(_) | LuaValue::Integer(_)) => {
+            <f32 as benilla_lua::FromLua>::from_lua(v)?
+        }
         _ => 1.0,
     };
     Ok([r, g, b, a])

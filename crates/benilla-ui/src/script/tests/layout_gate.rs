@@ -10,7 +10,7 @@ use crate::script::{Model, UiScript};
 
 /// The mutation epoch (tier 1's input): bumped by every write into the layout read set.
 fn epoch(s: &UiScript) -> u64 {
-    s.lua()
+    s.vm()
         .app_data_ref::<Model>()
         .expect("model app_data")
         .layout_epoch
@@ -18,7 +18,7 @@ fn epoch(s: &UiScript) -> u64 {
 
 /// How many times the fixpoint has run.
 fn solves(s: &UiScript) -> u64 {
-    s.lua()
+    s.vm()
         .app_data_ref::<Model>()
         .expect("model app_data")
         .layout_solves
@@ -26,7 +26,7 @@ fn solves(s: &UiScript) -> u64 {
 
 /// A frame anchored to the screen, plus a child hanging off it — enough that a move has to
 /// propagate, so a wrongly-skipped resolve would be visible in the child too.
-fn setup(s: &UiScript) {
+fn setup(s: &mut UiScript) {
     s.run(
         r#"
         parent = CreateFrame("Frame", "Parent", nil)
@@ -44,7 +44,7 @@ fn setup(s: &UiScript) {
 fn an_unchanged_resolve_does_not_run_the_fixpoint() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
 
     s.resolve();
     let after_first = solves(&s);
@@ -65,23 +65,23 @@ fn an_unchanged_resolve_does_not_run_the_fixpoint() {
 fn moving_a_frame_reopens_the_gate_and_propagates() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     s.resolve();
     s.resolve(); // settle: the gate is now closed
     let before = solves(&s);
 
-    let child_left = |s: &UiScript| -> f32 { s.eval::<f32>("return Child:GetLeft()").unwrap() };
-    let first = child_left(&s);
+    let child_left = |s: &mut UiScript| -> f32 { s.eval::<f32>("return Child:GetLeft()").unwrap() };
+    let first = child_left(&mut s);
 
     s.run("parent:SetPoint(\"TOPLEFT\", nil, \"TOPLEFT\", 60, -10)")
         .expect("move");
     s.resolve();
     assert_eq!(solves(&s), before + 1, "a SetPoint must reopen the gate");
     assert!(
-        (child_left(&s) - (first + 50.0)).abs() < 0.001,
+        (child_left(&mut s) - (first + 50.0)).abs() < 0.001,
         "the move must propagate to the child: {} -> {}",
         first,
-        child_left(&s)
+        child_left(&mut s)
     );
 
     // And it closes again once the move has settled.
@@ -99,7 +99,7 @@ fn moving_a_frame_reopens_the_gate_and_propagates() {
 fn a_screen_resize_reopens_the_gate() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     s.resolve();
     s.resolve();
     let before = solves(&s);
@@ -119,7 +119,7 @@ fn a_screen_resize_reopens_the_gate() {
 fn moving_a_region_reopens_the_gate() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     s.run(
         r#"
         tex = parent:CreateTexture(nil, "ARTWORK")
@@ -150,7 +150,7 @@ fn moving_a_region_reopens_the_gate() {
 fn hiding_a_frame_does_not_reopen_the_gate() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     s.resolve();
     s.resolve();
     let before = solves(&s);
@@ -333,7 +333,7 @@ fn the_hover_re_enter_loop_neither_re_measures_nor_re_solves() {
 /// value it stores — and from then on a quiet frame skips at a `u64` compare without computing
 /// the fingerprint at all.
 fn tier_one_closed(s: &UiScript) -> bool {
-    let m = s.lua().app_data_ref::<Model>().expect("model app_data");
+    let m = s.vm().app_data_ref::<Model>().expect("model app_data");
     m.layout_epoch_resolved == Some(m.layout_epoch)
 }
 
@@ -354,7 +354,7 @@ fn tier_one_closed(s: &UiScript) -> bool {
 fn a_region_moving_every_frame_costs_exactly_one_solve_per_frame() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     s.run(
         r#"
         spark = parent:CreateTexture(nil, "OVERLAY")
@@ -402,7 +402,7 @@ fn a_region_moving_every_frame_costs_exactly_one_solve_per_frame() {
 fn a_quiet_frame_after_a_move_costs_no_solve_at_all() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     s.resolve();
     s.run(r#"parent:SetPoint("TOPLEFT", nil, "TOPLEFT", 33, -44)"#)
         .expect("move");
@@ -419,7 +419,7 @@ fn a_quiet_frame_after_a_move_costs_no_solve_at_all() {
 fn a_settled_resolve_closes_tier_one_and_a_real_write_reopens_it() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
 
     // ONE resolve closes the epoch (decision 1385): the fingerprint is hashed over inputs alone,
     // and the rounds just drove those inputs to their fixpoint, so there is nothing left for a
@@ -443,7 +443,7 @@ fn a_settled_resolve_closes_tier_one_and_a_real_write_reopens_it() {
 fn an_idempotent_setter_call_leaves_tier_one_closed() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     s.resolve();
     s.resolve();
     assert!(tier_one_closed(&s));
@@ -472,7 +472,7 @@ fn an_idempotent_setter_call_leaves_tier_one_closed() {
 fn a_paint_only_write_leaves_tier_one_closed() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    setup(&s);
+    setup(&mut s);
     // A paint region with NO anchors: its region_data entry is created by a paint setter and
     // must stay invisible to the layout gate (the resolve sweep skips anchor-less entries).
     s.run(r#"tex = parent:CreateTexture(nil, "ARTWORK")"#)

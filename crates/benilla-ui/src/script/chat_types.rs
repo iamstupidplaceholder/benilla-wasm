@@ -26,9 +26,11 @@
 //! What the line colours *mean* to a message frame is `ScrollingMessageFrame:UpdateColorByID`,
 //! which lives with the frame (`messageframe/scrolling.rs`); this file is only the registry.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
+
+pub use crate::script_data::ChatTypeColor;
 
 /// The fixed segment: 94 entries, in the reference's order (index = position + 1).
 pub const FIXED_CHAT_TYPES: usize = 94;
@@ -137,13 +139,6 @@ const DEFAULTS: [(&str, [u8; 3]); FIXED_CHAT_TYPES] = [
 /// The 1-based index of the `CHANNEL` entry — the extras' colour source at seed and reset.
 const CHANNEL_INDEX: usize = 15;
 
-/// One registry entry: the type's name and its live colour bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChatTypeColor {
-    pub name: String,
-    pub rgb: [u8; 3],
-}
-
 /// The boot seed: the 94 defaults, then `CHANNEL1`…`CHANNEL10` coloured from the live `CHANNEL`.
 pub(super) fn seed() -> Vec<ChatTypeColor> {
     let mut table: Vec<ChatTypeColor> = DEFAULTS
@@ -207,7 +202,7 @@ impl super::UiScript {
     }
 
     /// The live registry, fixed segment first, then the extras.
-    pub fn chat_colors(&self) -> Vec<ChatTypeColor> {
+    pub fn chat_colors(&mut self) -> Vec<ChatTypeColor> {
         self.model_mut().chat_colors.clone()
     }
 
@@ -218,63 +213,53 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("GetChatTypeIndex", |lua, name: Option<String>| {
+        let Some(name) = name else {
+            return Ok(0);
+        };
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(position(&model.chat_colors, &name).map_or(0, |i| i as i64 + 1))
+    })?;
 
-    g.set(
-        "GetChatTypeIndex",
-        lua.create_function(|lua, name: Option<String>| {
-            let Some(name) = name else {
-                return Ok(0);
-            };
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(position(&model.chat_colors, &name).map_or(0, |i| i as i64 + 1))
-        })?,
-    )?;
-
-    g.set(
+    lua.register_function(
         "ChangeChatColor",
-        lua.create_function(
-            |lua, (name, r, g, b): (String, Option<f64>, Option<f64>, Option<f64>)| {
-                let written = {
-                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                    let Some(i) = position(&model.chat_colors, &name) else {
-                        return Ok(());
-                    };
-                    let rgb = [
-                        to_byte(r.unwrap_or(0.0)),
-                        to_byte(g.unwrap_or(0.0)),
-                        to_byte(b.unwrap_or(0.0)),
-                    ];
-                    model.chat_colors[i].rgb = rgb;
-                    model.chat_colors_changed = true;
-                    (model.chat_colors[i].name.clone(), rgb)
+        |lua, (name, r, g, b): (String, Option<f64>, Option<f64>, Option<f64>)| {
+            let written = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let Some(i) = position(&model.chat_colors, &name) else {
+                    return Ok(());
                 };
-                let (name, rgb) = written;
-                super::tick::fire_event_into(
-                    lua,
-                    "UPDATE_CHAT_COLOR",
-                    vec![
-                        super::ScriptValue::Str(name),
-                        super::ScriptValue::Number(from_byte(rgb[0])),
-                        super::ScriptValue::Number(from_byte(rgb[1])),
-                        super::ScriptValue::Number(from_byte(rgb[2])),
-                    ],
-                );
-                Ok(())
-            },
-        )?,
+                let rgb = [
+                    to_byte(r.unwrap_or(0.0)),
+                    to_byte(g.unwrap_or(0.0)),
+                    to_byte(b.unwrap_or(0.0)),
+                ];
+                model.chat_colors[i].rgb = rgb;
+                model.chat_colors_changed = true;
+                (model.chat_colors[i].name.clone(), rgb)
+            };
+            let (name, rgb) = written;
+            super::tick::fire_event_into_context(
+                lua,
+                "UPDATE_CHAT_COLOR",
+                vec![
+                    super::ScriptValue::Str(name),
+                    super::ScriptValue::Number(from_byte(rgb[0])),
+                    super::ScriptValue::Number(from_byte(rgb[1])),
+                    super::ScriptValue::Number(from_byte(rgb[2])),
+                ],
+            );
+            Ok(())
+        },
     )?;
 
-    g.set(
-        "ResetChatColors",
-        lua.create_function(|lua, _ignored: MultiValue| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            reset(&mut model.chat_colors);
-            model.chat_colors_changed = true;
-            Ok(Value::Nil)
-        })?,
-    )?;
+    lua.register_function("ResetChatColors", |lua, _ignored: MultiValue| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        reset(&mut model.chat_colors);
+        model.chat_colors_changed = true;
+        Ok(Value::Nil)
+    })?;
 
     Ok(())
 }
@@ -286,7 +271,7 @@ mod tests {
 
     #[test]
     fn the_index_is_one_based_case_folded_and_zero_on_a_miss() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(s.eval::<i64>("return GetChatTypeIndex('say')").unwrap(), 1);
         assert_eq!(
             s.eval::<i64>("return GetChatTypeIndex('BATTLEGROUND_LEADER')")
@@ -368,7 +353,7 @@ mod tests {
 
     #[test]
     fn reset_recolours_the_extras_from_the_live_channel_entry() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("ChangeChatColor('CHANNEL', 0.0, 0.0, 0.0) ChangeChatColor('CHANNEL2', 1, 1, 1)")
             .unwrap();
         // Reset copies the fixed defaults first, so CHANNEL is back to FFC0C0 by the time the

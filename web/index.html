@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Benilla — original client WASM</title>
+    <style>
+      html, body, #benilla { width: 100%; height: 100%; margin: 0; }
+      body { overflow: hidden; background: #000; }
+      #benilla { display: block; }
+      #benilla-bootstrap-status { position: fixed; inset: 0; display: grid; place-items: center; color: #ffd778; background: #000; font: 18px sans-serif; pointer-events: none; }
+      #benilla-bootstrap-status[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="benilla"></canvas>
+    <div id="benilla-bootstrap-status" role="status" aria-live="polite"></div>
+    <script src="./config.js"></script>
+    <script src="./localization.js"></script>
+    <script type="module">
+      const gateway = new URL(globalThis.BENILLA_CONFIG.gateway || location.origin, location.href);
+      if (!['http:', 'https:'].includes(gateway.protocol) || gateway.search || gateway.hash || gateway.username || gateway.password) {
+        throw new Error('BENILLA_CONFIG.gateway must be an HTTP(S) URL without credentials, query or fragment');
+      }
+      const base = gateway.href.replace(/\/$/, '');
+      const socketBase = base.replace(/^http/, 'ws');
+      const locale = globalThis.BENILLA_I18N.locale;
+      const localized = `${base}/assets/v1/locale/${locale}`;
+      globalThis.BENILLA_ENDPOINTS = Object.freeze({
+        locale,
+        assets: `${localized}/file`,
+        presence: localized,
+        locales: `${base}/assets/v1`,
+        auth: `${socketBase}/game/v1/auth`,
+        world: `${socketBase}/game/v1/world`,
+      });
+      import('./pkg-full/benilla.js').then(({ default: init }) => init()).catch(error => {
+        const status = document.getElementById('benilla-bootstrap-status');
+        status.hidden = false;
+        status.textContent = globalThis.BENILLA_I18N.text('client_failed');
+        console.error('Benilla failed to start', error);
+      });
+    </script>
+  </body>
+</html>

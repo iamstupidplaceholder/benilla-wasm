@@ -697,7 +697,7 @@ pub(crate) fn grounded_step(
     capsule: &Collider,
     center: Vec3,
     horiz_vel: Vec3,
-    dt: std::time::Duration,
+    dt: benilla_time::Duration,
     support: Support,
 ) -> GroundedStep {
     let surface_offset = support.offset;
@@ -1076,7 +1076,7 @@ pub(crate) fn airborne_step(
     capsule: &Collider,
     center: Vec3,
     velocity: Vec3,
-    dt: std::time::Duration,
+    dt: benilla_time::Duration,
 ) -> Vec3 {
     world
         .slide_mover(
@@ -1523,7 +1523,7 @@ mod tests {
                 let start = start + Vec3::Y * (CAPSULE_HEIGHT * 0.5);
                 let run = cast(start, dir).map_or(1.0, |h| h.distance);
                 let mut center = start + dir * run;
-                let dt = std::time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
+                let dt = benilla_time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
                 // The steep-support bit is carried frame to frame exactly as the driver carries it
                 // (`Player::steep_support`), so the deep step-down reach is gated here the way it is
                 // on screen — a fixture that reset it every frame would test a mover we do not ship.
@@ -1712,7 +1712,7 @@ mod tests {
             .world_mut()
             .run_system_once(move |world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
-                let dt = std::time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
+                let dt = benilla_time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
                 let center = Vec3::new(0.0, CAPSULE_HEIGHT * 0.5 + 1.0, 0.0);
                 let g = grounded_step(&world, &capsule, center, Vec3::ZERO, dt, Support::default());
                 (g.center.y - center.y, g.ground.is_some())
@@ -1761,7 +1761,7 @@ mod tests {
             .world_mut()
             .run_system_once(move |world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
-                let dt = std::time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
+                let dt = benilla_time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
                 let mut center = Vec3::new(-1.0, CAPSULE_HEIGHT * 0.5, 0.0);
                 let mut support = Support::default();
                 let mut rows = Vec::new();
@@ -1858,7 +1858,7 @@ mod tests {
             .world_mut()
             .run_system_once(move |world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
-                let dt = std::time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
+                let dt = benilla_time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
                 let center = Vec3::new(0.0, CAPSULE_HEIGHT * 0.5 + 1.6, 0.0);
                 let g = grounded_step(
                     &world,
@@ -1892,7 +1892,7 @@ mod tests {
             .world_mut()
             .run_system_once(move |world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
-                let dt = std::time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
+                let dt = benilla_time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
                 let mut center = Vec3::new(0.6, CAPSULE_HEIGHT * 0.5 - 1.039, 0.0);
                 let mut rows = Vec::new();
                 let mut support = Support::default();
@@ -2266,7 +2266,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let levitate = super::super::state::MoveModes {
                     water_walking: true,
                     hover: true,
@@ -2339,7 +2339,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let run = |modes: super::super::state::MoveModes, frames: usize| {
                     let mut player = Player {
                         modes,
@@ -2420,7 +2420,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let mut player = Player {
                     modes: super::super::state::MoveModes {
                         water_walking: true,
@@ -2500,7 +2500,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 [true, false].map(|hover| {
                     let mut player = Player {
                         modes: super::super::state::MoveModes {
@@ -2551,7 +2551,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let press = |want_jump: bool, wire_jump: bool| {
                     let mut player = Player {
                         modes: super::super::state::MoveModes {
@@ -2694,7 +2694,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let mut player = Player::default();
                 // Frame 1: the launch.
                 let out = step(
@@ -2757,7 +2757,7 @@ mod tests {
                 .run_system_once(move |world: benilla_world::collision::WorldCollision| {
                     let capsule = player_capsule();
                     let mut time = Time::default();
-                    time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                    time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                     let mut player = Player::default();
                     // Jump from a dead standstill: the nibble is clear, so one steer is in hand.
                     step(
@@ -2850,7 +2850,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let knock = |rooted: bool| {
                     let mut player = Player {
                         modes: super::super::state::MoveModes {
@@ -2961,7 +2961,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let one_step = |vel_y: f32| {
                     let mut player = Player {
                         modes: super::super::state::MoveModes {
@@ -3037,7 +3037,7 @@ mod tests {
             .run_system_once(|world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
                 let mut time = Time::default();
-                time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                time.advance_by(benilla_time::Duration::from_secs_f32(1.0 / 60.0));
                 let mut player = Player {
                     modes: super::super::state::MoveModes {
                         water_walking: true,
@@ -3126,7 +3126,7 @@ mod tests {
             .world_mut()
             .run_system_once(move |world: benilla_world::collision::WorldCollision| {
                 let capsule = player_capsule();
-                let dt = std::time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
+                let dt = benilla_time::Duration::from_secs_f32(TRAVEL_60FPS / 7.0);
                 let secs = dt.as_secs_f32();
                 let mut center = start_feet + Vec3::Y * (CAPSULE_HEIGHT * 0.5);
                 let mut vel_y = JUMP_SPEED;

@@ -10,7 +10,7 @@
 //! against `SpellVisualKit.dbc` and plays it. Build 5875 data: 0→871, 1→870, 2→**1066** (the
 //! "DustCloud Land" kit), 3→1064, 4→1065, 5→1067.
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -45,7 +45,7 @@ fn schema() -> Schema {
 
 /// Load the table from the patch chain, exactly as the client's init `0x603900` fills its 6-slot
 /// store: zeroed slots, `slot[DamageType] = VisualKit` for each in-range record.
-pub fn load_environmental_damage(chain: &mut Chain) -> Result<EnvironmentalDamageTable> {
+pub fn load_environmental_damage(chain: &mut impl FileSource) -> Result<EnvironmentalDamageTable> {
     let bytes = chain
         .read_file(ENVIRONMENTAL_DAMAGE)
         .with_context(|| format!("reading {ENVIRONMENTAL_DAMAGE}"))?;

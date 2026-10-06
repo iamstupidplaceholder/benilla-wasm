@@ -111,7 +111,7 @@ pub(super) fn setup_lighting(
     let mut chain = world_assets.chain.lock_recover();
     // Keep the catalog resident: `update_time_lighting` re-samples it each frame against the server
     // clock. The noon seed below only fills `WowLighting` until the first frame runs.
-    let catalog = match LightCatalog::load(&mut chain) {
+    let catalog = match LightCatalog::load(&mut *chain) {
         Ok(cat) => Some(cat),
         Err(e) => {
             warn!("Light.dbc unavailable, using neutral daytime lighting: {e:#}");

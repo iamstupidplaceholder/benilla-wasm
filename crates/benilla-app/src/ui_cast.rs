@@ -7,7 +7,7 @@
 //! The spell name rides the event (resolved here from the `Spell.dbc` catalog — the script VM
 //! has no spell-catalog binding, deliberately: one lookup face, decision 0107).
 
-use std::time::{Duration, Instant};
+use benilla_time::{Duration, Instant};
 
 use bevy::prelude::*;
 
@@ -624,7 +624,7 @@ fn cast_bar_label(spells: Option<&crate::ui_action::Spells>, id: u32) -> String 
 /// counts as the current channel there, and ours keeps arming it from the packet for the same
 /// reason.
 fn channel_start_args(
-    script: &UiScript,
+    script: &mut UiScript,
     spells: Option<&crate::ui_action::Spells>,
     id: u32,
     duration_ms: u32,
@@ -641,9 +641,7 @@ fn channel_start_args(
         display.name.clone()
     } else {
         script
-            .lua()
-            .globals()
-            .get::<String>("CHANNELING")
+            .global_string("CHANNELING")
             .unwrap_or_default()
     };
     Some(vec![
@@ -721,7 +719,7 @@ fn feed_cast_bar(
                 spell_id,
                 duration_ms,
             } => {
-                let args = channel_start_args(&script, spells.as_deref(), spell_id, duration_ms);
+                let args = channel_start_args(&mut script, spells.as_deref(), spell_id, duration_ms);
                 // The channel half of the cast trace. The other five edges are traced at RECV
                 // (`net::apply::spells`); these two are traced HERE because the decision that
                 // wants watching — which of `0x6e7550`'s legs the spell took — is made here,
@@ -859,11 +857,11 @@ mod tests {
         // `FrameScript_GetText` reads the Lua global, so the VM is the source of the word — the
         // chain-backed end-to-end is `ui_script::cast_tests`; here it is set by hand so the four
         // gates are exercised without client data.
-        let script = UiScript::new().expect("VM");
+        let mut script = UiScript::new().expect("VM");
         script.eval::<()>("CHANNELING = \"Channeling\"").unwrap();
 
-        let name_of = |id: u32, ms: u32| -> Option<String> {
-            channel_start_args(&script, Some(&spells), id, ms).map(|args| match &args[1] {
+        let mut name_of = |id: u32, ms: u32| -> Option<String> {
+            channel_start_args(&mut script, Some(&spells), id, ms).map(|args| match &args[1] {
                 ScriptValue::Str(s) => s.clone(),
                 other => panic!("arg 2 is the name, got {other:?}"),
             })
@@ -890,14 +888,14 @@ mod tests {
             "0x6e7590: no SpellRec -> no event"
         );
         assert_eq!(
-            channel_start_args(&script, None, 10, 8_000),
+            channel_start_args(&mut script, None, 10, 8_000),
             None,
             "no client data is the same no-record leg"
         );
 
         // Arg ORDER is the reverse of SPELLCAST_START's, and the stock Lua reads it that way.
         assert_eq!(
-            channel_start_args(&script, Some(&spells), 10, 8_000).unwrap()[0],
+            channel_start_args(&mut script, Some(&spells), 10, 8_000).unwrap()[0],
             ScriptValue::Int(8_000),
             "fmt 0x8432cc is \"%d%s\" — duration first"
         );
@@ -911,8 +909,8 @@ mod tests {
     fn the_channeling_word_comes_off_the_players_own_chain() {
         let _data = benilla_formats::wow_data_or_skip!();
         use benilla_formats::{SpellCatalog, SpellDisplay};
-        let script = UiScript::new().expect("VM");
-        crate::ui_script::test_ui::load_ui(&script, r"Interface\FrameXML\GlobalStrings.lua");
+        let mut script = UiScript::new().expect("VM");
+        crate::ui_script::test_ui::load_ui(&mut script, r"Interface\FrameXML\GlobalStrings.lua");
         let spells = crate::ui_action::Spells {
             catalog: SpellCatalog::from_displays(
                 [(
@@ -929,7 +927,7 @@ mod tests {
             ..crate::ui_action::Spells::empty_for_tests()
         };
         assert_eq!(
-            channel_start_args(&script, Some(&spells), 10, 8_000).unwrap()[1],
+            channel_start_args(&mut script, Some(&spells), 10, 8_000).unwrap()[1],
             ScriptValue::Str("Channeling".into()),
         );
     }

@@ -449,7 +449,7 @@ fn resolve_closes_the_round_trip_when_an_engine_is_installed() {
         "the engine answered its own request during resolve"
     );
     assert_eq!(
-        s.eval::<Vec<f32>>(
+        s.eval_sequence::<f32>(
             "return { Label:GetWidth(), Label:GetHeight(), Label:GetStringWidth() }"
         )
         .unwrap(),

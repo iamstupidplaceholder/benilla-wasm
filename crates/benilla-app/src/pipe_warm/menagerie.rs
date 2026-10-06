@@ -11,9 +11,11 @@ use bevy::camera::primitives::MeshAabb;
 use bevy::ecs::system::SystemParam;
 use bevy::mesh::{Indices, MeshTag, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::render_resource::Buffer;
 
-use benilla_assets::materials::{LiquidMaterial, WowModelMaterial};
+use benilla_assets::gpu_table::GpuTable;
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::materials::LiquidMaterial;
+use benilla_assets::materials::WowModelMaterial;
 use benilla_world::clouds::CloudMaterial;
 use benilla_world::model_render::{
     far_twin_of, model_material, zfill_material, MaterialCache, ShadeSel,
@@ -51,6 +53,9 @@ pub(super) struct WarmLanes<'w> {
     stars: ResMut<'w, Assets<StarMaterial>>,
     clouds: ResMut<'w, Assets<CloudMaterial>>,
     sky: ResMut<'w, Assets<SkyMaterial>>,
+    // Match LiquidPlugin's renderer admission: the storage-buffer material lane
+    // is not installed on wasm yet. Do not require or fabricate its asset store.
+    #[cfg(not(target_arch = "wasm32"))]
     liquid: ResMut<'w, Assets<LiquidMaterial>>,
     /// The plain-`StandardMaterial` lanes (0938): representatives for the on-demand nameplate
     /// and raid-mark materials go through this store the way their builders do.
@@ -102,7 +107,7 @@ pub(super) fn spawn_menagerie(
     materials: &mut Assets<WowModelMaterial>,
     lanes: &mut WarmLanes,
     cache: &mut MaterialCache,
-    light: &Buffer,
+    light: &benilla_assets::gpu_table::GpuTable,
 ) -> usize {
     // The four vertex layouts the model lane ships (0837 dump: strides 32/48/56/72): static ×
     // {plain, vertex-colours} and their skinned twins. Statics are RENDER_WORLD-only, so their
@@ -487,8 +492,6 @@ pub(super) fn spawn_menagerie(
     let (plain_mesh, plain_aabb, _) = layouts[0].clone();
     let (colours_mesh, colours_aabb, _) = layouts[2].clone();
     let posuv = meshes.add(warm_pos_uv_mesh());
-    let liquid_mesh = meshes.add(warm_liquid_mesh(false));
-    let liquid_color_mesh = meshes.add(warm_liquid_mesh(true));
     // Celestial discs + glares (`sun::setup` quads: position+normal+UV).
     for mat in lane_handles(&mut lanes.celestial) {
         spawn_lane_rig(
@@ -546,25 +549,30 @@ pub(super) fn spawn_menagerie(
     // WMO-exterior lanes pass `None` and take the shader's `#else` white. Warming only the
     // four-attribute form left the first indoor water pool — a cave, a dungeon, an inn's basin —
     // compiling live on the frame it came into view.
-    for mat in lane_handles(&mut lanes.liquid) {
-        spawn_lane_rig(
-            commands,
-            cam,
-            None,
-            &liquid_mesh,
-            None,
-            mat.clone(),
-            &mut count,
-        );
-        spawn_lane_rig(
-            commands,
-            cam,
-            None,
-            &liquid_color_mesh,
-            None,
-            mat,
-            &mut count,
-        );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let liquid_mesh = meshes.add(warm_liquid_mesh(false));
+        let liquid_color_mesh = meshes.add(warm_liquid_mesh(true));
+        for mat in lane_handles(&mut lanes.liquid) {
+            spawn_lane_rig(
+                commands,
+                cam,
+                None,
+                &liquid_mesh,
+                None,
+                mat.clone(),
+                &mut count,
+            );
+            spawn_lane_rig(
+                commands,
+                cam,
+                None,
+                &liquid_color_mesh,
+                None,
+                mat,
+                &mut count,
+            );
+        }
     }
     // The plain-`StandardMaterial` lanes (0938 — the director's evening log). The fallback cube
     // (`entities::CubeAssets`, drawn while any entity's model streams) uses the production mesh
@@ -801,6 +809,7 @@ fn warm_pos_uv_mesh() -> Mesh {
 /// reads it behind `#ifdef VERTEX_COLORS`, so the two are separate pipelines. This doc used to
 /// claim `liquid::surface` "inserts exactly these four attributes", which is what kept the second
 /// one out of the menagerie.
+#[cfg(not(target_arch = "wasm32"))]
 fn warm_liquid_mesh(body_color: bool) -> Mesh {
     let mut m = Mesh::new(
         PrimitiveTopology::TriangleList,

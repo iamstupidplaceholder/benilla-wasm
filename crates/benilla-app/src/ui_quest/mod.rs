@@ -55,11 +55,10 @@ pub(crate) struct QuestGiver {
     pub(crate) npc: Option<u64>,
     /// The open panel's wire view.
     pub(crate) view: Option<QuestView>,
-    /// The trailing `u32` of the last `SMSG_QUESTGIVER_QUEST_DETAILS`
-    /// ([`benilla_protocol::messages::QuestDetails::auto_finish`]) — the reference's `0xbe0824`,
-    /// a **latch** written by the DETAILS handler rather than a field of the open view, because
-    /// that is the shape the binary has and because its one reader ([`end_quest_session`]) runs
-    /// whichever panel is up. Non-zero suppresses the giver re-open on close (decision 1738).
+    /// The open quest panel's wire close policy: DETAILS/OFFER_REWARD
+    /// `auto_finish` or REQUEST_ITEMS `close_on_cancel`. Non-zero suppresses
+    /// the giver re-open on close. Every panel handler must publish its own
+    /// flag rather than inheriting the previous panel's policy.
     pub(crate) detail_flag: u32,
     /// Per-guid dialog status (`SMSG_QUESTGIVER_STATUS`) — the `!`/`?` marker's value, stored for a
     /// later world-marker slice.
@@ -507,7 +506,7 @@ fn feed_quest(
     items: Res<Items>,
     icons: Option<Res<ItemDisplays>>,
     commands: Res<NetCommands>,
-    names: Res<NameCache>,
+    names: (Res<NameCache>, crate::npc_text::MacroNames),
     states: Res<crate::world_state::WorldStates>,
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
     spells: Option<Res<Spells>>,
@@ -518,6 +517,7 @@ fn feed_quest(
     mut last_name: Local<crate::ui_script::VmMemo<Option<String>>>,
     mut last_npc: Local<crate::ui_script::VmMemo<Option<u64>>>,
 ) {
+    let (names, labels) = names;
     let Some(mut script) = script else {
         return;
     };
@@ -537,12 +537,12 @@ fn feed_quest(
         .take_messages()
         .into_iter()
         .filter_map(|msg| {
-            let get = |key: &str| script.lua().globals().get::<String>(key).ok();
-            ui_error_text(&msg, &get).map(|text| Shown::keyed(msg.key, text))
+            let mut get = |key: &str| script.global_string(key);
+            ui_error_text(&msg, &mut get).map(|text| Shown::keyed(msg.key, text))
         })
         .collect();
     show_messages(&mut script, &mut sink, "ui_quest", lines);
-    let player = crate::npc_text::player_identity(&self_q, &names, &commands);
+    let player = crate::npc_text::player_identity(&self_q, &names, &commands, &labels);
     let fresh = snapshot(
         &giver,
         &items,
@@ -617,10 +617,12 @@ fn feed_quest(
 /// Drain the Lua intents: the greeting-row selects (map to the row's quest id → QUERY_QUEST for an
 /// available quest, COMPLETE_QUEST for an active one) and the button actions (Accept/Continue/Reward
 /// → the matching CMSG; Close → a local clear, no packet).
-/// **The quest session's one end** — the reference's `0x501130`, which every way out of the
+/// **Return from a quest panel** — the reference's `0x501130`, which every way out of the
 /// questgiver window funnels through: `DeclineQuest()`, `CloseQuest()` (ESC, the window's own
 /// OnHide), the walk-away watchdog and the leave-world teardown are four of its eleven callers, and
-/// they all do the same thing. That is why benilla models one [`QuestAction::Close`] and not the
+/// they all do the same thing within a quest panel. Closing the root Greeting list
+/// instead ends the interaction locally; the drain must not invoke this return route.
+/// That is why benilla models one [`QuestAction::Close`] and not the
 /// `Decline`/`Close` pair 1733 briefly split it into: two Lua verbs, one routine (decision 1738,
 /// VERIFIED by the wow-re §5 dispatched for 1733).
 ///
@@ -636,9 +638,8 @@ fn feed_quest(
 ///   benilla asserted the opposite in `QuestFrame.xml` ("vanilla's client-side decline sends no
 ///   packet") from 0088 until 1738 refuted it at the bytes.
 ///
-/// `detail_flag` suppresses the unit re-open when non-zero — the trailing `u32` of
-/// `SMSG_QUESTGIVER_QUEST_DETAILS` ([`QuestDetails::auto_finish`]), whose only reader in the whole
-/// image is this routine. `npc_flags` is `None` when the giver is not a streamed unit, which is
+/// `detail_flag` suppresses the unit re-open when non-zero — the panel's wire
+/// `auto_finish` / `close_on_cancel` policy. `npc_flags` is `None` when the giver is not a streamed unit, which is
 /// also how an item giver (0664) and a player fall out of the unit branch.
 fn end_quest_session(npc: u64, detail_flag: u32, npc_flags: Option<u32>, commands: &NetCommands) {
     if benilla_protocol::guid::is_player(npc) {
@@ -734,7 +735,17 @@ fn drain_quest(
     for action in script.take_quest_actions() {
         match action {
             QuestAction::Close => {
-                end_quest_session(npc, giver.detail_flag, npc_flags, &commands);
+                // Closing the NPC's root list ends the interaction. Only a quest
+                // panel returns to that list: re-requesting Greeting here makes
+                // every close immediately reopen the same window forever.
+                // OnHide may also queue a second close after an earlier action
+                // has already ended this session; it must not send another hello.
+                if giver.npc != Some(npc) {
+                    continue;
+                }
+                if !matches!(giver.view.as_ref(), Some(QuestView::Greeting(_))) {
+                    end_quest_session(npc, giver.detail_flag, npc_flags, &commands);
+                }
                 giver.clear();
             }
             QuestAction::Accept => {
@@ -888,6 +899,8 @@ mod tests {
             race: 1,
             class: 1,
             gender: 0,
+            race_label: None,
+            class_label: None,
         };
         let snap = snapshot(
             &giver,
@@ -1042,9 +1055,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| s.global_string(key);
 
         for reason in 0..=60u32 {
             for key in [
@@ -1064,17 +1077,21 @@ mod tests {
         }
         // The director's line, end to end.
         assert_eq!(
-            ui_error_text(&UiError::key(questgiver_invalid_key(13)), &g).as_deref(),
+            ui_error_text(&UiError::key(questgiver_invalid_key(13)), &mut g).as_deref(),
             Some("You are already on that quest")
         );
         // …and the named one, filled.
         assert_eq!(
-            ui_error_text(&UiError::s(questgiver_failed_key(4), "A Threat Within"), &g).as_deref(),
+            ui_error_text(
+                &UiError::s(questgiver_failed_key(4), "A Threat Within"),
+                &mut g
+            )
+            .as_deref(),
             Some("A Threat Within failed: Inventory is full.")
         );
         // The log-full line is the RED one and carries no fill.
         assert_eq!(
-            ui_error_text(&UiError::key("ERR_QUEST_LOG_FULL"), &g).as_deref(),
+            ui_error_text(&UiError::key("ERR_QUEST_LOG_FULL"), &mut g).as_deref(),
             Some("Your quest log is full.")
         );
     }
@@ -1123,7 +1140,7 @@ mod tests {
             }),
         );
         app.insert_resource(quest);
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script.run(lua).unwrap();
         app.insert_non_send_resource(script);
         app.add_systems(Update, drain_quest);

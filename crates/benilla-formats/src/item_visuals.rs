@@ -45,7 +45,6 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -248,7 +247,7 @@ pub(crate) fn spell_item_enchantment_schema() -> Schema {
 /// Load `ItemVisuals.dbc` + `ItemVisualEffects.dbc` off the patch chain and join them into an
 /// [`ItemVisualCatalog`] — the client's per-slot skip rules (module doc) applied at load, so a
 /// resolved slot is always a real model path.
-pub fn load_item_visual_catalog(chain: &mut Chain) -> Result<ItemVisualCatalog> {
+pub fn load_item_visual_catalog(chain: &mut impl crate::FileSource) -> Result<ItemVisualCatalog> {
     let bytes = chain
         .read_file(ITEM_VISUAL_EFFECTS)
         .with_context(|| format!("reading {ITEM_VISUAL_EFFECTS}"))?;
@@ -282,7 +281,7 @@ pub fn load_item_visual_catalog(chain: &mut Chain) -> Result<ItemVisualCatalog> 
 
 /// Load `SpellItemEnchantment.dbc`'s two consumer columns off the patch chain — one parse, both
 /// lanes (see [`EnchantCatalog`]).
-pub fn load_enchant_catalog(chain: &mut Chain) -> Result<EnchantCatalog> {
+pub fn load_enchant_catalog(chain: &mut impl crate::FileSource) -> Result<EnchantCatalog> {
     let bytes = chain
         .read_file(SPELL_ITEM_ENCHANTMENT)
         .with_context(|| format!("reading {SPELL_ITEM_ENCHANTMENT}"))?;

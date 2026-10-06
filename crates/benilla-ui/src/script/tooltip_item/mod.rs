@@ -52,9 +52,9 @@
 //! (`0x854a74`, pushed at `0x52e4a3`). Template sources (`SetMerchantItem`/`BenillaSetItemById`/quest
 //! rows) never show money, per the same law.
 
-use mlua::{Lua, MultiValue, Table, Value};
+use benilla_lua::{LuaContext, MultiValue, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::object::frame_handle_of;
+use super::object::frame_handle_of_context;
 use super::tooltip::{append_line, clear_content, fire_cleared, show_or_hide_empty};
 use super::{ItemTemplateView, Model};
 
@@ -76,12 +76,12 @@ use render::{render_view, BuilderFlags};
 /// success; nil on a miss, which does NOT clear the tooltip (the reference's nil exit touches
 /// nothing else).
 fn compare_against_worn(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     h: crate::widget::FrameHandle,
     offered: &ItemTemplateView,
     mut left: f64,
-) -> mlua::Result<Value> {
+) -> benilla_lua::Result<LuaValue> {
     let found = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         let mut hit = None;
@@ -108,7 +108,7 @@ fn compare_against_worn(
         hit
     };
     let Some(slot) = found else {
-        return Ok(Value::Nil);
+        return Ok(LuaValue::Nil);
     };
     {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
@@ -116,14 +116,13 @@ fn compare_against_worn(
             t.equipped_header_armed = true;
         }
     }
-    this.get::<mlua::Function>("SetInventoryItem")?
-        .call::<mlua::MultiValue>((this.clone(), "player", slot))?;
-    Ok(Value::Integer(1))
+    lua.call_method::<_, MultiValue>(&this, "SetInventoryItem", ("player", slot))?;
+    Ok(LuaValue::Integer(1))
 }
 
 /// Look up the store; a miss records the ask (the app sends `CMSG_ITEM_QUERY` and pushes back —
 /// the hover's re-enter loop repaints on arrival).
-fn view_of(lua: &Lua, item_id: u32) -> Option<ItemTemplateView> {
+fn view_of(lua: &mut impl LuaContext, item_id: u32) -> Option<ItemTemplateView> {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let v = model.item_templates.get(&item_id).cloned();
     if v.is_none() && item_id != 0 {
@@ -132,11 +131,36 @@ fn view_of(lua: &Lua, item_id: u32) -> Option<ItemTemplateView> {
     v
 }
 
+fn repair_cost(lua: &mut impl LuaContext, item_id: u32, durability: Option<(u32, u32)>) -> u32 {
+    let Some((current, maximum)) = durability else {
+        return 0;
+    };
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    let (Some(tables), Some(level), Some(view)) = (
+        model.repair_tables.as_ref(),
+        model.item_repair_levels.get(&item_id),
+        model.item_templates.get(&item_id),
+    ) else {
+        return 0;
+    };
+    tables.repair_cost(
+        maximum.saturating_sub(current),
+        *level,
+        view.quality,
+        view.class,
+        view.subclass,
+        0.0,
+    )
+}
+
 /// The enchant lines a **random-suffix roll** contributes, out of the pushed roll table — the
 /// reference's §E5 copy of the suffix row's five ids into enchant slots 2..6, which every
 /// block-supplying source with no item object relies on (loot, links, auction rows, the roll
 /// window). `0`, or an id the table doesn't name, contributes nothing.
-fn roll_enchants(lua: &Lua, random_property_id: u32) -> Vec<crate::script::EnchantView> {
+fn roll_enchants(
+    lua: &mut impl LuaContext,
+    random_property_id: u32,
+) -> Vec<crate::script::EnchantView> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     model
         .random_properties
@@ -155,16 +179,16 @@ fn link_name(link: &str) -> Option<&str> {
 
 /// Fire the engine→Lua money hand-off (`OnTooltipAddMoney(copper)` — the byte-verified protocol:
 /// the engine computes, FrameXML's `SetTooltipMoney` renders).
-fn fire_add_money(lua: &Lua, h: crate::widget::FrameHandle, copper: u64) {
+fn fire_add_money(lua: &mut impl LuaContext, h: crate::widget::FrameHandle, copper: u64) {
     let id = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         model.frame_id(h)
     };
-    if let Err(e) = super::event::fire_widget_handler(
+    if let Err(e) = super::event::fire_widget_handler_context(
         lua,
         id,
         "OnTooltipAddMoney",
-        vec![Value::Number(copper as f64)],
+        vec![LuaValue::Number(copper as f64)],
     ) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
@@ -207,19 +231,20 @@ fn hyperlink_item_fields(link: &str) -> Option<(u32, u32, u32)> {
 /// The shared id-keyed render (`BenillaSetItemById`/`SetHyperlink`): template hit → the full line law
 /// (+ the compare arm when this is the main GameTooltip); miss → the ask + a name-only line.
 fn render_by_id(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     item_id: u32,
     fb_name: Option<String>,
     fb_q: Option<u32>,
-) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, this)?;
     {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         clear_content(&mut model, h);
     }
     fire_cleared(lua, h);
-    match view_of(lua, item_id) {
+    let view = view_of(lua, item_id);
+    match view {
         Some(v) => {
             render_view(lua, this, &v, BuilderFlags::default(), None)?;
         }
@@ -241,14 +266,14 @@ fn render_by_id(
 
 /// The quest-item hover: the row's item by id, or an empty tooltip when the row is not there.
 fn set_quest_item_view(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     item: Option<crate::script::quest::QuestItemView>,
-) -> mlua::Result<()> {
+) -> benilla_lua::Result<()> {
     match item {
         Some(it) => render_by_id(lua, this, it.item_id, it.name.clone(), Some(it.quality)),
         None => {
-            let h = frame_handle_of(lua, this)?;
+            let h = frame_handle_of_context(lua, this)?;
             {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                 clear_content(&mut model, h);
@@ -296,7 +321,7 @@ fn equip_slots_for(inventory_type: u32) -> &'static [u32] {
 }
 
 /// Register the item content channels into the GameTooltip kind method table.
-pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install_methods(vm: &mut Vm, m: &LuaTable) -> benilla_lua::Result<()> {
     // GameTooltip:BenillaSetItemById(itemId [, fallbackName, fallbackQuality]) — the id-keyed
     // hover (quest reward rows, loot rows).
     //
@@ -311,14 +336,13 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // a WoW function, and no addon has reason to call it at all.
     //
     // Template source: no money row, per the byte-verified sell-price law.
-    m.set(
+    let benilla_set_item_by_id = vm.create_function(
         "BenillaSetItemById",
-        lua.create_function(
-            |lua, (this, item_id, fb_name, fb_q): (Table, u32, Option<String>, Option<u32>)| {
-                render_by_id(lua, &this, item_id, fb_name, fb_q)
-            },
-        )?,
+        |lua, (this, item_id, fb_name, fb_q): (LuaTable, u32, Option<String>, Option<u32>)| {
+            render_by_id(lua, &this, item_id, fb_name, fb_q)
+        },
     )?;
+    vm.table_set_function(&m, "BenillaSetItemById", &benilla_set_item_by_id)?;
 
     // GameTooltip:SetQuestItem(type, index) / SetQuestLogItem(type, index) — the quest-giver
     // panels' and the quest log's reward/choice/required hovers (stock QuestFrameTemplates.xml:148,
@@ -327,9 +351,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // slot; the item is rendered by id through the shared renderer, with the row's own name and
     // quality as the fallbacks a template that has not arrived yet paints from. An unknown type or
     // an out-of-range index shows nothing — the reference's tooltip stays empty too.
-    m.set(
+    let set_quest_item = vm.create_function(
         "SetQuestItem",
-        lua.create_function(|lua, (this, kind, index): (Table, String, usize)| {
+        |lua, (this, kind, index): (LuaTable, String, usize)| {
             let item = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 model.quest.as_ref().and_then(|q| {
@@ -339,11 +363,12 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 })
             };
             set_quest_item_view(lua, &this, item)
-        })?,
+        },
     )?;
-    m.set(
+    vm.table_set_function(&m, "SetQuestItem", &set_quest_item)?;
+    let set_quest_log_item = vm.create_function(
         "SetQuestLogItem",
-        lua.create_function(|lua, (this, kind, index): (Table, String, usize)| {
+        |lua, (this, kind, index): (LuaTable, String, usize)| {
             let item = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 model.selected_quest_detail().and_then(|d| {
@@ -357,15 +382,15 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 })
             };
             set_quest_item_view(lua, &this, item)
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetQuestLogItem", &set_quest_log_item)?;
 
     // GameTooltip:SetHyperlink(link) — the chat-link tooltip (ref ItemRef.lua's SetItemRef →
     // ItemRefTooltip:SetHyperlink). Accepts the full escaped link or a bare "item:<id>";
     // non-item links (player/spell/quest) have no tooltip surface yet and no-op.
-    m.set(
-        "SetHyperlink",
-        lua.create_function(|lua, (this, link): (Table, String)| {
+    let set_hyperlink =
+        vm.create_function("SetHyperlink", |lua, (this, link): (LuaTable, String)| {
             // The client's only other link kind: `|Henchant:<spellId>|h[name]|h`, the craft
             // window's enchant link (`GetCraftItemLink`, 1973), which `SetHyperlink` consumes
             // behind the same castUI gate its producer stands behind (`0x532243`) — the spell's
@@ -383,7 +408,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let Some((id, _enchant_id, roll)) = hyperlink_item_fields(&link) else {
                 return Ok(());
             };
-            let h = frame_handle_of(lua, &this)?;
+            let h = frame_handle_of_context(lua, &this)?;
             {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                 clear_content(&mut model, h);
@@ -423,8 +448,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             }
             show_or_hide_empty(lua, h);
             Ok(())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetHyperlink", &set_hyperlink)?;
 
     // GameTooltip:SetInventoryItem(unit, slot) → hasItem, hasCooldown, repairCost — the equipped-slot hover
     // (paperdoll slots, buff-frame weapon enchants) and the shopping-compare listener's render
@@ -445,146 +470,145 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // different contract.) We pushed two, so pfUI's durability scan died on
     // `panel.lua:499: attempt to perform arithmetic on local 'repCost' (a nil value)`.
     //
-    // `repairCost` is **0 INTERIM**, the same posture and the same reason as `SetBagItem`'s below:
-    // the per-item repair feed is the paper-doll arc's and does not exist yet. Zero rather than nil
-    // because the reference **always pushes a number** there — wow-re `tooltip-money.md` §return-2
-    // reads `fild [ebp-0x30]; call 0x6f3810` on `SetBagItem`'s unconditional leg — and an
-    // undamaged item's cost genuinely is 0, so the interim value is a *real* value of the domain
-    // rather than a stand-in. Every reference consumer guards on `> 0`.
+    // Repair cost uses live instance durability and the shared loaded DBC tables,
+    // exactly like the merchant total. Always return a number, including zero
+    // for undamaged/unresolved items.
     //
     // Arity provenance, stated because it differs from the rest of this module: the *three* is the
     // reference's own consumer, not a byte-read `mov eax, 3`. `SetBagItem`'s two IS byte-verified
     // (`mov eax,2` @0x534985). A carve of `0x532ee0`'s tail would upgrade this line.
-    m.set(
+    let set_inventory_item = vm.create_function(
         "SetInventoryItem",
-        lua.create_function(
-            |lua, (this, unit, slot, name_only): (Table, String, usize, Value)| {
-                let h = frame_handle_of(lua, &this)?;
-                // **The third argument the binary names itself**: `0x8552dc` carries
-                // `"Usage: SetInventoryItem(unit, slot [, nameOnly])"`, and `0x533027`–`0x53304c` is
-                // its gate — the flag seeds 0 and becomes 1 only on `lua_isnumber(L,4)` AND
-                // `lua_tonumber(L,4) > 0.0` STRICTLY. A miss does not raise; it leaves the zero and
-                // builds the ordinary tooltip. Three of this binding's four builder legs pass it
-                // through (wow-re `ui/scratch/tooltip-nameonly-p4-census.md` §3).
-                let name_only = super::binding_abi::positive_number_flag(lua, name_only)?;
-                let (item_id, name, quality, inst, currently_equipped) = {
-                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                    let armed = match super::tooltip::tip_mut(&mut model, h) {
-                        Ok(t) => std::mem::take(&mut t.equipped_header_armed),
-                        Err(_) => false,
-                    };
-                    let view = model
-                        .inv_slot(&unit, slot)
-                        .filter(|s| s.item_id != 0)
-                        .map(|s| {
-                            (
-                                s.item_id,
-                                s.name.clone(),
-                                s.quality,
-                                render::ItemInstance {
-                                    // The slot's own name — app-composed, so it carries the
-                                    // random-suffix roll off `ITEM_FIELD_RANDOM_PROPERTIES_ID`.
-                                    name: s.name.clone(),
-                                    durability: s.durability,
-                                    creator: s.creator.clone(),
-                                    has_text: false,
-                                    flags: s.flags,
-                                    already_bound: s.already_bound,
-                                    // No petition line on the doll: a charter has `InventoryType = 0`
-                                    // and cannot be equipped, so this hover can never be over one.
-                                    petition: None,
-                                    enchants: s.enchants.clone(),
-                                    // `SetInventoryItem 0x532ee0` also has p6=0 legs (`0x533106`,
-                                    // `0x5332ad`) — the "this binding can never emit OPENABLE" claim
-                                    // is dead here too (wow-re `right-click-open.md` §1.2). Which leg
-                                    // each takes is not pinned, and the case is unobservable anyway:
-                                    // nothing openable is equippable, so the doll hover has no clam to
-                                    // show. Left `false` deliberately — inventing a selector we have
-                                    // not read would be the §4 trade, and there is nothing to gain.
-                                    openable_source: false,
-                                    duration_ms: s.duration_ms,
-                                },
-                            )
-                        });
-                    match view {
-                        Some((id, name, q, inst)) => (id, name, q, inst, armed),
-                        // An EMPTY slot answers `nil` for hasItem — and still pushes the other two,
-                        // because the reference's own caller destructures all three unconditionally
-                        // and only then tests `hasItem`. Answering one value here would hand
-                        // `PaperDollItemSlotButton_OnEnter` a nil `repairCost` on every empty slot,
-                        // which its `repairCost and (repairCost > 0)` guard survives but pfUI's bare
-                        // `totalRep + repCost` does not.
-                        None => {
-                            return Ok(MultiValue::from_vec(vec![
-                                Value::Nil,
-                                Value::Nil,
-                                Value::Integer(0),
-                            ]))
-                        }
-                    }
+        |lua, (this, unit, slot, name_only): (LuaTable, String, usize, LuaValue)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            // **The third argument the binary names itself**: `0x8552dc` carries
+            // `"Usage: SetInventoryItem(unit, slot [, nameOnly])"`, and `0x533027`–`0x53304c` is
+            // its gate — the flag seeds 0 and becomes 1 only on `lua_isnumber(L,4)` AND
+            // `lua_tonumber(L,4) > 0.0` STRICTLY. A miss does not raise; it leaves the zero and
+            // builds the ordinary tooltip. Three of this binding's four builder legs pass it
+            // through (wow-re `ui/scratch/tooltip-nameonly-p4-census.md` §3).
+            let name_only = super::binding_abi::neutral_positive_number_flag(name_only);
+            let (item_id, name, quality, inst, currently_equipped) = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let armed = match super::tooltip::tip_mut(&mut model, h) {
+                    Ok(t) => std::mem::take(&mut t.equipped_header_armed),
+                    Err(_) => false,
                 };
-                // p5 and p4, carried as one value but never as one flag (2216).
-                let flags = BuilderFlags {
-                    currently_equipped,
-                    name_only,
-                };
-                {
-                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                    clear_content(&mut model, h);
-                }
-                fire_cleared(lua, h);
-                match view_of(lua, item_id) {
-                    Some(v) => render_view(lua, &this, &v, flags, Some(&inst))?,
+                let view = model
+                    .inv_slot(&unit, slot)
+                    .filter(|s| s.item_id != 0)
+                    .map(|s| {
+                        (
+                            s.item_id,
+                            s.name.clone(),
+                            s.quality,
+                            render::ItemInstance {
+                                // The slot's own name — app-composed, so it carries the
+                                // random-suffix roll off `ITEM_FIELD_RANDOM_PROPERTIES_ID`.
+                                name: s.name.clone(),
+                                durability: s.durability,
+                                creator: s.creator.clone(),
+                                has_text: false,
+                                flags: s.flags,
+                                already_bound: s.already_bound,
+                                // No petition line on the doll: a charter has `InventoryType = 0`
+                                // and cannot be equipped, so this hover can never be over one.
+                                petition: None,
+                                enchants: s.enchants.clone(),
+                                // `SetInventoryItem 0x532ee0` also has p6=0 legs (`0x533106`,
+                                // `0x5332ad`) — the "this binding can never emit OPENABLE" claim
+                                // is dead here too (wow-re `right-click-open.md` §1.2). Which leg
+                                // each takes is not pinned, and the case is unobservable anyway:
+                                // nothing openable is equippable, so the doll hover has no clam to
+                                // show. Left `false` deliberately — inventing a selector we have
+                                // not read would be the §4 trade, and there is nothing to gain.
+                                openable_source: false,
+                                duration_ms: s.duration_ms,
+                            },
+                        )
+                    });
+                match view {
+                    Some((id, name, q, inst)) => (id, name, q, inst, armed),
+                    // An EMPTY slot answers `nil` for hasItem — and still pushes the other two,
+                    // because the reference's own caller destructures all three unconditionally
+                    // and only then tests `hasItem`. Answering one value here would hand
+                    // `PaperDollItemSlotButton_OnEnter` a nil `repairCost` on every empty slot,
+                    // which its `repairCost and (repairCost > 0)` guard survives but pfUI's bare
+                    // `totalRep + repCost` does not.
                     None => {
-                        // Template in flight — the slot view's own name holds the plate (the same
-                        // 0138 posture as SetBagItem's miss path).
-                        // The compare header is a key like every other sentence (2045); this
-                        // fallback path shows it for exactly the reason the full render does.
-                        if flags.currently_equipped {
-                            if let Some(t) = crate::strings::global(lua, "CURRENTLY_EQUIPPED") {
-                                append_line(lua, &this, (t, GRAY), None, false)?;
-                            }
-                        }
-                        if let Some(name) = name {
-                            let color = if flags.name_only {
-                                WHITE
-                            } else {
-                                quality_color(quality.max(0) as u32)
-                            };
-                            append_line(lua, &this, (name, color), None, false)?;
-                        }
+                        drop(model);
+                        super::tooltip::clear_empty_content(lua, h);
+                        return Ok(MultiValue::from(vec![
+                            LuaValue::Nil,
+                            LuaValue::Nil,
+                            LuaValue::Integer(0),
+                        ]));
                     }
                 }
-                show_or_hide_empty(lua, h);
-                Ok(MultiValue::from_vec(vec![
-                    Value::Integer(1),
-                    // `hasCooldown` — **broader than its name**, and this is the one arm of it we can
-                    // answer. The builder's Lua return is `[ebp-0x38]`, set by FOUR sites, only one of
-                    // which is the cooldown line: LOCKED_WITH_ITEM, the temporary-enchant countdown,
-                    // **the item's own duration line** (`0x52ce0d`), and ITEM_COOLDOWN_TIME. So a
-                    // duration-bearing item answers truthy here with no cooldown of any kind, and an
-                    // addon can see it (decision 1933's fold-back). The equipped-cooldown feed is
-                    // still the INTERIM above; this is the half that now exists.
-                    if inst.duration_ms.is_some() {
-                        Value::Boolean(true)
-                    } else {
-                        Value::Nil
-                    },
-                    Value::Integer(0),
-                ]))
-            },
-        )?,
+            };
+            // p5 and p4, carried as one value but never as one flag (2216).
+            let flags = BuilderFlags {
+                currently_equipped,
+                name_only,
+            };
+            {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                clear_content(&mut model, h);
+            }
+            fire_cleared(lua, h);
+            match view_of(lua, item_id) {
+                Some(v) => render_view(lua, &this, &v, flags, Some(&inst))?,
+                None => {
+                    // Template in flight — the slot view's own name holds the plate (the same
+                    // 0138 posture as SetBagItem's miss path).
+                    // The compare header is a key like every other sentence (2045); this
+                    // fallback path shows it for exactly the reason the full render does.
+                    if flags.currently_equipped {
+                        if let Some(t) = crate::strings::global_context(lua, "CURRENTLY_EQUIPPED") {
+                            append_line(lua, &this, (t, GRAY), None, false)?;
+                        }
+                    }
+                    if let Some(name) = name {
+                        let color = if flags.name_only {
+                            WHITE
+                        } else {
+                            quality_color(quality.max(0) as u32)
+                        };
+                        append_line(lua, &this, (name, color), None, false)?;
+                    }
+                }
+            }
+            show_or_hide_empty(lua, h);
+            let repair_cost = repair_cost(lua, item_id, inst.durability);
+            Ok(MultiValue::from(vec![
+                LuaValue::Integer(1),
+                // `hasCooldown` — **broader than its name**, and this is the one arm of it we can
+                // answer. The builder's Lua return is `[ebp-0x38]`, set by FOUR sites, only one of
+                // which is the cooldown line: LOCKED_WITH_ITEM, the temporary-enchant countdown,
+                // **the item's own duration line** (`0x52ce0d`), and ITEM_COOLDOWN_TIME. So a
+                // duration-bearing item answers truthy here with no cooldown of any kind, and an
+                // addon can see it (decision 1933's fold-back). The equipped-cooldown feed is
+                // still the INTERIM above; this is the half that now exists.
+                if inst.duration_ms.is_some() {
+                    LuaValue::Boolean(true)
+                } else {
+                    LuaValue::Nil
+                },
+                LuaValue::Integer(i64::from(repair_cost)),
+            ]))
+        },
     )?;
+    vm.table_set_function(&m, "SetInventoryItem", &set_inventory_item)?;
 
     // GameTooltip:SetBagItem(bag, slot) → hasCooldown, repairCost — the real-instance hover.
     // The one money-eligible source built so far: merchant open + repair off ⇒ the engine fires
     // OnTooltipAddMoney(SellPrice × stack), or prints ITEM_UNSELLABLE at price 0 (wow-re
-    // tooltip-money.md's gate, engine-side at last). repairCost is 0 INTERIM (the per-item
-    // durability/repair feed is the paper-doll arc's).
-    m.set(
+    // tooltip-money.md's gate, engine-side at last). Repair cost uses the same
+    // live instance/DBC arithmetic as SetInventoryItem and the merchant total.
+    let set_bag_item = vm.create_function(
         "SetBagItem",
-        lua.create_function(|lua, (this, bag, slot): (Table, i64, u32)| {
-            let h = frame_handle_of(lua, &this)?;
+        |lua, (this, bag, slot): (LuaTable, i64, u32)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let (item_id, count, has_cd, link, quality, inst) = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 match model
@@ -632,7 +656,11 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                             },
                         )
                     }
-                    None => return Ok(MultiValue::from_vec(vec![Value::Nil])),
+                    None => {
+                        drop(model);
+                        super::tooltip::clear_empty_content(lua, h);
+                        return Ok(MultiValue::from(vec![LuaValue::Nil]));
+                    }
                 }
             };
             {
@@ -650,7 +678,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     if merchant_open && !repairing {
                         if v.sell_price > 0 {
                             fire_add_money(lua, h, u64::from(v.sell_price) * u64::from(count));
-                        } else if let Some(t) = crate::strings::global(lua, "ITEM_UNSELLABLE") {
+                        } else if let Some(t) =
+                            crate::strings::global_context(lua, "ITEM_UNSELLABLE")
+                        {
                             append_line(lua, &this, (t, WHITE), None, false)?;
                         }
                     }
@@ -673,15 +703,17 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 }
             }
             show_or_hide_empty(lua, h);
-            Ok(MultiValue::from_vec(vec![
+            let repair_cost = repair_cost(lua, item_id, inst.durability);
+            Ok(MultiValue::from(vec![
                 // Not just the cooldown: the builder's return is set by four line sites, and the
                 // item's own duration line is one of them (see `SetInventoryItem`'s note above,
                 // decision 1933's fold-back).
-                Value::Boolean(has_cd || inst.duration_ms.is_some()),
-                Value::Integer(0),
+                LuaValue::Boolean(has_cd || inst.duration_ms.is_some()),
+                LuaValue::Integer(i64::from(repair_cost)),
             ]))
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetBagItem", &set_bag_item)?;
 
     // GameTooltip:SetLootItem(slot) — the loot-row hover (the reference's own binding,
     // `0x533470`, which its `LootButtonTemplate` <OnEnter> runs behind `LootSlotIsItem`).
@@ -701,55 +733,52 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // `loot-slot-record.md`); an empty or out-of-range slot leaves the tooltip untouched. The
     // slot's enchant line waits on the trade snapshot carrying the wire's enchant id (0592 P3).
     for (name, player_side) in [("SetTradePlayerItem", true), ("SetTradeTargetItem", false)] {
-        m.set(
-            name,
-            lua.create_function(move |lua, (this, slot): (Table, usize)| {
-                let h = frame_handle_of(lua, &this)?;
-                let item = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    model.trade.as_ref().and_then(|t| {
-                        let side = if player_side { &t.player } else { &t.target };
-                        slot.checked_sub(1)
-                            .and_then(|n| side.slots.get(n))
-                            .and_then(|s| s.clone())
-                    })
-                };
-                let Some(item) = item.filter(|i| i.item_id != 0) else {
-                    return Ok(());
-                };
-                {
-                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                    clear_content(&mut model, h);
-                }
-                fire_cleared(lua, h);
-                let inst = render::ItemInstance {
-                    name: item.name.clone(),
-                    ..Default::default()
-                };
-                match view_of(lua, item.item_id) {
-                    Some(v) => render_view(lua, &this, &v, BuilderFlags::default(), Some(&inst))?,
-                    None => {
-                        if let Some(name) = item.name.clone() {
-                            append_line(
-                                lua,
-                                &this,
-                                (name, quality_color(item.quality.unwrap_or(1))),
-                                None,
-                                false,
-                            )?;
-                        }
+        let trade_fn = vm.create_function(name, move |lua, (this, slot): (LuaTable, usize)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let item = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model.trade.as_ref().and_then(|t| {
+                    let side = if player_side { &t.player } else { &t.target };
+                    slot.checked_sub(1)
+                        .and_then(|n| side.slots.get(n))
+                        .and_then(|s| s.clone())
+                })
+            };
+            let Some(item) = item.filter(|i| i.item_id != 0) else {
+                return Ok(());
+            };
+            {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                clear_content(&mut model, h);
+            }
+            fire_cleared(lua, h);
+            let inst = render::ItemInstance {
+                name: item.name.clone(),
+                ..Default::default()
+            };
+            match view_of(lua, item.item_id) {
+                Some(v) => render_view(lua, &this, &v, BuilderFlags::default(), Some(&inst))?,
+                None => {
+                    if let Some(name) = item.name.clone() {
+                        append_line(
+                            lua,
+                            &this,
+                            (name, quality_color(item.quality.unwrap_or(1))),
+                            None,
+                            false,
+                        )?;
                     }
                 }
-                show_or_hide_empty(lua, h);
-                Ok(())
-            })?,
-        )?;
+            }
+            show_or_hide_empty(lua, h);
+            Ok(())
+        })?;
+        vm.table_set_function(&m, name, &trade_fn)?;
     }
 
-    m.set(
-        "SetLootItem",
-        lua.create_function(|lua, (this, slot): (Table, usize)| {
-            let h = frame_handle_of(lua, &this)?;
+    let set_loot_item =
+        vm.create_function("SetLootItem", |lua, (this, slot): (LuaTable, usize)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let row = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 model
@@ -794,18 +823,18 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             }
             show_or_hide_empty(lua, h);
             Ok(())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetLootItem", &set_loot_item)?;
 
     // GameTooltip:SetLootRollItem(rollId) — the group-loot roll window's hover (the reference's
     // own `0x5364a0`). The same shape as SetLootItem beside it, byte-verified on the same
     // dispatch: p6=1 with `+0x424 ← [roll+0x20]` (the roll's randomPropertyId), all 7 enchant
     // slots zero, and BOTH guid args `&{0,0}` — no item object, so §E5's suffix-row copy is the
     // only enchant source and the placeholder arm is unreachable.
-    m.set(
+    let set_loot_roll_item = vm.create_function(
         "SetLootRollItem",
-        lua.create_function(|lua, (this, roll_id): (Table, u32)| {
-            let h = frame_handle_of(lua, &this)?;
+        |lua, (this, roll_id): (LuaTable, u32)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let entry = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 model
@@ -845,8 +874,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             }
             show_or_hide_empty(lua, h);
             Ok(())
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetLootRollItem", &set_loot_roll_item)?;
 
     // GameTooltip:SetMerchantCompareItem(index [, offset]) — `0x536080`, GameTooltip method-table
     // entry 43 (wow-re `system/ui/scratch/merchant-compare-item-law.md`). The shopping tooltip the
@@ -877,65 +907,64 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // An uncached vendor template answers nil AND fires the query ([`view_of`] does both), so the
     // first hover of an unseen vendor item shows no shopping tooltip and a later one does. That is
     // the reference's behaviour, not a race we lost.
-    m.set(
+    let set_merchant_compare_item = vm.create_function(
         "SetMerchantCompareItem",
-        lua.create_function(
-            |lua, (this, index, offset): (Table, Value, Option<Value>)| {
-                let h = frame_handle_of(lua, &this)?;
-                let as_number = |v: &Value| -> Option<f64> {
-                    match v {
-                        Value::Integer(i) => Some(*i as f64),
-                        Value::Number(n) => Some(*n),
-                        // `lua_isnumber` accepts a numeric string, here as everywhere.
-                        Value::String(s) => s.to_str().ok().and_then(|s| s.parse::<f64>().ok()),
-                        _ => None,
-                    }
-                };
-                // The one argument whose absence is an ERROR, with the client's own usage text.
-                let Some(idx) = as_number(&index) else {
-                    return Err(mlua::Error::runtime(
-                        "Usage: SetMerchantCompareItem(\"slot\" [, offset])",
-                    ));
-                };
-                // The reference re-bases the index in f64 and THEN truncates toward zero, so 2.7
-                // is row 1 (1.7 → 1) rather than row 2. Doing it the other way round differs by
-                // one for every fractional index.
-                let row = (idx - 1.0).trunc();
-                if row.is_nan() || row < 0.0 || row > f64::from(u32::MAX) {
-                    return Ok(Value::Nil);
+        |lua, (this, index, offset): (LuaTable, LuaValue, Option<LuaValue>)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let as_number = |v: &LuaValue| -> Option<f64> {
+                match v {
+                    LuaValue::Integer(i) => Some(*i as f64),
+                    LuaValue::Number(n) => Some(*n),
+                    // `lua_isnumber` accepts a numeric string, here as everywhere.
+                    LuaValue::String(s) => s.as_str().ok().and_then(|s| s.parse::<f64>().ok()),
+                    _ => None,
                 }
-                // `offset` re-bases as an INTEGER, and its absence means 1.
-                let left = match offset.as_ref().and_then(as_number) {
-                    Some(n) if n.is_nan() => return Ok(Value::Nil),
-                    Some(n) => n.trunc() - 1.0,
-                    None => 0.0,
-                };
-                if left < 0.0 {
-                    return Ok(Value::Nil);
-                }
+            };
+            // The one argument whose absence is an ERROR, with the client's own usage text.
+            let Some(idx) = as_number(&index) else {
+                return Err(benilla_lua::Error::runtime(
+                    "Usage: SetMerchantCompareItem(\"slot\" [, offset])",
+                ));
+            };
+            // The reference re-bases the index in f64 and THEN truncates toward zero, so 2.7
+            // is row 1 (1.7 → 1) rather than row 2. Doing it the other way round differs by
+            // one for every fractional index.
+            let row = (idx - 1.0).trunc();
+            if row.is_nan() || row < 0.0 || row > f64::from(u32::MAX) {
+                return Ok(LuaValue::Nil);
+            }
+            // `offset` re-bases as an INTEGER, and its absence means 1.
+            let left = match offset.as_ref().and_then(as_number) {
+                Some(n) if n.is_nan() => return Ok(LuaValue::Nil),
+                Some(n) => n.trunc() - 1.0,
+                None => 0.0,
+            };
+            if left < 0.0 {
+                return Ok(LuaValue::Nil);
+            }
 
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let row = row as usize;
-                let Some(item_id) = ({
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    model
-                        .merchant
-                        .as_ref()
-                        .and_then(|m| m.items.get(row))
-                        .map(|it| it.item_id)
-                }) else {
-                    return Ok(Value::Nil);
-                };
-                // The vendor item's own template — the class this compares by, and the miss that
-                // fires the query.
-                let Some(offered) = view_of(lua, item_id) else {
-                    return Ok(Value::Nil);
-                };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let row = row as usize;
+            let Some(item_id) = ({
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model
+                    .merchant
+                    .as_ref()
+                    .and_then(|m| m.items.get(row))
+                    .map(|it| it.item_id)
+            }) else {
+                return Ok(LuaValue::Nil);
+            };
+            // The vendor item's own template — the class this compares by, and the miss that
+            // fires the query.
+            let Some(offered) = view_of(lua, item_id) else {
+                return Ok(LuaValue::Nil);
+            };
 
-                compare_against_worn(lua, &this, h, &offered, left)
-            },
-        )?,
+            compare_against_worn(lua, &this, h, &offered, left)
+        },
     )?;
+    vm.table_set_function(&m, "SetMerchantCompareItem", &set_merchant_compare_item)?;
 
     // GameTooltip:SetAuctionCompareItem("type", index [, offset]) — `0x535d70`, the auction row's
     // twin of the vendor compare: the same body (`0x53603e` and `0x5362d4` both reach the shared
@@ -946,77 +975,75 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // an out-of-range row or an uncached template is nil. Return contract as the merchant's: the
     // NUMBER 1 on success, nil otherwise — the stock `AuctionFrameItem_OnEnter` gates each
     // shopping tooltip on it (1971).
-    m.set(
+    let set_auction_compare_item = vm.create_function(
         "SetAuctionCompareItem",
-        lua.create_function(
-            |lua, (this, kind, index, offset): (Table, Value, Value, Option<Value>)| {
-                let h = frame_handle_of(lua, &this)?;
-                let as_number = |v: &Value| -> Option<f64> {
-                    match v {
-                        Value::Integer(i) => Some(*i as f64),
-                        Value::Number(n) => Some(*n),
-                        Value::String(s) => s.to_str().ok().and_then(|s| s.parse::<f64>().ok()),
-                        _ => None,
-                    }
-                };
-                let kind = match &kind {
-                    Value::String(s) => s.to_str()?.to_string(),
-                    Value::Integer(i) => i.to_string(),
-                    Value::Number(n) => n.to_string(),
-                    _ => {
-                        return Err(mlua::Error::runtime(
-                            "Usage: SetAuctionCompareItem(\"type\", index [, offset])",
-                        ))
-                    }
-                };
-                let Some(idx) = as_number(&index) else {
-                    return Err(mlua::Error::runtime(
+        |lua, (this, kind, index, offset): (LuaTable, LuaValue, LuaValue, Option<LuaValue>)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let as_number = |v: &LuaValue| -> Option<f64> {
+                match v {
+                    LuaValue::Integer(i) => Some(*i as f64),
+                    LuaValue::Number(n) => Some(*n),
+                    LuaValue::String(s) => s.as_str().ok().and_then(|s| s.parse::<f64>().ok()),
+                    _ => None,
+                }
+            };
+            let kind = match &kind {
+                LuaValue::String(s) => s.to_string_lossy().into_owned(),
+                LuaValue::Integer(i) => i.to_string(),
+                LuaValue::Number(n) => n.to_string(),
+                _ => {
+                    return Err(benilla_lua::Error::runtime(
                         "Usage: SetAuctionCompareItem(\"type\", index [, offset])",
-                    ));
-                };
-                let row = (idx - 1.0).trunc();
-                if row.is_nan() || row < 0.0 || row > f64::from(u32::MAX) {
-                    return Ok(Value::Nil);
+                    ))
                 }
-                let left = match offset.as_ref().and_then(as_number) {
-                    Some(n) if n.is_nan() => return Ok(Value::Nil),
-                    Some(n) => n.trunc() - 1.0,
-                    None => 0.0,
-                };
-                if left < 0.0 {
-                    return Ok(Value::Nil);
-                }
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let row = row as usize;
-                let Some(item_id) = ({
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    let list = super::auction::list_index_of(&kind);
-                    model
-                        .auction
-                        .as_ref()
-                        .zip(list)
-                        .and_then(|(a, l)| a.lists[l].rows.get(row))
-                        .map(|r| r.item_id)
-                }) else {
-                    return Ok(Value::Nil);
-                };
-                let Some(offered) = view_of(lua, item_id) else {
-                    return Ok(Value::Nil);
-                };
-                compare_against_worn(lua, &this, h, &offered, left)
-            },
-        )?,
+            };
+            let Some(idx) = as_number(&index) else {
+                return Err(benilla_lua::Error::runtime(
+                    "Usage: SetAuctionCompareItem(\"type\", index [, offset])",
+                ));
+            };
+            let row = (idx - 1.0).trunc();
+            if row.is_nan() || row < 0.0 || row > f64::from(u32::MAX) {
+                return Ok(LuaValue::Nil);
+            }
+            let left = match offset.as_ref().and_then(as_number) {
+                Some(n) if n.is_nan() => return Ok(LuaValue::Nil),
+                Some(n) => n.trunc() - 1.0,
+                None => 0.0,
+            };
+            if left < 0.0 {
+                return Ok(LuaValue::Nil);
+            }
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let row = row as usize;
+            let Some(item_id) = ({
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let list = super::auction::list_index_of(&kind);
+                model
+                    .auction
+                    .as_ref()
+                    .zip(list)
+                    .and_then(|(a, l)| a.lists[l].rows.get(row))
+                    .map(|r| r.item_id)
+            }) else {
+                return Ok(LuaValue::Nil);
+            };
+            let Some(offered) = view_of(lua, item_id) else {
+                return Ok(LuaValue::Nil);
+            };
+            compare_against_worn(lua, &this, h, &offered, left)
+        },
     )?;
+    vm.table_set_function(&m, "SetAuctionCompareItem", &set_auction_compare_item)?;
 
     // GameTooltip:SetMerchantItem(index) / SetBuybackItem(index) — template-id sources through
     // the same store (the real SetMerchantItem is the template path — tooltip-money.md); the
     // merchant feed's own stat head is the fallback while the template answer is in flight, so
     // the vendor hover always shows at least the head it showed pre-0274.
     for (method, buyback) in [("SetMerchantItem", false), ("SetBuybackItem", true)] {
-        m.set(
-            method,
-            lua.create_function(move |lua, (this, index): (Table, usize)| {
-                let h = frame_handle_of(lua, &this)?;
+        let merchant_fn =
+            vm.create_function(method, move |lua, (this, index): (LuaTable, usize)| {
+                let h = frame_handle_of_context(lua, &this)?;
                 let row = {
                     let model = lua.app_data_mut::<Model>().expect("model app_data");
                     let Some(merchant) = &model.merchant else {
@@ -1071,17 +1098,16 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 }
                 show_or_hide_empty(lua, h);
                 Ok(())
-            })?,
-        )?;
+            })?;
+        vm.table_set_function(&m, method, &merchant_fn)?;
     }
 
     // GameTooltip:SetInboxItem(index) — the mail window's enclosed-item hover (decision 0544): the
     // inbox row's item entry through the same id-keyed store (MailFrame.lua l.218/470). A row with no
     // enclosed item (item_id 0) is a no-op, like the reference (which only calls this when hasItem).
-    m.set(
-        "SetInboxItem",
-        lua.create_function(|lua, (this, index): (Table, usize)| {
-            let h = frame_handle_of(lua, &this)?;
+    let set_inbox_item =
+        vm.create_function("SetInboxItem", |lua, (this, index): (LuaTable, usize)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let (item_id, roll, name) = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 let Some(mail) = &model.mail else {
@@ -1113,8 +1139,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             }
             show_or_hide_empty(lua, h);
             Ok(())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetInboxItem", &set_inbox_item)?;
 
     // GameTooltip:SetAuctionItem(type, index) — an auction ROW's hover (decision 1511). The row's
     // item entry through the same id-keyed store, keyed by list type ("list"/"bidder"/"owner").
@@ -1124,10 +1150,10 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // zeroes the GUID arguments before it resolves anything, so the gate those lines hang off
     // fails outright (wow-re §5, claim 6). Our id-keyed store has no instance to report either,
     // so we land on the same output by the same shape of reasoning.
-    m.set(
+    let set_auction_item = vm.create_function(
         "SetAuctionItem",
-        lua.create_function(|lua, (this, kind, index): (Table, String, usize)| {
-            let h = frame_handle_of(lua, &this)?;
+        |lua, (this, kind, index): (LuaTable, String, usize)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let (item_id, roll, name) = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 let Some(auction) = &model.auction else {
@@ -1162,8 +1188,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             }
             show_or_hide_empty(lua, h);
             Ok(())
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetAuctionItem", &set_auction_item)?;
 
     // GameTooltip:SetAuctionSellItem() — the create-auction slot's hover (decision 1511). The item
     // staged in the sell slot, through the same id-keyed store. A no-op when the slot is empty
@@ -1173,10 +1200,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // live sell-slot GUID here and resolves an actual object, so its creator line is structurally
     // reachable (wow-re §5, claim 6, REFINED). Ours is still the id-keyed template view, so we do
     // not print one; that is a known narrowing, not a claim about the reference.
-    m.set(
-        "SetAuctionSellItem",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
+    let set_auction_sell_item =
+        vm.create_function("SetAuctionSellItem", |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
             let item_id = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 model
@@ -1198,39 +1224,37 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             }
             show_or_hide_empty(lua, h);
             Ok(())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetAuctionSellItem", &set_auction_sell_item)?;
 
     // GameTooltip:SetSendMailItem() — the mail Send tab's attached-item hover (decision 0544): the
     // cursor item attached to the send slot, through the same id-keyed store (MailFrame.lua l.952).
     // A no-op when nothing is attached (the reference gates the call on GetSendMailItem()).
-    m.set(
-        "SetSendMailItem",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let item_id = {
-                let model = lua.app_data_mut::<Model>().expect("model app_data");
-                model
-                    .mail_send_item
-                    .as_ref()
-                    .map(|it| it.item_id)
-                    .unwrap_or(0)
-            };
-            if item_id == 0 {
-                return Ok(());
-            }
-            {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                clear_content(&mut model, h);
-            }
-            fire_cleared(lua, h);
-            if let Some(v) = view_of(lua, item_id) {
-                render_view(lua, &this, &v, BuilderFlags::default(), None)?;
-            }
-            show_or_hide_empty(lua, h);
-            Ok(())
-        })?,
-    )?;
+    let set_send_mail_item = vm.create_function("SetSendMailItem", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let item_id = {
+            let model = lua.app_data_mut::<Model>().expect("model app_data");
+            model
+                .mail_send_item
+                .as_ref()
+                .map(|it| it.item_id)
+                .unwrap_or(0)
+        };
+        if item_id == 0 {
+            return Ok(());
+        }
+        {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            clear_content(&mut model, h);
+        }
+        fire_cleared(lua, h);
+        if let Some(v) = view_of(lua, item_id) {
+            render_view(lua, &this, &v, BuilderFlags::default(), None)?;
+        }
+        show_or_hide_empty(lua, h);
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "SetSendMailItem", &set_send_mail_item)?;
 
     // GameTooltip:SetTradeSkillItem(skillIndex [, reagentIndex]) — the tradeskill window's item
     // hover (decision 0437 phase 2): with reagentIndex, that recipe's reagent's item; without, the
@@ -1239,32 +1263,31 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // name-only fallback line (the recipe's name for the product channel, the reagent's own —
     // possibly still-nil — name for the reagent channel) rather than a no-op: that fallback already
     // exists and reads better than a blank hover. An out-of-range skill/reagent index is a no-op.
-    m.set(
+    let set_trade_skill_item = vm.create_function(
         "SetTradeSkillItem",
-        lua.create_function(
-            |lua, (this, skill_index, reagent_index): (Table, usize, Option<usize>)| {
-                let found = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    // The VISIBLE-row mapping (headers interleave since the TU-B grouping
-                    // landed) — never a raw recipes[] index; a header index resolves to None.
-                    let Some(recipe) = super::tradeskill::recipe_at(&model, skill_index) else {
-                        return Ok(());
-                    };
-                    match reagent_index {
-                        Some(ri) => ri
-                            .checked_sub(1)
-                            .and_then(|i| recipe.reagents.get(i))
-                            .map(|r| (r.item, r.name.clone())),
-                        None => Some((recipe.product_item, Some(recipe.name.clone()))),
-                    }
-                };
-                let Some((item_id, fb_name)) = found else {
+        |lua, (this, skill_index, reagent_index): (LuaTable, usize, Option<usize>)| {
+            let found = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                // The VISIBLE-row mapping (headers interleave since the TU-B grouping
+                // landed) — never a raw recipes[] index; a header index resolves to None.
+                let Some(recipe) = super::tradeskill::recipe_at(&model, skill_index) else {
                     return Ok(());
                 };
-                render_by_id(lua, &this, item_id, fb_name, None)
-            },
-        )?,
+                match reagent_index {
+                    Some(ri) => ri
+                        .checked_sub(1)
+                        .and_then(|i| recipe.reagents.get(i))
+                        .map(|r| (r.item, r.name.clone())),
+                    None => Some((recipe.product_item, Some(recipe.name.clone()))),
+                }
+            };
+            let Some((item_id, fb_name)) = found else {
+                return Ok(());
+            };
+            render_by_id(lua, &this, item_id, fb_name, None)
+        },
     )?;
+    vm.table_set_function(&m, "SetTradeSkillItem", &set_trade_skill_item)?;
 
     // GameTooltip:SetCraftItem(craftIndex, reagentIndex) — the craft window's reagent hover
     // (decision 0437 phase 3, ref `CraftItemTemplate`'s OnEnter, `Blizzard_CraftUI.xml:33`):
@@ -1273,31 +1296,29 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // concept"), so this signature has no optional arm; the ref itself never calls it with one
     // argument either. Routes through the same id-keyed renderer. An out-of-range craft/reagent
     // index is a no-op.
-    m.set(
+    let set_craft_item = vm.create_function(
         "SetCraftItem",
-        lua.create_function(
-            |lua, (this, craft_index, reagent_index): (Table, usize, usize)| {
-                let found = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    let Some(c) = &model.craft else {
-                        return Ok(());
-                    };
-                    let Some(recipe) = craft_index.checked_sub(1).and_then(|i| c.recipes.get(i))
-                    else {
-                        return Ok(());
-                    };
-                    reagent_index
-                        .checked_sub(1)
-                        .and_then(|i| recipe.reagents.get(i))
-                        .map(|r| (r.item, r.name.clone()))
-                };
-                let Some((item_id, fb_name)) = found else {
+        |lua, (this, craft_index, reagent_index): (LuaTable, usize, usize)| {
+            let found = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let Some(c) = &model.craft else {
                     return Ok(());
                 };
-                render_by_id(lua, &this, item_id, fb_name, None)
-            },
-        )?,
+                let Some(recipe) = craft_index.checked_sub(1).and_then(|i| c.recipes.get(i)) else {
+                    return Ok(());
+                };
+                reagent_index
+                    .checked_sub(1)
+                    .and_then(|i| recipe.reagents.get(i))
+                    .map(|r| (r.item, r.name.clone()))
+            };
+            let Some((item_id, fb_name)) = found else {
+                return Ok(());
+            };
+            render_by_id(lua, &this, item_id, fb_name, None)
+        },
     )?;
+    vm.table_set_function(&m, "SetCraftItem", &set_craft_item)?;
 
     Ok(())
 }

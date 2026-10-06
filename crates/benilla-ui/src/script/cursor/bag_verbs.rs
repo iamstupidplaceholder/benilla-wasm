@@ -25,7 +25,7 @@
 //! `PickupBagFromSlot` has its own, much shorter worker (`0x4c7b00`) and is a *destructive*
 //! pickup: it drops whatever the cursor already held before it looks at the slot.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use crate::script::container::ContainerMove;
 use crate::script::Model;
@@ -257,49 +257,34 @@ pub(super) fn pickup_bag_from_slot(model: &mut Model, live: u32) {
 }
 
 /// Register the three verbs — top-level globals, like every other cursor binding.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // The number `1` or nil — `0x6f3810` writes Lua tag 3 (number) with the IEEE-754 double
     // `0x3FF0000000000000`; tag 1 (boolean) appears in neither body. FrameXML only ever tests it
     // for truthiness, but an addon that compares against `true` must see what the reference gives
     // it.
-    fn consumed(yes: bool) -> mlua::Result<MultiValue> {
-        Ok(MultiValue::from_vec(vec![if yes {
-            Value::Number(1.0)
-        } else {
-            Value::Nil
-        }]))
+    fn consumed(yes: bool) -> MultiValue {
+        MultiValue::from(vec![if yes { Value::Number(1.0) } else { Value::Nil }])
     }
 
-    g.set(
-        "PutItemInBag",
-        lua.create_function(|lua, live: u32| {
-            let yes = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                put_item_in_bag(&mut model, live)
-            };
-            consumed(yes)
-        })?,
-    )?;
-    g.set(
-        "PutItemInBackpack",
-        lua.create_function(|lua, ()| {
-            let yes = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                put_item_in_backpack(&mut model)
-            };
-            consumed(yes)
-        })?,
-    )?;
-    g.set(
-        "PickupBagFromSlot",
-        lua.create_function(|lua, live: u32| {
+    lua.register_function("PutItemInBag", |lua, live: u32| {
+        let yes = {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            pickup_bag_from_slot(&mut model, live);
-            Ok(())
-        })?,
-    )?;
+            put_item_in_bag(&mut model, live)
+        };
+        Ok(consumed(yes))
+    })?;
+    lua.register_function("PutItemInBackpack", |lua, ()| {
+        let yes = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            put_item_in_backpack(&mut model)
+        };
+        Ok(consumed(yes))
+    })?;
+    lua.register_function("PickupBagFromSlot", |lua, live: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        pickup_bag_from_slot(&mut model, live);
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -529,7 +514,7 @@ mod tests {
             (held.bag, held.slot, held.item_id),
             (EQUIPMENT_BAG, 64, 4500)
         );
-        assert!(s.eval::<bool>("return IsInventoryItemLocked(64)").unwrap());
+        assert!(s.eval_truthy("return IsInventoryItemLocked(64)").unwrap());
     }
 
     /// **Destructive, and that is the finding**: `ClearCursor(1,1)` runs unconditionally before

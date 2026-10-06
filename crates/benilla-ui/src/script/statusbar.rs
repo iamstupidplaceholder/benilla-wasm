@@ -13,10 +13,10 @@
 //! for StatusBar frames — so duck-typing addons (`if frame.SetValue then …`) see `nil` on every
 //! other kind, exactly as against the client's per-class method sets.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::object::{draw_layer_from_str, frame_handle_of};
-use super::region::region_wrapper;
+use super::object::{draw_layer_from_str, frame_handle_of_context};
+use super::region::region_wrapper_context;
 use super::{event, Model, RegionData};
 use crate::order::DrawLayer;
 use crate::widget::{KindState, RegionKind, StatusBarState};
@@ -28,19 +28,19 @@ pub(super) const REG_STATUSBAR_METHODS: &str = "__benilla_statusbar_methods";
 /// live StatusBar (unreachable through the kind dispatcher, but the method table is a plain Lua
 /// value — a caller can fish it out and misapply it).
 fn with_bar<T>(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     f: impl FnOnce(&mut StatusBarState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::StatusBar(sb) => Ok(f(sb)),
-        _ => Err(mlua::Error::runtime("not a StatusBar")),
+        _ => Err(benilla_lua::Error::runtime("not a StatusBar")),
     }
 }
 
@@ -56,18 +56,22 @@ fn store_value(sb: &mut StatusBarState, v: f32) -> Option<f32> {
 
 /// Get-or-create the bar-fill texture region (`SetStatusBarTexture`/`<BarTexture>`); `layer`
 /// re-layers an existing bar. Returns the region's id (for wrapper lookup).
-fn ensure_bar(lua: &Lua, this: &Table, layer: Option<DrawLayer>) -> mlua::Result<u32> {
-    let h = frame_handle_of(lua, this)?;
+fn ensure_bar(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    layer: Option<DrawLayer>,
+) -> benilla_lua::Result<u32> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
 
     let existing = match &model
         .arena
         .frame(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?
         .kind_state
     {
         KindState::StatusBar(sb) => sb.bar,
-        _ => return Err(mlua::Error::runtime("not a StatusBar")),
+        _ => return Err(benilla_lua::Error::runtime("not a StatusBar")),
     };
 
     let rh = match existing {
@@ -86,7 +90,7 @@ fn ensure_bar(lua: &Lua, this: &Table, layer: Option<DrawLayer>) -> mlua::Result
                     layer.unwrap_or(DrawLayer::Artwork),
                     0,
                 )
-                .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+                .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
             model.region_data.insert(rh, RegionData::default());
             model.touch_layout(); // a region entered the layout gate's read set (decision 0740)
             if let Some(frame) = model.arena.frame_mut(h) {
@@ -100,12 +104,12 @@ fn ensure_bar(lua: &Lua, this: &Table, layer: Option<DrawLayer>) -> mlua::Result
     Ok(model.region_id(rh))
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     let m = lua.create_table()?;
 
-    m.set(
-        "SetMinMaxValues",
-        lua.create_function(|lua, (this, min, max): (Table, f32, f32)| {
+    let function = lua.create_function(
+        "StatusBar:SetMinMaxValues",
+        |lua, (this, min, max): (LuaTable, f32, f32)| {
             // A reversed pair is swapped (RF-28's LoadXML does exactly this) — one behavior for the
             // XML and API paths. The held value re-clamps into the new range; a move fires
             // OnValueChanged, as a value change the caller didn't make explicitly is still a change.
@@ -114,158 +118,160 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 store_value(sb, sb.value)
             })?;
             fire_value_changed(lua, &this, changed)
-        })?,
+        },
     )?;
-    m.set(
-        "GetMinMaxValues",
-        lua.create_function(|lua, this: Table| with_bar(lua, &this, |sb| (sb.min, sb.max)))?,
-    )?;
-    m.set(
-        "SetValue",
-        lua.create_function(|lua, (this, v): (Table, f32)| {
+    lua.table_set(&m, "SetMinMaxValues", function)?;
+    let function = lua.create_function("StatusBar:GetMinMaxValues", |lua, this: LuaTable| {
+        with_bar(lua, &this, |sb| (sb.min, sb.max))
+    })?;
+    lua.table_set(&m, "GetMinMaxValues", function)?;
+    let function =
+        lua.create_function("StatusBar:SetValue", |lua, (this, v): (LuaTable, f32)| {
             let changed = with_bar(lua, &this, |sb| store_value(sb, v))?;
             fire_value_changed(lua, &this, changed)
-        })?,
-    )?;
-    m.set(
-        "GetValue",
-        lua.create_function(|lua, this: Table| with_bar(lua, &this, |sb| sb.value))?,
-    )?;
-    m.set(
-        "SetOrientation",
-        lua.create_function(|lua, (this, o): (Table, String)| {
+        })?;
+    lua.table_set(&m, "SetValue", function)?;
+    let function = lua.create_function("StatusBar:GetValue", |lua, this: LuaTable| {
+        with_bar(lua, &this, |sb| sb.value)
+    })?;
+    lua.table_set(&m, "GetValue", function)?;
+    let function = lua.create_function(
+        "StatusBar:SetOrientation",
+        |lua, (this, o): (LuaTable, String)| {
             let vertical = match o.to_ascii_uppercase().as_str() {
                 "HORIZONTAL" => false,
                 "VERTICAL" => true,
                 _ => {
-                    return Err(mlua::Error::runtime(format!(
+                    return Err(benilla_lua::Error::runtime(format!(
                         "SetOrientation: unknown orientation '{o}'"
                     )))
                 }
             };
             with_bar(lua, &this, |sb| sb.vertical = vertical)
-        })?,
+        },
     )?;
-    m.set(
-        "GetOrientation",
-        lua.create_function(|lua, this: Table| {
-            let v = with_bar(lua, &this, |sb| sb.vertical)?;
-            Ok(if v { "VERTICAL" } else { "HORIZONTAL" }.to_string())
-        })?,
-    )?;
+    lua.table_set(&m, "SetOrientation", function)?;
+    let function = lua.create_function("StatusBar:GetOrientation", |lua, this: LuaTable| {
+        let v = with_bar(lua, &this, |sb| sb.vertical)?;
+        Ok(if v { "VERTICAL" } else { "HORIZONTAL" }.to_string())
+    })?;
+    lua.table_set(&m, "GetOrientation", function)?;
 
     // SetStatusBarTexture(path [, drawLayer]) | SetStatusBarTexture(r, g, b [, a]) — the same two
     // forms as a region's SetTexture, targeting the bar region (created on first use).
-    m.set(
-        "SetStatusBarTexture",
-        lua.create_function(
-            |lua, (this, a1, a2, a3, a4): (Table, Value, Value, Value, Value)| {
-                let layer = match &a2 {
-                    Value::String(s) => s.to_str().ok().and_then(|l| draw_layer_from_str(&l)),
-                    _ => None,
-                };
-                let id = ensure_bar(lua, &this, layer)?;
-                let rh = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    *model.id_to_region.get(&id).expect("bar region id")
-                };
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let data = model.region_data.entry(rh).or_default();
-                match &a1 {
-                    Value::String(s) => {
-                        data.texture = Some(s.to_str()?.to_string());
-                        data.fill = None;
-                    }
-                    // A solid bar writes the same slot the path form does — each clears the other.
-                    // `SetStatusBarColor` is the TINT (the fill region's vertex colour) and is a
-                    // separate slot entirely: a bar can carry art AND a colour, and they multiply.
-                    Value::Number(_) | Value::Integer(_) => {
-                        data.texture = None;
-                        data.fill = Some([
-                            num_f32(&a1),
-                            num_f32(&a2),
-                            num_f32(&a3),
-                            match &a4 {
-                                Value::Nil => 1.0,
-                                v => num_f32(v),
-                            },
-                        ]);
-                    }
-                    _ => {}
+    let function = lua.create_function(
+        "StatusBar:SetStatusBarTexture",
+        |lua, (this, a1, a2, a3, a4): (LuaTable, LuaValue, LuaValue, LuaValue, LuaValue)| {
+            let layer = match &a2 {
+                LuaValue::String(s) => s.as_str().ok().and_then(draw_layer_from_str),
+                _ => None,
+            };
+            let id = ensure_bar(lua, &this, layer)?;
+            let rh = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                *model.id_to_region.get(&id).expect("bar region id")
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let data = model.region_data.entry(rh).or_default();
+            match &a1 {
+                LuaValue::String(s) => {
+                    data.texture = Some(
+                        s.as_str()
+                            .map_err(|error| {
+                                benilla_lua::Error::runtime(format!(
+                                    "status bar texture is not valid UTF-8: {error}"
+                                ))
+                            })?
+                            .to_string(),
+                    );
+                    data.fill = None;
                 }
-                Ok(())
-            },
-        )?,
+                // A solid bar writes the same slot the path form does — each clears the other.
+                // `SetStatusBarColor` is the TINT (the fill region's vertex colour) and is a
+                // separate slot entirely: a bar can carry art AND a colour, and they multiply.
+                LuaValue::Number(_) | LuaValue::Integer(_) => {
+                    data.texture = None;
+                    data.fill = Some([
+                        num_f32(&a1),
+                        num_f32(&a2),
+                        num_f32(&a3),
+                        match &a4 {
+                            LuaValue::Nil => 1.0,
+                            v => num_f32(v),
+                        },
+                    ]);
+                }
+                _ => {}
+            }
+            Ok(())
+        },
     )?;
-    m.set(
-        "GetStatusBarTexture",
-        lua.create_function(|lua, this: Table| {
+    lua.table_set(&m, "SetStatusBarTexture", function)?;
+    let function =
+        lua.create_function("StatusBar:GetStatusBarTexture", |lua, this: LuaTable| {
             let bar = with_bar(lua, &this, |sb| sb.bar)?;
             let id = {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                 bar.map(|rh| model.region_id(rh))
             };
             match id {
-                Some(id) => Ok(Value::Table(region_wrapper(lua, id)?)),
-                None => Ok(Value::Nil),
+                Some(id) => Ok(LuaValue::Table(region_wrapper_context(lua, id)?)),
+                None => Ok(LuaValue::Nil),
             }
-        })?,
-    )?;
+        })?;
+    lua.table_set(&m, "GetStatusBarTexture", function)?;
     // **Shape C on r, g, b** (`StatusBar:SetStatusBarColor `0x78fc20``, `2=C 3=C 4=C 5=B`, wow-re
     // `numeric-arg-coercion-law.md`): a bare `lua_tonumber` with no `lua_isnumber` gate, so a nil,
     // a table or a string is **0.0** and the call never raises. Taking them as `f32` made mlua's
     // converter the gate instead — the 2176 class — and the stock
     // `QuestLogFrame.lua:337` idiom hands three nils (`titleButton.r/g/b` are only assigned in
     // `QuestLog_Update`) on any path that selects a quest-log entry before the window has painted.
-    m.set(
-        "SetStatusBarColor",
-        lua.create_function(
-            |lua, (this, r, g, b, a): (Table, Value, Value, Value, Option<f32>)| {
-                let (r, g, b) = (
-                    crate::script::object::as_f32(&r),
-                    crate::script::object::as_f32(&g),
-                    crate::script::object::as_f32(&b),
-                );
-                let id = ensure_bar(lua, &this, None)?;
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let rh = *model.id_to_region.get(&id).expect("bar region id");
-                model.region_data.entry(rh).or_default().vertex_color =
-                    Some([r, g, b, a.unwrap_or(1.0)]);
-                Ok(())
-            },
-        )?,
+    let function = lua.create_function(
+        "StatusBar:SetStatusBarColor",
+        |lua, (this, r, g, b, a): (LuaTable, LuaValue, LuaValue, LuaValue, Option<f32>)| {
+            let (r, g, b) = (num_f32(&r), num_f32(&g), num_f32(&b));
+            let id = ensure_bar(lua, &this, None)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let rh = *model.id_to_region.get(&id).expect("bar region id");
+            model.region_data.entry(rh).or_default().vertex_color =
+                Some([r, g, b, a.unwrap_or(1.0)]);
+            Ok(())
+        },
     )?;
-    m.set(
-        "GetStatusBarColor",
-        lua.create_function(|lua, this: Table| {
-            let bar = with_bar(lua, &this, |sb| sb.bar)?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let c = bar
-                .and_then(|rh| model.region_data.get(&rh))
-                .and_then(|d| d.vertex_color)
-                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
-            Ok((c[0], c[1], c[2], c[3]))
-        })?,
-    )?;
+    lua.table_set(&m, "SetStatusBarColor", function)?;
+    let function = lua.create_function("StatusBar:GetStatusBarColor", |lua, this: LuaTable| {
+        let bar = with_bar(lua, &this, |sb| sb.bar)?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let c = bar
+            .and_then(|rh| model.region_data.get(&rh))
+            .and_then(|d| d.vertex_color)
+            .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+        Ok((c[0], c[1], c[2], c[3]))
+    })?;
+    lua.table_set(&m, "GetStatusBarColor", function)?;
 
-    lua.set_named_registry_value(REG_STATUSBAR_METHODS, m)?;
+    lua.put_registry(REG_STATUSBAR_METHODS, m)?;
     Ok(())
 }
 
 /// Fire `OnValueChanged(self, value)` if `changed` carries the new value (RF-28: the StatusBar's own
 /// script slot `+0x32c`). Fired outside any model borrow; errors go to [`Model::errors`].
-fn fire_value_changed(lua: &Lua, this: &Table, changed: Option<f32>) -> mlua::Result<()> {
+fn fire_value_changed(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    changed: Option<f32>,
+) -> benilla_lua::Result<()> {
     let Some(value) = changed else { return Ok(()) };
     let id = {
-        let h = frame_handle_of(lua, this)?;
+        let h = frame_handle_of_context(lua, this)?;
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         model.frame_id(h)
     };
-    if let Err(e) = event::fire_widget_handler(
+    if let Err(e) = event::fire_widget_handler_context(
         lua,
         id,
         "OnValueChanged",
-        vec![Value::Number(f64::from(value))],
+        vec![LuaValue::Number(f64::from(value))],
     ) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
@@ -283,16 +289,20 @@ fn fire_value_changed(lua: &Lua, this: &Table, changed: Option<f32>) -> mlua::Re
 /// synchronously on every server update, and `SetValue` is `SetValue`. pfUI hooks this
 /// (`nameplates.lua:393` `HookScript(healthbar, "OnValueChanged", …)`) and reads `this:GetParent()`
 /// inside the handler, so a driver that moved the value silently would leave it blind.
-pub(super) fn fire_engine_value_changed(lua: &Lua, bar: crate::widget::FrameHandle, value: f32) {
+pub(super) fn fire_engine_value_changed(
+    lua: &mut impl LuaContext,
+    bar: crate::widget::FrameHandle,
+    value: f32,
+) {
     let id = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         model.frame_id(bar)
     };
-    if let Err(e) = event::fire_widget_handler(
+    if let Err(e) = event::fire_widget_handler_context(
         lua,
         id,
         "OnValueChanged",
-        vec![Value::Number(f64::from(value))],
+        vec![LuaValue::Number(f64::from(value))],
     ) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
@@ -302,10 +312,10 @@ pub(super) fn fire_engine_value_changed(lua: &Lua, bar: crate::widget::FrameHand
 }
 
 /// A Lua number-ish → f32 (nil/other → 0.0), for the color-form arguments.
-fn num_f32(v: &Value) -> f32 {
+fn num_f32(v: &LuaValue) -> f32 {
     match v {
-        Value::Number(n) => *n as f32,
-        Value::Integer(i) => *i as f32,
+        LuaValue::Number(n) => *n as f32,
+        LuaValue::Integer(i) => *i as f32,
         _ => 0.0,
     }
 }

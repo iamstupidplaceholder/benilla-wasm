@@ -199,6 +199,32 @@ pub struct ResolvedAnim {
 }
 
 impl ModelAnimations {
+    /// Resolve through the model's baked playable-animation table without a
+    /// runtime `AnimationData.dbc` catalog.
+    ///
+    /// This is sufficient for ids inside that table (notably Stand = 0): the
+    /// file already contains the fallback result for this exact model. A
+    /// request beyond the table cannot perform the DBC walk and therefore
+    /// falls back to Stand, matching [`Self::resolve`]'s exhausted path.
+    pub fn resolve_baked(&self, requested: u16) -> ResolvedAnim {
+        if let Some(row) = self.playable_animation_lookup.get(requested as usize) {
+            return ResolvedAnim {
+                id: row.resolved_id,
+                dir_flags: row.dir_flags,
+            };
+        }
+        if self.playable_animation_lookup.is_empty() {
+            return ResolvedAnim {
+                id: requested,
+                dir_flags: 0,
+            };
+        }
+        ResolvedAnim {
+            id: 0,
+            dir_flags: 0,
+        }
+    }
+
     /// The clip for an `AnimationData.dbc` id (0 Stand, 4 Walk, 5 Run, …), or `None` if this model has
     /// no sequence with that id (e.g. a static-Stand creature has no animated id-0 clip — the caller
     /// then falls back to Stand or to bind pose rather than to an arbitrary clip). Returns the id's

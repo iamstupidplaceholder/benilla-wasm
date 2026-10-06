@@ -32,6 +32,9 @@ use widgets::{ArtSwap, GlueBtn, GlueCaption, GlueDisabled, OutlineCopy};
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct GlueVisuals;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct GlueArtLoad;
+
 /// The shared glue infrastructure both screens stand on: the ADD-mode UI material pipeline, the
 /// [`GlueArt`] resource (loaded on first screen entry), the GlueStrings table, and the one
 /// [`dialog::GlueDialog`] every glue screen raises. Registered before either screen plugin
@@ -45,6 +48,8 @@ impl Plugin for GluePlugin {
             add_material::AddUiMaterial,
         >::default())
             .init_resource::<GlueArt>()
+            .add_systems(Update, art::load_glue_art.in_set(GlueArtLoad)
+                .run_if(crate::loading_screen::startup_presented))
             .add_systems(
                 Startup,
                 crate::glue_strings::load_glue_strings.after(benilla_assets::AssetSet::Open),
@@ -67,6 +72,8 @@ impl Plugin for GluePlugin {
                 Update,
                 (art_swaps, glue_button_visuals, glue_hilights, sync_outlines).in_set(GlueVisuals),
             );
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(Update, crate::glue_strings::finish_web_glue_strings);
     }
 }
 

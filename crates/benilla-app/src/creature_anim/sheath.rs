@@ -288,7 +288,7 @@ pub(super) fn load_anim_data(mut commands: Commands, assets: Option<Res<WorldAss
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_anim_data_catalog(&mut chain)
+        benilla_formats::load_anim_data_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {

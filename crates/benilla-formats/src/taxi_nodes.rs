@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const TAXI_NODES: &str = "DBFilesClient\\TaxiNodes.dbc";
 
@@ -94,7 +94,7 @@ fn schema() -> Schema {
 }
 
 /// Read `TaxiNodes.dbc` off the patch chain into a [`TaxiNodes`] catalog.
-pub fn load_taxi_nodes(chain: &mut Chain) -> Result<TaxiNodes> {
+pub fn load_taxi_nodes(chain: &mut impl FileSource) -> Result<TaxiNodes> {
     let bytes = chain
         .read_file(TAXI_NODES)
         .context("reading TaxiNodes.dbc")?;

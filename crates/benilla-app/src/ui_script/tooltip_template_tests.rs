@@ -48,7 +48,7 @@ fn harness() -> UiScript {
         r"Interface\FrameXML\MoneyFrame.xml",
         "Interface\\FrameXML\\GameTooltip.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s
@@ -99,7 +99,7 @@ fn drawn_textures(s: &mut UiScript) -> Vec<String> {
 /// itself never publishes a line region.
 #[test]
 fn an_addon_tooltip_from_the_template_names_its_lines_after_the_caller() {
-    let s = harness();
+    let mut s = harness();
     // AtlasLoot/Core/AtlasLoot.xml l.576's declaration, renamed.
     let report = load_addon_xml(
         &s,
@@ -214,7 +214,7 @@ fn an_addon_tooltip_from_the_template_gets_the_plate() {
 /// Asserted from both sides: no error, and the tint actually landed.
 #[test]
 fn an_addon_may_call_gametooltip_onload_the_reference_way_with_no_argument() {
-    let s = harness();
+    let mut s = harness();
     let report = load_addon_xml(
         &s,
         r#"<Ui>
@@ -266,7 +266,7 @@ fn an_addon_may_call_gametooltip_onload_the_reference_way_with_no_argument() {
 /// owns the children, and the plate came along.
 #[test]
 fn createframe_with_the_template_is_the_same_tooltip() {
-    let s = harness();
+    let mut s = harness();
     // BetterCharacterStats/helper.lua l.3, verbatim in shape (its `getglobal(...) or` guard and
     // the WorldFrame owner both collapse to this in a fresh VM).
     s.run(
@@ -305,7 +305,7 @@ fn createframe_with_the_template_is_the_same_tooltip() {
 /// an explicit `Hide()` between passes (l.1832). Both read `TextRight` as well as `TextLeft`.
 #[test]
 fn the_scanner_shape_reads_both_columns_and_hides_again() {
-    let s = harness();
+    let mut s = harness();
     load_addon_xml(
         &s,
         r#"<Ui><GameTooltip name="CTTooltip" inherits="GameTooltipTemplate"/></Ui>"#,
@@ -368,7 +368,7 @@ fn the_scanner_shape_reads_both_columns_and_hides_again() {
 /// instance, which is where it lived while it was inlined.
 #[test]
 fn the_status_bar_is_the_templates_because_tipbuddy_anchors_to_it() {
-    let s = harness();
+    let mut s = harness();
     let report = load_addon_xml(
         &s,
         r#"<Ui>
@@ -423,7 +423,7 @@ fn the_status_bar_is_the_templates_because_tipbuddy_anchors_to_it() {
 /// would notice.
 #[test]
 fn an_instance_attribute_beats_the_templates() {
-    let s = harness();
+    let mut s = harness();
     load_addon_xml(
         &s,
         r#"<Ui>

@@ -8,12 +8,15 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use benilla_assets::coords::wow_to_bevy;
-use benilla_assets::LockRecover;
-use benilla_assets::WorldAssets;
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::{LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_formats::load_m2_mesh;
 
 use super::materials::{CelestialExt, CelestialMaterial, StarExt, StarMaterial, DISC_HORIZON_FADE};
-use super::mesh::{quad_mesh, radial_sprite, star_field_mesh};
+use super::mesh::quad_mesh;
+#[cfg(not(target_arch = "wasm32"))]
+use super::mesh::{radial_sprite, star_field_mesh};
 use super::{MoonPart, MoonSprite, StarDome, SunPart, SunSprite};
 use crate::sky_order;
 
@@ -23,8 +26,62 @@ pub(super) fn setup_sun(
     mut images: ResMut<Assets<Image>>,
     mut disc_mats: ResMut<Assets<CelestialMaterial>>,
     mut star_mats: ResMut<Assets<StarMaterial>>,
-    mut world_assets: Option<ResMut<WorldAssets>>,
+    #[cfg(not(target_arch = "wasm32"))] mut world_assets: Option<ResMut<WorldAssets>>,
+    #[cfg(target_arch = "wasm32")] mut host: crate::sky_assets::Host,
+    #[cfg(target_arch = "wasm32")] mut done: Local<bool>,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    let (textures, star_model) = {
+        if *done {
+            return;
+        }
+        let paths = [
+            "Textures/sunCenter.blp",
+            "Textures/sunGlare.blp",
+            "Textures/moon.blp",
+            "Textures/moon02.blp",
+            "Textures/moonglare.blp",
+            "Environments/Stars/Stars.blp",
+            "Environments/Stars/Stars2.blp",
+        ];
+        let mut textures = Vec::new();
+        let mut pending = false;
+        for (i, path) in paths.iter().enumerate() {
+            let delivered = if i < 5 {
+                host.sprite(path, &mut images)
+            } else {
+                host.texture(path, (true, true), &images)
+            };
+            match delivered {
+                Ok(Some(texture)) => textures.push(texture),
+                Ok(None) => pending = true,
+                Err(error) => {
+                    error!("celestial art unavailable: {error}");
+                    *done = true;
+                    return;
+                }
+            }
+        }
+        let model = match host.model("Environments/Stars/Stars.m2", &images) {
+            Ok(model) => model,
+            Err(error) => {
+                error!("celestial art unavailable: {error}");
+                *done = true;
+                return;
+            }
+        };
+        if pending {
+            return;
+        }
+        let Some(model) = model else { return };
+        if model.subs.is_empty() {
+            error!("celestial Stars.m2 has no render batches");
+            *done = true;
+            return;
+        }
+        *done = true;
+        (textures, model)
+    };
     let mesh = meshes.add(quad_mesh());
     // Every body sprite uses `CelestialMaterial` (celestial.wgsl — the gamma lane, 0161). The DISCS
     // (sun, white moon, moon02): unlit gamma-correct alpha-blend + the SHARED horizon clip+fade — the
@@ -51,10 +108,13 @@ pub(super) fn setup_sun(
     };
     // Sun disc: the real `sunCenter.blp` (white core → soft yellow edge, feathered alpha), tinted by the
     // celestial band. Assetless dev falls back to a generated soft disc.
+    #[cfg(not(target_arch = "wasm32"))]
     let sun_tex = world_assets
         .as_mut()
         .and_then(|a| a.sprite_texture("Textures\\sunCenter.blp", &mut images))
         .unwrap_or_else(|| images.add(radial_sprite(128, 0.55, 0.95)));
+    #[cfg(target_arch = "wasm32")]
+    let sun_tex = textures[0].clone();
     let disc = disc_mats.add(clip(
         StandardMaterial {
             base_color: Color::WHITE, // per-frame: the celestial diffuse band (follow_sun)
@@ -71,10 +131,13 @@ pub(super) fn setup_sun(
     // a huge view-lerped quad = the lens flare; the added light stays gentle per pixel). Gamma-additive
     // (glare mode); the tint (celestial band) and the intensity envelope ride base_color, rewritten per
     // frame by `follow_sun`. Assetless dev falls back to a generated glow.
+    #[cfg(not(target_arch = "wasm32"))]
     let glare_tex = world_assets
         .as_mut()
         .and_then(|a| a.sprite_texture("Textures\\sunGlare.blp", &mut images))
         .unwrap_or_else(|| images.add(radial_sprite(128, 0.0, 1.0)));
+    #[cfg(target_arch = "wasm32")]
+    let glare_tex = textures[1].clone();
     let glow = disc_mats.add(glare(StandardMaterial {
         base_color: Color::WHITE, // per-frame: band tint × the lens-flare envelope (follow_sun)
         base_color_texture: Some(glare_tex),
@@ -106,10 +169,13 @@ pub(super) fn setup_sun(
     // is dead: it faked the reference's teal rim while the real mechanism is the band tint + the additive
     // glare ring + the feathered edge over the night sky (decision 0485). Assetless dev falls back to a
     // generated disc.
+    #[cfg(not(target_arch = "wasm32"))]
     let moon_tex = world_assets
         .as_mut()
         .and_then(|a| a.sprite_texture("textures\\moon.blp", &mut images))
         .unwrap_or_else(|| images.add(radial_sprite(128, 0.7, 0.97)));
+    #[cfg(target_arch = "wasm32")]
+    let moon_tex = textures[2].clone();
     let white_moon = disc_mats.add(clip(
         StandardMaterial {
             base_color: Color::WHITE, // per-frame: the celestial diffuse band (follow_moons)
@@ -139,10 +205,13 @@ pub(super) fn setup_sun(
     // where our per-fragment lane would otherwise render the reference's soft per-vertex crossing
     // wedge as a hard black bar (decision 0524). Kept spawned for the future weather seed
     // (`255·(1−bcc)` dims all three discs under cloud).
+    #[cfg(not(target_arch = "wasm32"))]
     let moon02_tex = world_assets
         .as_mut()
         .and_then(|a| a.sprite_texture("textures\\moon02.blp", &mut images))
         .unwrap_or_else(|| images.add(radial_sprite(128, 0.7, 0.97)));
+    #[cfg(target_arch = "wasm32")]
+    let moon02_tex = textures[3].clone();
     let moon02 = disc_mats.add(clip(
         StandardMaterial {
             base_color: Color::BLACK, // the unwritten [0xce98a4] — BSS zero, forever
@@ -168,10 +237,13 @@ pub(super) fn setup_sun(
     // rim is the dome's teal night bands through the disc's feathered edge). Gamma-additive (glare
     // mode); tint × the lens-flare intensity envelope ride base_color, rewritten per frame by
     // `follow_moons`.
+    #[cfg(not(target_arch = "wasm32"))]
     let white_glare_tex = world_assets
         .as_mut()
         .and_then(|a| a.sprite_texture("textures\\moonglare.blp", &mut images))
         .unwrap_or_else(|| images.add(radial_sprite(64, 0.0, 1.0)));
+    #[cfg(target_arch = "wasm32")]
+    let white_glare_tex = textures[4].clone();
     let white_glare = disc_mats.add(glare(StandardMaterial {
         base_color: Color::WHITE, // per-frame: band tint × the envelope (follow_moons)
         base_color_texture: Some(white_glare_tex),
@@ -195,12 +267,15 @@ pub(super) fn setup_sun(
     // at their authored scale, unlike a hand-tiled dome). Built as unlit + alpha-blended meshes, normalised
     // to a unit dome (`follow_stars` scales to the star distance + drives the global alpha). Without `./WoW`
     // (assetless dev) fall back to the procedural dot field.
+    #[cfg(not(target_arch = "wasm32"))]
     let star_subs = world_assets
         .as_mut()
         .and_then(|a| {
             load_m2_mesh(&mut a.chain.lock_recover(), "Environments\\Stars\\Stars.m2").ok()
         })
         .filter(|s| !s.is_empty());
+    #[cfg(target_arch = "wasm32")]
+    let star_subs = Some(star_model.subs);
     if let Some(subs) = star_subs {
         // Normalise by the global max radius → a unit dome (so `follow_stars` can scale it like the others).
         let radius = subs
@@ -213,12 +288,18 @@ pub(super) fn setup_sun(
         // transparency weight (`Stars.m2` weights 1.0 … 0.25 — dimmer and brighter star groups), which
         // `follow_stars` multiplies under the star-curve global alpha, so materials can't be shared
         // across patches with different weights. Base-colour alpha is driven per-frame.
+        #[cfg(not(target_arch = "wasm32"))]
         let tex_white = world_assets
             .as_mut()
             .and_then(|a| a.texture("Environments\\Stars\\Stars.blp", (true, true), &mut images));
+        #[cfg(target_arch = "wasm32")]
+        let tex_white = Some(textures[5].clone());
+        #[cfg(not(target_arch = "wasm32"))]
         let tex_blue = world_assets
             .as_mut()
             .and_then(|a| a.texture("Environments\\Stars\\Stars2.blp", (true, true), &mut images));
+        #[cfg(target_arch = "wasm32")]
+        let tex_blue = Some(textures[6].clone());
         for sub in &subs {
             let positions: Vec<[f32; 3]> = sub
                 .positions
@@ -269,25 +350,28 @@ pub(super) fn setup_sun(
             ));
         }
     } else {
-        // Assetless fallback: a procedural scattered dot field (same gamma-correct StarMaterial).
-        let star_dot = images.add(radial_sprite(32, 0.2, 1.0));
-        let star_mat = star_mats.add(StarMaterial {
-            base: StandardMaterial {
-                base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
-                base_color_texture: Some(star_dot),
-                unlit: true,
-                cull_mode: None,
-                alpha_mode: AlphaMode::Premultiplied,
-                depth_bias: sky_order::STARS_BIAS, // first sky draw — see the asset lane above
-                ..default()
-            },
-            extension: StarExt {},
-        });
-        commands.spawn((
-            Mesh3d(meshes.add(star_field_mesh(350))),
-            MeshMaterial3d(star_mat),
-            Transform::default(),
-            StarDome { weight: 1.0 },
-        ));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Assetless fallback: a procedural scattered dot field (same gamma-correct StarMaterial).
+            let star_dot = images.add(radial_sprite(32, 0.2, 1.0));
+            let star_mat = star_mats.add(StarMaterial {
+                base: StandardMaterial {
+                    base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
+                    base_color_texture: Some(star_dot),
+                    unlit: true,
+                    cull_mode: None,
+                    alpha_mode: AlphaMode::Premultiplied,
+                    depth_bias: sky_order::STARS_BIAS, // first sky draw — see the asset lane above
+                    ..default()
+                },
+                extension: StarExt {},
+            });
+            commands.spawn((
+                Mesh3d(meshes.add(star_field_mesh(350))),
+                MeshMaterial3d(star_mat),
+                Transform::default(),
+                StarDome { weight: 1.0 },
+            ));
+        }
     }
 }

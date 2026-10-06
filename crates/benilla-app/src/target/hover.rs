@@ -48,7 +48,7 @@ pub(super) fn update_pick_occlusion(
     let (Ok((camera, cam_tf)), Ok(window)) = (camera.single(), window.single()) else {
         return;
     };
-    let Some(cursor) = window.cursor_position() else {
+    let Some(cursor) = crate::cursor::position(window) else {
         return;
     };
     let Ok(ray) = camera.viewport_to_world(cam_tf, cursor) else {
@@ -136,7 +136,7 @@ pub(super) fn update_hover(
     occlusion: Res<PickOcclusion>,
     // The unit whose plate the pointer is inside (last frame's layout — the plate drive runs
     // after this chain), published by the plate widgets themselves.
-    plate_hover: Res<crate::vplates::PlateHover>,
+    plate_hover: Option<Res<crate::vplates::PlateHover>>,
     mut hovered: ResMut<Hovered>,
     mesh_assets: Res<Assets<Mesh>>,
     pose: PickPose,
@@ -209,7 +209,7 @@ pub(super) fn update_hover(
     // stops there — no world pick behind it. Freelook still wins, because there the plates have
     // handed the mouse back (`0x60f830`).
     if !rig.is_looking() {
-        if let Some(entity) = plate_hover.0 {
+        if let Some(entity) = plate_hover.as_deref().and_then(|hover| hover.0) {
             hovered.target = Some(entity);
             hovered.guid = units.get(entity).ok().map(|(g, _)| g.0);
             hovered.distance = 0.0; // topmost UI — it beats any world GameObject at a tie
@@ -224,7 +224,7 @@ pub(super) fn update_hover(
     let (Ok((camera, cam_tf)), Ok(window)) = (camera.single(), window.single()) else {
         return;
     };
-    let Some(cursor) = window.cursor_position() else {
+    let Some(cursor) = crate::cursor::position(window) else {
         return;
     };
     let Ok(ray) = camera.viewport_to_world(cam_tf, cursor) else {
@@ -724,7 +724,7 @@ pub(super) fn update_hovered_object(
     if yielded {
         return;
     }
-    let Some(cursor) = window.cursor_position().or(probe_aim) else {
+    let Some(cursor) = crate::cursor::position(window).or(probe_aim) else {
         return;
     };
     if pickable.is_empty() {

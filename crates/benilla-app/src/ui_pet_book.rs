@@ -46,7 +46,7 @@
 //!   `& 0x3FFFFFFF`), and it fires `PET_BAR_UPDATE`. That mirror is why toggling autocast in the
 //!   book lights the sparkle on the bar button in the same frame.
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use bevy::prelude::*;
 

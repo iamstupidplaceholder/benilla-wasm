@@ -244,8 +244,8 @@ fn feed_quest_share(
         match names.resolve(v.member, &commands).map(str::to_string) {
             Some(name) => {
                 let err = UiError::s(key, name);
-                let get = |k: &str| script.lua().globals().get::<String>(k).ok();
-                if let Some(text) = ui_error_text(&err, &get) {
+                let mut get = |k: &str| script.global_string(k);
+                if let Some(text) = ui_error_text(&err, &mut get) {
                     lines.push(Shown::keyed(err.key, text));
                 }
             }
@@ -339,9 +339,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| s.global_string(key);
 
         for raw in 0u8..=8 {
             let key = verdict_message(QuestShareMsg(raw)).expect("mapped");
@@ -352,9 +352,9 @@ mod tests {
 
         // The two ends of the flow, filled: the opener the sharer sees the instant they click, and
         // the answer a decline produces.
-        let line = |raw: u8| {
+        let mut line = |raw: u8| {
             let key = verdict_message(QuestShareMsg(raw)).unwrap();
-            ui_error_text(&UiError::s(key, "Mate"), &g)
+            ui_error_text(&UiError::s(key, "Mate"), &mut g)
         };
         assert_eq!(
             line(QuestShareMsg::SHARING_QUEST.0).as_deref(),

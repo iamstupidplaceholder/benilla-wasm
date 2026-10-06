@@ -787,6 +787,14 @@ fn parse_server_body(
             let (caster, spell_id) = spells::read_spell_failed_other(&mut r)?;
             ServerPacket::SpellFailedOther { caster, spell_id }
         }
+        opcode::SMSG_SPELL_FAILURE => {
+            let (caster, spell_id, reason) = spells::read_spell_failure(&mut r)?;
+            ServerPacket::SpellFailure {
+                caster,
+                spell_id,
+                reason,
+            }
+        }
         opcode::SMSG_SPELL_DELAYED => {
             let (caster, delay_ms) = spells::read_spell_delayed(&mut r)?;
             ServerPacket::SpellDelayed { caster, delay_ms }

@@ -8,7 +8,7 @@
 //! the app drains and sends. Registrar addresses from wow-re `ui/scratch/bindings.md`:
 //! `0x49fd30 DoEmote`, `0x48c7b0 RandomRoll`, `0x489c40 AssistByName`, `0x48a610 UninviteByName`.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -27,7 +27,7 @@ fn to_u32(v: &Value) -> u32 {
         Value::Integer(i) => u32::try_from(*i).unwrap_or(0),
         Value::Number(n) if n.is_finite() && *n >= 0.0 => *n as u32,
         Value::String(s) => s
-            .to_str()
+            .as_str()
             .ok()
             .and_then(|s| s.trim().parse::<f64>().ok())
             .filter(|n| n.is_finite() && *n >= 0.0)
@@ -42,7 +42,7 @@ fn flag_arg(v: Option<Value>) -> Option<bool> {
         Some(Value::Boolean(b)) => Some(b),
         Some(Value::Integer(n)) => Some(n != 0),
         Some(Value::Number(n)) => Some(n != 0.0),
-        Some(Value::String(s)) => Some(s.to_str().is_ok_and(|s| s != "0" && !s.is_empty())),
+        Some(Value::String(s)) => Some(s.as_str().is_ok_and(|s| s != "0" && !s.is_empty())),
         Some(_) => Some(true),
     }
 }
@@ -72,7 +72,7 @@ impl super::UiScript {
     }
 
     /// `(chat, combat)` — the two logging flags as `LoggingChat`/`LoggingCombat` last set them.
-    pub fn logging_flags(&self) -> (bool, bool) {
+    pub fn logging_flags(&mut self) -> (bool, bool) {
         let model = self.model_mut();
         (model.logging_chat, model.logging_combat)
     }
@@ -84,12 +84,10 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    g.set(
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function(
         "DoEmote",
-        lua.create_function(|lua, (token, target): (Option<String>, Option<String>)| {
+        |lua, (token, target): (Option<String>, Option<String>)| {
             let Some(token) = token.filter(|t| !t.is_empty()) else {
                 return Ok(());
             };
@@ -99,44 +97,35 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 target: target.filter(|t| !t.trim().is_empty()),
             });
             Ok(())
-        })?,
+        },
     )?;
 
-    g.set(
-        "RandomRoll",
-        lua.create_function(|lua, (min, max): (Value, Value)| {
-            let (min, max) = (to_u32(&min), to_u32(&max));
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.roll_requests.push((min, max));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RandomRoll", |lua, (min, max): (Value, Value)| {
+        let (min, max) = (to_u32(&min), to_u32(&max));
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.roll_requests.push((min, max));
+        Ok(())
+    })?;
 
-    g.set(
-        "AssistByName",
-        lua.create_function(|lua, name: Option<String>| {
-            let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
-                return Ok(());
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model
-                .selection_requests
-                .push(super::SelectionRequest::AssistByName(name));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("AssistByName", |lua, name: Option<String>| {
+        let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
+            return Ok(());
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model
+            .selection_requests
+            .push(super::SelectionRequest::AssistByName(name));
+        Ok(())
+    })?;
 
-    g.set(
-        "UninviteByName",
-        lua.create_function(|lua, name: Option<String>| {
-            let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
-                return Ok(());
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.uninvite_requests.push(name);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("UninviteByName", |lua, name: Option<String>| {
+        let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
+            return Ok(());
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.uninvite_requests.push(name);
+        Ok(())
+    })?;
 
     // ConsoleExec("name value") — the console line `/console` hands over. A registered CVar
     // WITH a value is written the way `SetCVar` writes it (same store, same change queue, no
@@ -144,52 +133,46 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // write. Everything else — a command name, or a bare CVar name, which the reference's
     // per-CVar console command answers with `CVar "%s" is "%s"` (`0x63dde0`) — is a line for
     // the host's command registry (decision 2303).
-    g.set(
-        "ConsoleExec",
-        lua.create_function(|lua, line: Option<String>| {
-            let Some(line) = line.map(|l| l.trim().to_string()).filter(|l| !l.is_empty()) else {
-                return Ok(());
-            };
-            let (name, value) = line
-                .split_once(char::is_whitespace)
-                .map_or((line.as_str(), ""), |(n, v)| (n, v.trim()));
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let is_cvar = model.cvars.contains_key(&name.to_ascii_lowercase());
-            if is_cvar && !value.is_empty() {
-                super::cvars::write_cvar(&mut model, name, value.to_string(), None);
-            } else {
-                model.console_lines.push(line.clone());
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConsoleExec", |lua, line: Option<String>| {
+        let Some(line) = line.map(|l| l.trim().to_string()).filter(|l| !l.is_empty()) else {
+            return Ok(());
+        };
+        let (name, value) = line
+            .split_once(char::is_whitespace)
+            .map_or((line.as_str(), ""), |(n, v)| (n, v.trim()));
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let is_cvar = model.cvars.contains_key(&name.to_ascii_lowercase());
+        if is_cvar && !value.is_empty() {
+            super::cvars::write_cvar(&mut model, name, value.to_string(), None);
+        } else {
+            model.console_lines.push(line.clone());
+        }
+        Ok(())
+    })?;
 
     for (name, chat) in [("LoggingChat", true), ("LoggingCombat", false)] {
-        g.set(
-            name,
-            lua.create_function(move |lua, flag: Option<Value>| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let slot = if chat {
-                    &mut model.logging_chat
+        lua.register_function(name, move |lua, flag: Option<Value>| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let slot = if chat {
+                &mut model.logging_chat
+            } else {
+                &mut model.logging_combat
+            };
+            match flag_arg(flag) {
+                None => Ok(MultiValue::from([if *slot {
+                    Value::Integer(1)
                 } else {
-                    &mut model.logging_combat
-                };
-                match flag_arg(flag) {
-                    None => Ok(MultiValue::from_vec(vec![if *slot {
-                        Value::Integer(1)
-                    } else {
-                        Value::Nil
-                    }])),
-                    Some(on) => {
-                        if *slot != on {
-                            *slot = on;
-                            model.logging_changed = true;
-                        }
-                        Ok(MultiValue::new())
+                    Value::Nil
+                }])),
+                Some(on) => {
+                    if *slot != on {
+                        *slot = on;
+                        model.logging_changed = true;
                     }
+                    Ok(MultiValue::new())
                 }
-            })?,
-        )?;
+            }
+        })?;
     }
 
     Ok(())

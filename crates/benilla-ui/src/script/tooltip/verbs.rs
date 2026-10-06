@@ -3,12 +3,12 @@
 //! IsOwned / NumLines / the anchor law) over the parent module's line-pool mechanics, then
 //! chains the item/unit content builders' method sets.
 
-use mlua::{Lua, Table, Value, Variadic};
+use benilla_lua::{Table as LuaTable, Value as LuaValue, Variadic, Vm};
 
 use crate::layout::{Anchor, Point};
-use crate::script::binding_abi::optional_string;
-use crate::script::object::{frame_handle_of, frame_wrapper};
-use crate::script::region::region_handle_of;
+use crate::script::binding_abi::neutral_optional_string;
+use crate::script::object::frame_handle_of_context;
+use crate::script::object::frame_wrapper_context;
 use crate::script::Model;
 use crate::widget::{KindState, TooltipAnchor, TOOLTIP_LINE_GAP, TOOLTIP_PAD};
 
@@ -18,8 +18,8 @@ use super::{
     REG_TOOLTIP_METHODS,
 };
 
-pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+pub(in crate::script) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let m = vm.create_table()?;
 
     // SetOwner(owner, anchorType [, x, y]) — the binding `0x5310d0` and the core it calls,
     // `0x52ffe0(owner_region, mode, dx, dy)`: SetAlpha(255) (`0x52fff4`), fade-disarm
@@ -50,12 +50,36 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // core's pre-store as the Lua default and read "no SetPoint" as "no clear", and a wow-re §5
     // dispatched for the CURSOR mechanism refuted both at the bytes (`system/ui/scratch/`
     // `tooltip-cursor-anchor-law.md` §0.2/§0.3/§2).
-    m.set(
-        "SetOwner",
-        lua.create_function(
-            |lua, (this, owner, anchor, x, y): (Table, Table, Value, Option<f32>, Option<f32>)| {
-                let h = frame_handle_of(lua, &this)?;
-                let owner_h = frame_handle_of(lua, &owner)?;
+    let set_owner =
+        vm.create_function(
+            "SetOwner",
+            |lua,
+             (this, owner, anchor, x, y): (
+                LuaTable,
+                LuaTable,
+                LuaValue,
+                Option<f32>,
+                Option<f32>,
+            )| {
+                let h = frame_handle_of_context(lua, &this)?;
+                let owner_h = frame_handle_of_context(lua, &owner)?;
+                // A new hover must not inherit the previous plate's visibility. In
+                // particular, cancelling a world tooltip's fade below restores its
+                // alpha before the new caller has supplied any lines. Hide the old
+                // plate first; the content builder / explicit Show publishes the new
+                // one. Keep same-owner repaint loops free of visibility callbacks.
+                // This intentionally tightens the reference SetOwner behavior at
+                // hover handoff; do not call Hide here, which would also clear the
+                // content/owner and duplicate OnTooltipCleared below.
+                let handoff = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    matches!(model.arena.frame(h).map(|f| &f.kind_state),
+                        Some(KindState::Tooltip(t))
+                            if t.owner != Some(owner_h) || t.fade_start.is_some())
+                };
+                if handoff {
+                    set_shown(lua, h, false);
+                }
                 // The gate is `lua_isstring 0x6f3510`, whose whole body is `lua_type` then
                 // `cmp eax,4 / cmp eax,3` — LUA_TSTRING or LUA_TNUMBER and nothing else — so the
                 // anchor argument is read the reference's way, by COERCION, and a boolean, table,
@@ -65,7 +89,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 // hover) died with "bad argument #3: error converting Lua table to String" on a
                 // call the reference completes silently at mode 0. This function's doc comment has
                 // stated the law since 2176 — only the signature disagreed.
-                let anchor = optional_string(lua, &anchor);
+                let anchor = neutral_optional_string(&anchor);
                 {
                     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                     clear_content(&mut model, h);
@@ -173,8 +197,8 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 fire_cleared(lua, h);
                 Ok(())
             },
-        )?,
-    )?;
+        )?;
+    vm.table_set_function(&m, "SetOwner", &set_owner)?;
     // GameTooltip:BenillaGetTooltipOwner() — **ours, and the prefix is what makes it honest.**
     // 1.12 registers `IsOwned` (ask about ONE frame) and no getter at all, so there is no
     // reference spelling for "which frame owns this plate" to be faithful to; a `GetOwner` here
@@ -183,9 +207,8 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // that means to call a WoW function. Its one caller is the dev-only hover recorder
     // (`benilla-app/src/hover_log.rs`), which needs the owner's NAME per frame so a trace reads
     // the same names the director sees.
-    m.set(
-        "BenillaGetTooltipOwner",
-        lua.create_function(|lua, this: Table| {
+    let benilla_get_tooltip_owner =
+        vm.create_function("BenillaGetTooltipOwner", |lua, this: LuaTable| {
             let owner = with_tip(lua, &this, |t| t.owner)?;
             let id = {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
@@ -194,11 +217,11 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                     .map(|h| model.frame_id(h))
             };
             match id {
-                Some(id) => Ok(Value::Table(frame_wrapper(lua, id)?)),
-                None => Ok(Value::Nil),
+                Some(id) => Ok(LuaValue::Table(frame_wrapper_context(lua, id)?)),
+                None => Ok(LuaValue::Nil),
             }
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "BenillaGetTooltipOwner", &benilla_get_tooltip_owner)?;
     // GetAnchorType() — ONE string, the mode the last SetOwner placed this plate by
     // (`0x5313e0`, table `0x854198`, argc 1, arity 1, kinds `(string)`; it reads `[+0x318]` back
     // through the 9-entry name table `0x531530`). The kinds column has no nil alternative and this
@@ -214,24 +237,20 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // given would re-own the plate on every OnUpdate). Both need the string to round-trip through
     // the setter verbatim, which is why the mode is resolved once up there and read straight back
     // here rather than re-derived from the plate's anchors.
-    m.set(
-        "GetAnchorType",
-        lua.create_function(|lua, this: Table| {
-            let anchor = with_tip(lua, &this, |t| t.anchor)?;
-            Ok(anchor.name())
-        })?,
-    )?;
+    let get_anchor_type = vm.create_function("GetAnchorType", |lua, this: LuaTable| {
+        let anchor = with_tip(lua, &this, |t| t.anchor)?;
+        Ok(anchor.name())
+    })?;
+    vm.table_set_function(&m, "GetAnchorType", &get_anchor_type)?;
     // IsOwned(frame) — the hover re-enter loop's gate (ref ContainerFrame.lua OnUpdate): true
     // only while `frame` is the live owner; the owner drops on hide, so a hidden tooltip never
     // resurrects from a stale OnUpdate.
-    m.set(
-        "IsOwned",
-        lua.create_function(|lua, (this, frame): (Table, Table)| {
-            let owner = with_tip(lua, &this, |t| t.owner)?;
-            let fh = frame_handle_of(lua, &frame)?;
-            Ok(owner == Some(fh))
-        })?,
-    )?;
+    let is_owned = vm.create_function("IsOwned", |lua, (this, frame): (LuaTable, LuaTable)| {
+        let owner = with_tip(lua, &this, |t| t.owner)?;
+        let fh = frame_handle_of_context(lua, &frame)?;
+        Ok(owner == Some(fh))
+    })?;
+    vm.table_set_function(&m, "IsOwned", &is_owned)?;
 
     // SetText(text, r, g, b, alpha, textWrap) — the byte-pinned `0x531b90` signature (alpha is
     // a REAL parsed argument here, its own isnumber gate, default 1.0 — unlike AddLine's forced
@@ -240,23 +259,23 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // and adds no line. No colour args → the engine default GOLD. Clears, writes line 1,
     // SHOWS — the corpus never calls Show after SetText (PaperDoll's empty-slot text relies
     // on it).
-    m.set(
+    let set_text = vm.create_function(
         "SetText",
-        lua.create_function(|lua, (this, args): (Table, Variadic<Value>)| {
-            let h = frame_handle_of(lua, &this)?;
+        |lua, (this, args): (LuaTable, Variadic<LuaValue>)| {
+            let h = frame_handle_of_context(lua, &this)?;
             if !matches!(
                 args.first(),
-                Some(Value::String(_)) | Some(Value::Number(_)) | Some(Value::Integer(_))
+                Some(LuaValue::String(_)) | Some(LuaValue::Number(_)) | Some(LuaValue::Integer(_))
             ) {
-                return Err(mlua::Error::RuntimeError(
-                    "Usage: SetText(\"text\" [, color])".into(),
+                return Err(benilla_lua::Error::runtime(
+                    "Usage: SetText(\"text\" [, color])",
                 ));
             }
             let text = text_of(args.first());
             let [r, g, b, _] = parse_line_color(args.get(1), args.get(2), args.get(3));
             let a = match args.get(4) {
-                Some(Value::Number(n)) => *n as f32,
-                Some(Value::Integer(i)) => *i as f32,
+                Some(LuaValue::Number(n)) => *n as f32,
+                Some(LuaValue::Integer(i)) => *i as f32,
                 _ => 1.0,
             };
             let wrap = bool_arg(args.get(5));
@@ -268,8 +287,9 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             append_line(lua, &this, (text, [r, g, b, a]), None, wrap)?;
             set_shown(lua, h, true);
             Ok(())
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetText", &set_text)?;
     // AppendText(text) — `0x531e30`. The reference's bag/bar tooltips build a title with SetText
     // and then hang the keybinding on the end of that same line rather than adding a second one:
     //
@@ -291,16 +311,15 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // added. Every attested call site sets exactly one line before appending, so the two readings
     // are indistinguishable from the corpus alone; line 1 is chosen because the reference's own
     // name for the target is `GameTooltipTextLeft1`. Re-measure is unconditional either way.
-    m.set(
-        "AppendText",
-        lua.create_function(|lua, (this, text): (Table, Value)| {
-            let h = frame_handle_of(lua, &this)?;
+    let append_text =
+        vm.create_function("AppendText", |lua, (this, text): (LuaTable, LuaValue)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let extra = text_of(Some(&text));
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let lh = match model.arena.frame(h).map(|f| &f.kind_state) {
                 Some(KindState::Tooltip(t)) if t.num_lines > 0 => t.left_lines[0],
                 Some(KindState::Tooltip(_)) => return Ok(()),
-                _ => return Err(mlua::Error::runtime("not a GameTooltip")),
+                _ => return Err(benilla_lua::Error::runtime("not a GameTooltip")),
             };
             let (current, color) = match model.region_data.get(&lh) {
                 Some(d) => (
@@ -311,57 +330,55 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             write_cell(&mut model, lh, &(current + &extra), color);
             Ok(())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "AppendText", &append_text)?;
     // AddLine(text [, r, g, b [, wrap]]) — positional; the corpus' archaic `(text, "", r, g, b)`
     // shape has a non-number in the r-slot, so the real binding drops the colour tail and the
     // line renders the default GOLD (the ref's zone/taxi/repair tooltips — director-matched).
     // Appends without showing.
-    m.set(
+    let add_line = vm.create_function(
         "AddLine",
-        lua.create_function(|lua, (this, args): (Table, Variadic<Value>)| {
+        |lua, (this, args): (LuaTable, Variadic<LuaValue>)| {
             let text = text_of(args.first());
             let (color, wrap) = parse_line_tail(&args[1.min(args.len())..]);
             append_line(lua, &this, (text, color), None, wrap)
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "AddLine", &add_line)?;
     // AddDoubleLine(textL, textR, rL, gL, bL, rR, gR, bR [, wrap]) — the two-column line
     // (slot|type, damage|speed), byte-pinned `0x531840`: each side's colour gates on ITS OWN
     // r-slot isnumber (default gold, g/b ungated → 0.0, alpha forced opaque), and the wrap arg
     // is dead weight — the core forces wrap=0 whenever the right text is non-empty. The right
     // column right-flushes in the layout pass.
-    m.set(
+    let add_double_line = vm.create_function(
         "AddDoubleLine",
-        lua.create_function(
-            |lua, (this, tl, tr, cl): (Table, Value, Value, Variadic<Value>)| {
-                let left_color = parse_line_color(cl.first(), cl.get(1), cl.get(2));
-                let right_color = parse_line_color(cl.get(3), cl.get(4), cl.get(5));
-                append_line(
-                    lua,
-                    &this,
-                    (text_of(Some(&tl)), left_color),
-                    Some((text_of(Some(&tr)), right_color)),
-                    false,
-                )
-            },
-        )?,
+        |lua, (this, tl, tr, cl): (LuaTable, LuaValue, LuaValue, Variadic<LuaValue>)| {
+            let left_color = parse_line_color(cl.first(), cl.get(1), cl.get(2));
+            let right_color = parse_line_color(cl.get(3), cl.get(4), cl.get(5));
+            append_line(
+                lua,
+                &this,
+                (text_of(Some(&tl)), left_color),
+                Some((text_of(Some(&tr)), right_color)),
+                false,
+            )
+        },
     )?;
-    m.set(
-        "ClearLines",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                clear_content(&mut model, h);
-            }
-            fire_cleared(lua, h);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "NumLines",
-        lua.create_function(|lua, this: Table| with_tip(lua, &this, |t| t.num_lines as i64))?,
-    )?;
+    vm.table_set_function(&m, "AddDoubleLine", &add_double_line)?;
+    let clear_lines = vm.create_function("ClearLines", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            clear_content(&mut model, h);
+        }
+        fire_cleared(lua, h);
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "ClearLines", &clear_lines)?;
+    let num_lines = vm.create_function("NumLines", |lua, this: LuaTable| {
+        with_tip(lua, &this, |t| t.num_lines as i64)
+    })?;
+    vm.table_set_function(&m, "NumLines", &num_lines)?;
     // AddFontStrings(left, right) — adopt two caller-made FontStrings as the next line pair
     // (`0x530c40`, wow-re `system/ui/scratch/bindings.md`; the parent module's doc already names it
     // as how the real class grows past its template's 30 declared pairs).
@@ -375,17 +392,17 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // The pair is placed exactly as an engine-grown one (hidden, left/right justified, hung off the
     // previous line) — the layout pass owns line geometry either way — but the regions' FONTS are
     // left alone, since choosing them is the entire point of the caller doing this by hand.
-    m.set(
+    let add_font_strings = vm.create_function(
         "AddFontStrings",
-        lua.create_function(|lua, (this, left, right): (Table, Table, Table)| {
-            let h = frame_handle_of(lua, &this)?;
-            let lh = region_handle_of(lua, &left)?;
-            let rh = region_handle_of(lua, &right)?;
+        |lua, (this, left, right): (LuaTable, LuaTable, LuaTable)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let lh = crate::script::region::region_handle_of_context(lua, &left)?;
+            let rh = crate::script::region::region_handle_of_context(lua, &right)?;
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let frame_id = model.frame_id(h);
             let prev_left = match model.arena.frame(h).map(|f| &f.kind_state) {
                 Some(KindState::Tooltip(t)) => t.left_lines.last().copied(),
-                _ => return Err(mlua::Error::runtime("not a GameTooltip")),
+                _ => return Err(benilla_lua::Error::runtime("not a GameTooltip")),
             };
             let anchor = match prev_left {
                 None => Anchor::new(
@@ -424,37 +441,34 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             t.left_lines.push(lh);
             t.right_lines.push(rh);
             Ok(())
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "AddFontStrings", &add_font_strings)?;
+    vm.table_set_function(&m, "NumLines", &num_lines)?;
     // SetMinimumWidth(w) — a floor on the auto-sized width (the ref's SetTooltipMoney calls it
     // with the money row's width so coins never overhang the plate).
-    m.set(
-        "SetMinimumWidth",
-        lua.create_function(|lua, (this, w): (Table, f32)| {
+    let set_minimum_width = vm
+        .create_function("SetMinimumWidth", |lua, (this, w): (LuaTable, f32)| {
             with_tip(lua, &this, |t| t.min_width = w.max(0.0))
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetMinimumWidth", &set_minimum_width)?;
     // SetPadding(w) — extra auto-size width (ref ItemRefTooltip OnLoad: SetPadding(16) keeps the
     // corner close button off the text). A frame property — persists across content clears.
-    m.set(
-        "SetPadding",
-        lua.create_function(|lua, (this, w): (Table, f32)| {
-            with_tip(lua, &this, |t| t.padding = w.max(0.0))
-        })?,
-    )?;
+    let set_padding = vm.create_function("SetPadding", |lua, (this, w): (LuaTable, f32)| {
+        with_tip(lua, &this, |t| t.padding = w.max(0.0))
+    })?;
+    vm.table_set_function(&m, "SetPadding", &set_padding)?;
     // FadeOut() — the world-mouseover loss ramp (alpha 1→0 over TOOLTIP_FADE_SECS, INTERIM
     // constant, then a real hide). Fresh content or Show cancels it.
-    m.set(
-        "FadeOut",
-        lua.create_function(|lua, this: Table| {
-            let t = now(lua);
-            with_tip(lua, &this, |tip| {
-                if tip.fade_start.is_none() {
-                    tip.fade_start = Some(t);
-                }
-            })
-        })?,
-    )?;
+    let fade_out = vm.create_function("FadeOut", |lua, this: LuaTable| {
+        let t = now(lua);
+        with_tip(lua, &this, |tip| {
+            if tip.fade_start.is_none() {
+                tip.fade_start = Some(t);
+            }
+        })
+    })?;
+    vm.table_set_function(&m, "FadeOut", &fade_out)?;
     // Show/Hide — shadow the shared pair (kind tables resolve first) to keep the tooltip's
     // state honest: Show cancels a fade at full alpha; Hide drops the owner + content and fires
     // OnTooltipCleared (the ref clears its money row through exactly that script).
@@ -478,46 +492,42 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // `show_or_hide_empty` is the same law for the app-answered content asks, and deliberately
     // does NOT un-own (its re-enter repaint needs the owner). This path is the reference's own,
     // so it takes the reference's full effective-hide.
-    m.set(
-        "Show",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let live = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                full_alpha(&mut model, h);
-                tip_mut(&mut model, h)
-                    .map(|t| t.owner.is_some() && t.num_lines > 0)
-                    .unwrap_or(false)
-            };
-            match live {
-                true => set_shown(lua, h, true),
-                false => hide_tooltip(lua, h),
-            }
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "Hide",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            hide_tooltip(lua, h);
-            Ok(())
-        })?,
-    )?;
+    let show = vm.create_function("Show", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let live = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            full_alpha(&mut model, h);
+            tip_mut(&mut model, h)
+                .map(|t| t.owner.is_some() && t.num_lines > 0)
+                .unwrap_or(false)
+        };
+        match live {
+            true => set_shown(lua, h, true),
+            false => hide_tooltip(lua, h),
+        }
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "Show", &show)?;
+    let hide = vm.create_function("Hide", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        hide_tooltip(lua, h);
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "Hide", &hide)?;
 
     // The item content channels (BenillaSetItemById/SetBagItem/SetMerchantItem/SetBuybackItem) live in
     // their own module — the one shared renderer + the red usable law (decision 0274 P1).
-    crate::script::tooltip_item::install_methods(lua, &m)?;
+    crate::script::tooltip_item::install_methods(vm, &m)?;
     // The spell/aura/action content channels (SetSpell/SetShapeshift/SetPlayerBuff/SetAction) —
     // the verified spell-builder law (decision 0274 P2, grounded by 0276).
-    crate::script::tooltip_spell::install_methods(lua, &m)?;
+    crate::script::tooltip_spell::install_methods(vm, &m)?;
     // The talent channel (SetTalent) — the spell builder with the talent interleave
     // (decision 0304).
-    crate::script::talent::install_tooltip_method(lua, &m)?;
+    crate::script::talent::install_tooltip_method(vm, &m)?;
     // The unit content channel (SetUnit + the world-mouseover drivers) — the verified unit law
     // (decision 0274 P3, grounded by 0276).
-    crate::script::tooltip_unit::install_methods(lua, &m)?;
+    crate::script::tooltip_unit::install_methods(vm, &m)?;
 
-    lua.set_named_registry_value(REG_TOOLTIP_METHODS, m)?;
+    vm.set_named_registry_value(REG_TOOLTIP_METHODS, &m)?;
     Ok(())
 }

@@ -26,7 +26,11 @@ use bevy::prelude::*;
 
 use benilla_formats::SoundProviderCatalog;
 
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::zone::AreaSounds;
@@ -37,11 +41,12 @@ use super::{SoundConfig, SoundOutput};
 pub(crate) struct SoundProviders(pub(crate) SoundProviderCatalog);
 
 /// Startup: load the preset catalog.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_providers(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_sound_provider_catalog(&mut chain)
+        benilla_formats::load_sound_provider_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -125,8 +130,9 @@ fn leave_world(mut applied: ResMut<AppliedPreset>, mut out: NonSendMut<SoundOutp
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_providers.after(AssetSet::Open));
     app.init_resource::<AppliedPreset>()
-        .add_systems(Startup, load_providers.after(AssetSet::Open))
         .add_systems(
             Update,
             zone_reverb

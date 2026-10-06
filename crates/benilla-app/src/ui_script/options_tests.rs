@@ -40,7 +40,7 @@ fn harness_on(mut s: UiScript) -> UiScript {
     // of this list to capture file-scope values, and a second load of the stock money kit's
     // frames trips its own global-named update (`MoneyFrame_Update` writes the amount onto
     // `getglobal(name)` — the first instance — while the second instance reads its own).
-    let loaded = |s: &UiScript, file: &str| -> bool {
+    let loaded = |s: &mut UiScript, file: &str| -> bool {
         s.eval::<bool>(&format!(
             "return (BENILLA_TEST_LOADED or {{}})[{file:?}] == true"
         ))
@@ -81,20 +81,20 @@ fn harness_on(mut s: UiScript) -> UiScript {
         // here is what made this kit break the moment a file it loads migrated (1751).
         // The dialect announces DROPPED subtrees as warnings, not errors — for the new file,
         // a warning is a silently-missing piece of chrome, so it fails there.
-        if loaded(&s, file) {
+        if loaded(&mut s, file) {
             continue;
         }
         if file == "OptionsFrame.xml" {
             super::test_ui::load_ui_strict(&s, file);
         } else {
-            super::test_ui::load_ui(&s, file);
+            super::test_ui::load_ui(&mut s, file);
         }
     }
     // The app's own post-load pass, at the app's own moment: everything is loaded, so
     // `SHOW_BUFF_DURATIONS` (declared by OptionsFrame.xml, just above) is real by the time the
     // buff bar's row pitch is settled from it. `BuffFrame_OnLoad` does not do this and 1.12 leaves
     // it to UIOptionsFrame.lua, which we have no counterpart to (`manifest::apply_buff_durations`).
-    super::manifest::apply_buff_durations(&s).unwrap();
+    super::manifest::apply_buff_durations(&mut s).unwrap();
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s
 }
@@ -133,7 +133,7 @@ fn the_menu_options_button_swaps_the_menu_for_the_options_window() {
 /// label — including the one key whose label differs from it (ActionBars → "Action Bars").
 #[test]
 fn controls_is_the_default_category_and_the_title_reads_it() {
-    let s = harness();
+    let mut s = harness();
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
 
     assert_eq!(
@@ -159,7 +159,7 @@ fn controls_is_the_default_category_and_the_title_reads_it() {
 /// survives a close/reopen (the OnShow re-applies the last seat, not the default).
 #[test]
 fn clicking_a_row_moves_the_selection_and_the_page_title() {
-    let s = harness();
+    let mut s = harness();
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
 
     s.run("BenillaOptionsFrameCategoryListRowGraphics:Click()")
@@ -341,7 +341,7 @@ fn the_ground_dim_draws_over_the_tile_and_clear_of_the_rope() {
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     s.resolve();
 
-    let edge = |frame: &str, side: &str| -> f32 {
+    let mut edge = |frame: &str, side: &str| -> f32 {
         s.eval(&format!("return {frame}:Get{side}()")).unwrap()
     };
     let (fl, fr, ft, fb) = (
@@ -673,7 +673,7 @@ fn a_slider_rows_readout_sits_on_its_labels_line() {
         s.run(&format!("BenillaOptionsFrameCategoryListRow{page}:Click()"))
             .unwrap();
         s.resolve(); // seat the rects before reading them
-        let mid = |frame: &str| -> f32 {
+        let mut mid = |frame: &str| -> f32 {
             let top: f32 = s.eval(&format!("return {frame}:GetTop()")).unwrap();
             let bottom: f32 = s.eval(&format!("return {frame}:GetBottom()")).unwrap();
             (top + bottom) * 0.5
@@ -703,7 +703,7 @@ fn a_slider_rows_readout_sits_on_its_labels_line() {
 /// The Audio harness: the real registered CVar set on the table before the XML loads, exactly
 /// the app's boot order (register → seed → load → select).
 fn audio_harness() -> UiScript {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     s.register_cvars(crate::cvars::registered_pairs());
     s
 }
@@ -921,7 +921,7 @@ fn the_audio_page_reads_the_cvar_table_on_select() {
     let mut s = audio_harness();
     s.set_cvar_host("MusicVolume", "0.7");
     s.set_cvar_host("EnableMusic", "0");
-    let s = harness_on(s);
+    let mut s = harness_on(s);
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     s.run("BenillaOptionsFrameCategoryListRowAudio:Click()")
         .unwrap();
@@ -1144,7 +1144,7 @@ fn the_graphics_page_reads_the_cvar_table_on_select() {
     let mut s = audio_harness();
     s.set_cvar_host("uiScale", "0.8");
     s.set_cvar_host("farclip", "297");
-    let s = harness_on(s);
+    let mut s = harness_on(s);
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     s.run("BenillaOptionsFrameCategoryListRowGraphics:Click()")
         .unwrap();
@@ -1506,7 +1506,7 @@ fn a_world_entry_leaves_the_saved_nameplate_setting_alone() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "loader errors: {failures:?}");
     let _ = s.errors();
 
@@ -1538,7 +1538,7 @@ fn a_world_entry_leaves_the_saved_nameplate_setting_alone() {
 
     // ── The fix: the host seeds the globals, and the entry is a no-op end to end ───────────────
     saved(&mut s);
-    crate::vplates::push_plate_globals(&s, plates);
+    crate::vplates::push_plate_globals(&mut s, plates);
     assert_eq!(
         s.eval::<i64>("return NAMEPLATES_ON").unwrap(),
         1,
@@ -1908,7 +1908,7 @@ fn the_terrain_distance_slider_snaps_to_the_1_12_grid_and_writes_live() {
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
-/// Defaults on the Graphics page: uiScale back to its registered default (0.9) and farclip to
+/// Defaults on the Graphics page: uiScale back to its registered default (1.0) and farclip to
 /// its (350), the rows following, ONLY the moved values queuing — and a pending uiScale edit
 /// dies with it (the default write supersedes what Apply would have committed).
 #[test]
@@ -1929,7 +1929,7 @@ fn defaults_resets_the_graphics_page_to_registered_defaults() {
         .unwrap();
     let changes = s.take_cvar_changes();
     assert!(
-        changes.contains(&("uiScale".to_string(), "0.9".to_string())),
+        changes.contains(&("uiScale".to_string(), "1.0".to_string())),
         "{changes:?}"
     );
     assert!(
@@ -1976,7 +1976,7 @@ fn the_controls_page_reads_flags_with_the_sticky_inversion() {
     let mut s = audio_harness();
     s.set_cvar_host("deselectOnClick", "0");
     s.set_cvar_host("autoLootDefault", "1");
-    let s = harness_on(s);
+    let mut s = harness_on(s);
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
 
     assert!(s
@@ -2213,11 +2213,12 @@ fn a_broad_search_scrolls_the_page_instead_of_overflowing_it() {
     let sf_bottom: f32 = s
         .eval("return BenillaOptionsFrameContainerScroll:GetBottom()")
         .unwrap();
-    let tail = |s: &UiScript| -> f32 { s.eval("return OptionsScroll_ContentBottom()").unwrap() };
+    let tail =
+        |s: &mut UiScript| -> f32 { s.eval("return OptionsScroll_ContentBottom()").unwrap() };
     assert!(
-        tail(&s) < sf_bottom,
+        tail(&mut s) < sf_bottom,
         "the tail starts below the fold ({} vs {sf_bottom})",
-        tail(&s)
+        tail(&mut s)
     );
     s.run(&format!(
         "BenillaOptionsFrameContainerScrollBar:SetValue({range})"
@@ -2225,9 +2226,9 @@ fn a_broad_search_scrolls_the_page_instead_of_overflowing_it() {
     .unwrap();
     settle(&mut s);
     assert!(
-        tail(&s) >= sf_bottom - 0.5,
+        tail(&mut s) >= sf_bottom - 0.5,
         "scrolling to the end brings the tail into the page ({} vs {sf_bottom})",
-        tail(&s)
+        tail(&mut s)
     );
 
     // Clearing the search puts the page — and the bar with its trough — back.
@@ -2267,7 +2268,7 @@ fn the_page_scroll_bar_wears_the_trough_with_its_arrows_in_the_sockets() {
 
     let bar = "BenillaOptionsFrameContainerScrollBar";
     let trough = "BenillaOptionsFrameContainerScrollBarTrough";
-    let g = |f: &str, m: &str| s.eval::<f32>(&format!("return {f}:{m}()")).unwrap();
+    let mut g = |f: &str, m: &str| s.eval::<f32>(&format!("return {f}:{m}()")).unwrap();
     assert!(
         (g(trough, "GetWidth") - 31.0).abs() < 0.01,
         "the trough is the 31-wide channel"
@@ -2512,13 +2513,13 @@ fn every_row_tooltip_key_resolves_in_the_real_global_strings() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let strings = UiScript::new().expect("VM");
+    let mut strings = UiScript::new().expect("VM");
     strings
         .run(&String::from_utf8_lossy(&src))
         .expect("GlobalStrings runs clean");
 
     // The mapping, read off the LIVE rows so a page added later can't slip the check.
-    let s = harness();
+    let mut s = harness();
     let listing: String = s
         .eval(
             "local out = {} \
@@ -2572,11 +2573,7 @@ fn every_row_tooltip_key_resolves_in_the_real_global_strings() {
             key.starts_with("OPTION_TOOLTIP_"),
             "{row}: {key} is not a 1.12 option-tooltip key"
         );
-        let text: String = strings
-            .lua()
-            .globals()
-            .get::<String>(key)
-            .unwrap_or_default();
+        let text: String = strings.global_string(key).unwrap_or_default();
         assert!(
             !text.is_empty() && text != "PLACE_HOLDER",
             "{row}: {key} resolves to nothing in the real GlobalStrings"
@@ -2635,9 +2632,7 @@ fn every_row_tooltip_key_resolves_in_the_real_global_strings() {
     // The reporter's row, byte for byte off the MPQ chain.
     assert_eq!(
         strings
-            .lua()
-            .globals()
-            .get::<String>("OPTION_TOOLTIP_GAMEFIELD_DESELECT")
+            .global_string("OPTION_TOOLTIP_GAMEFIELD_DESELECT")
             .unwrap(),
         "Checking this will prevent the deselection of targets by clicking on the gamefield.  \
          Targets can only be cleared by pressing escape or clicking another target."
@@ -2903,7 +2898,7 @@ fn the_combat_master_greys_the_family_and_combo_points_is_class_gated() {
 /// Defaults lands a player back on a stock 1.12 combat-text family.
 #[test]
 fn defaults_resets_the_combat_page_to_the_shipped_assignments() {
-    let s = combat_harness();
+    let mut s = combat_harness();
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     s.run("BenillaOptionsFrameCategoryListRowCombat:Click()")
         .unwrap();
@@ -2969,7 +2964,7 @@ fn defaults_resets_the_combat_page_to_the_shipped_assignments() {
 /// text comes up with the player's choice rather than CombatText.xml's shipped default.
 #[test]
 fn what_the_combat_page_writes_survives_a_restart() {
-    let s = combat_harness();
+    let mut s = combat_harness();
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     s.run("BenillaOptionsFrameCategoryListRowCombat:Click()")
         .unwrap();
@@ -2992,7 +2987,7 @@ fn what_the_combat_page_writes_survives_a_restart() {
     );
 
     // The restart: a fresh tree at its shipped defaults, then the saved chunk over the top.
-    let fresh = combat_harness();
+    let mut fresh = combat_harness();
     assert_eq!(
         fresh
             .eval::<String>("return COMBAT_TEXT_SHOW_HONOR_GAINED")
@@ -3486,7 +3481,7 @@ fn defaults_sends_a_flip_only_for_the_row_that_moved() {
 /// property worth holding: the capture follows the definer wherever the definer stands.
 #[test]
 fn defaults_on_the_interface_page_restores_the_definers_own_assignment() {
-    let s = interface_harness();
+    let mut s = interface_harness();
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     s.run("BenillaOptionsFrameCategoryListRowInterface:Click()")
         .unwrap();
@@ -3524,7 +3519,7 @@ fn defaults_on_the_interface_page_restores_the_definers_own_assignment() {
 /// player's choice instead of QuestLogFrame.xml's shipped one.
 #[test]
 fn what_the_interface_page_writes_survives_a_restart() {
-    let s = interface_harness();
+    let mut s = interface_harness();
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     s.run("BenillaOptionsFrameCategoryListRowInterface:Click()")
         .unwrap();
@@ -3537,7 +3532,7 @@ fn what_the_interface_page_writes_survives_a_restart() {
         "the toggle is in the saved text under the reference's name:\n{saved}"
     );
 
-    let fresh = interface_harness();
+    let mut fresh = interface_harness();
     assert_eq!(
         fresh.eval::<String>("return AUTO_QUEST_WATCH").unwrap(),
         "1"
@@ -3689,7 +3684,7 @@ fn the_buff_durations_row_repitches_the_bar_and_the_pitch_survives_a_restart() {
 /// rather than through a stand-in page — there is no longer one to borrow.
 #[test]
 fn the_defaults_button_is_armed_by_rows_not_by_a_category() {
-    let s = harness();
+    let mut s = harness();
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
 
     let keys: Vec<String> = s
@@ -4331,7 +4326,7 @@ fn the_action_bars_page_toggles_the_real_bars() {
         .unwrap();
 
     let box_of = |row: &str| format!("BenillaOptionsFrameContainerBodyActionBars{row}Check");
-    let checked = |s: &UiScript, row: &str| {
+    let checked = |s: &mut UiScript, row: &str| {
         s.eval::<bool>(&format!(
             "return {}:GetChecked() and true or false",
             box_of(row)
@@ -4339,7 +4334,7 @@ fn the_action_bars_page_toggles_the_real_bars() {
         .unwrap()
     };
     let shown =
-        |s: &UiScript, bar: &str| s.eval::<bool>(&format!("return {bar}:IsShown()")).unwrap();
+        |s: &mut UiScript, bar: &str| s.eval::<bool>(&format!("return {bar}:IsShown()")).unwrap();
 
     // Read: every switch ships OFF, and so does every bar.
     for row in [
@@ -4349,7 +4344,7 @@ fn the_action_bars_page_toggles_the_real_bars() {
         "RowMultiBar4",
         "RowAlwaysShowMultibars",
     ] {
-        assert!(!checked(&s, row), "{row} ships unticked");
+        assert!(!checked(&mut s, row), "{row} ships unticked");
     }
     for bar in [
         "MultiBarBottomLeft",
@@ -4357,7 +4352,7 @@ fn the_action_bars_page_toggles_the_real_bars() {
         "MultiBarRight",
         "MultiBarLeft",
     ] {
-        assert!(!shown(&s, bar), "{bar} ships down");
+        assert!(!shown(&mut s, bar), "{bar} ships down");
     }
 
     // Bar 4's row is DEAD while bar 3's is unticked — MultiBarLeft cannot stand without
@@ -4375,7 +4370,10 @@ fn the_action_bars_page_toggles_the_real_bars() {
     let _ = s.take_cvar_changes();
     s.run(&format!("{}:Click()", box_of("RowMultiBar1")))
         .unwrap();
-    assert!(shown(&s, "MultiBarBottomLeft"), "the row reached the bar");
+    assert!(
+        shown(&mut s, "MultiBarBottomLeft"),
+        "the row reached the bar"
+    );
     assert_eq!(s.eval::<i64>("return SHOW_MULTI_ACTIONBAR_1").unwrap(), 1);
     assert_eq!(
         s.take_action_bar_toggle_sends(),
@@ -4401,11 +4399,11 @@ fn the_action_bars_page_toggles_the_real_bars() {
         .unwrap(),
         "bar 3 on wakes bar 4's row"
     );
-    assert!(shown(&s, "MultiBarRight"));
-    assert!(!shown(&s, "MultiBarLeft"), "bar 4 is still off");
+    assert!(shown(&mut s, "MultiBarRight"));
+    assert!(!shown(&mut s, "MultiBarLeft"), "bar 4 is still off");
     s.run(&format!("{}:Click()", box_of("RowMultiBar4")))
         .unwrap();
-    assert!(shown(&s, "MultiBarLeft"));
+    assert!(shown(&mut s, "MultiBarLeft"));
     assert_eq!(
         s.take_action_bar_toggle_sends(),
         vec![0x05, 0x0d],
@@ -4416,8 +4414,11 @@ fn the_action_bars_page_toggles_the_real_bars() {
     // conjunction is in MultiActionBar_Update, not in the row.
     s.run(&format!("{}:Click()", box_of("RowMultiBar3")))
         .unwrap();
-    assert!(!shown(&s, "MultiBarRight"));
-    assert!(!shown(&s, "MultiBarLeft"), "MultiBarLeft rides on bar 3");
+    assert!(!shown(&mut s, "MultiBarRight"));
+    assert!(
+        !shown(&mut s, "MultiBarLeft"),
+        "MultiBarLeft rides on bar 3"
+    );
     assert_eq!(s.eval::<i64>("return SHOW_MULTI_ACTIONBAR_4").unwrap(), 1);
     assert!(
         !s.eval::<bool>(&format!(
@@ -4457,7 +4458,7 @@ fn the_action_bars_page_toggles_the_real_bars() {
         "MultiBarRight",
         "MultiBarLeft",
     ] {
-        assert!(!shown(&s, bar), "{bar} back down");
+        assert!(!shown(&mut s, bar), "{bar} back down");
     }
     assert_eq!(
         *s.take_action_bar_toggle_sends()
@@ -4649,13 +4650,13 @@ const UNBACKED_REFERENCE_CVARS: &[(&str, &str)] = &[
 /// us and shipping one was somebody re-reading a decision record from months ago.
 #[test]
 fn every_cvar_the_reference_table_names_is_registered_or_listed_with_its_blocker() {
-    let s = harness();
+    let mut s = harness();
     // The table as the file declares it: `name` (the display key) -> its `cvar`, if it has one.
     // **BOTH of the reference's option tables** (2115). The checkbuttons were the whole census
     // until the stock window went on the manifest and `UIOptionsFrameSliders` turned out to name a
     // CVar nothing here registers — a row the check could not see because it only read one table.
     let named: Vec<String> = s
-        .eval::<Vec<String>>(
+        .eval_sequence::<String>(
             "local out = {} \
              for key, v in pairs(UIOptionsFrameCheckButtons) do \
                  if v.cvar then table.insert(out, v.cvar) end \
@@ -4733,11 +4734,11 @@ fn every_cvar_the_reference_table_names_is_registered_or_listed_with_its_blocker
 /// player change and benilla does not, and it costs a stated reason at the row.
 #[test]
 fn every_registered_reference_cvar_has_a_row_on_our_own_window() {
-    let s = harness();
+    let mut s = harness();
 
     // Both of the reference's own option tables, exactly as the registration census reads them.
     let named: Vec<String> = s
-        .eval::<Vec<String>>(
+        .eval_sequence::<String>(
             "local out = {} \
              for key, v in pairs(UIOptionsFrameCheckButtons) do \
                  if v.cvar then table.insert(out, v.cvar) end \
@@ -4754,7 +4755,7 @@ fn every_registered_reference_cvar_has_a_row_on_our_own_window() {
     // write beside it (`PetSpellDamage`, `cameraPitchMoveSpeed`) — those are moved by a control
     // the player uses, which is what "reachable" means here, even though neither is table-named.
     let ours: std::collections::HashSet<String> = s
-        .eval::<Vec<String>>(
+        .eval_sequence::<String>(
             "local out = {} \
              for page, rows in pairs(OPTIONS_PAGE_ROWS) do \
                  for _, rkey in ipairs(rows) do \

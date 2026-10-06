@@ -18,9 +18,9 @@
 //! `AddMessage`: merging the two would hand a chat frame a `SetInsertMode` it does not have, and a
 //! MessageFrame an id argument where its alpha belongs.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table, Value, Vm};
 
-use crate::script::object::frame_handle_of;
+use crate::script::object::frame_handle_of_context;
 use crate::script::{Model, UiScript};
 use crate::widget::{KindState, ScrollingMessageState};
 
@@ -33,19 +33,19 @@ pub(crate) const REG_SCROLLINGMESSAGEFRAME_METHODS: &str =
 /// live ScrollingMessageFrame (unreachable through the kind dispatcher, but the method table is a
 /// plain Lua value — a caller could fish it out and misapply it).
 fn with_smf<T>(
-    lua: &Lua,
+    lua: &mut impl LuaContext,
     this: &Table,
     f: impl FnOnce(&mut ScrollingMessageState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::ScrollingMessage(smf) => Ok(f(smf)),
-        _ => Err(mlua::Error::runtime("not a ScrollingMessageFrame")),
+        _ => Err(benilla_lua::Error::runtime("not a ScrollingMessageFrame")),
     }
 }
 
@@ -55,7 +55,7 @@ fn with_smf<T>(
 fn is_number(v: &Value) -> bool {
     match v {
         Value::Integer(_) | Value::Number(_) => true,
-        Value::String(s) => s.to_str().is_ok_and(|s| s.trim().parse::<f64>().is_ok()),
+        Value::String(s) => s.as_str().is_ok_and(|s| s.trim().parse::<f64>().is_ok()),
         _ => false,
     }
 }
@@ -76,32 +76,32 @@ fn num_f32(v: &Value) -> f32 {
 /// row budget. It comes from the frame's last resolved rect at the ring font's pitch (the
 /// font-height line-step law, the emit pass's basis); an unresolved frame reads as one row.
 fn scroll(
-    lua: &Lua,
+    lua: &mut impl LuaContext,
     this: &Table,
     op: impl FnOnce(&mut ScrollingMessageState, usize),
-) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let viewport_rows = UiScript::message_viewport_rows(&model, h);
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::ScrollingMessage(smf) => {
             op(smf, viewport_rows);
             Ok(())
         }
-        _ => Err(mlua::Error::runtime("not a ScrollingMessageFrame")),
+        _ => Err(benilla_lua::Error::runtime("not a ScrollingMessageFrame")),
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let m = vm.create_table()?;
 
     // The justify quartet, shared with the sibling class — see [`super::install_justify`] for the
     // method-table bytes that put all four on BOTH tables.
-    super::install_justify(lua, &m, "ScrollingMessageFrame")?;
+    super::install_justify_context(vm, &m, "ScrollingMessageFrame")?;
 
     // AddMessage(text [, r, g, b [, id]]) — binding 0x792900. rgb absent ⇒ white; the state
     // quantizes round-half-up and forces the line opaque, then the fade drives its alpha.
@@ -120,155 +120,136 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // The TEXT gate is the sibling class's, verbatim — gate `0x79299c`, `je 0x792b81` = this
     // function's own epilogue — so `DEFAULT_CHAT_FRAME:AddMessage(nil)` is silent too. See
     // `super::message_text`.
-    m.set(
-        "AddMessage",
-        lua.create_function(
-            |lua, (this, text, r, g, b, id): (Table, Value, Value, Value, Value, Value)| {
-                let Some(text) = super::message_text(lua, &text) else {
-                    return Ok(());
-                };
-                let has_rgb = is_number(&r) && is_number(&g) && is_number(&b);
-                // The id is the chat-type index (`GetChatTypeIndex`) the line is printed under —
-                // `ChatFrame.lua` passes `info.id` — read from the leg's OWN stack slot: the
-                // sixth argument when rgb are present, the third (i.e. where `r` would be) when
-                // they are not.
-                let id = match if has_rgb { &id } else { &r } {
-                    Value::Integer(i) => u32::try_from(*i).unwrap_or(0),
-                    Value::Number(n) if n.is_finite() && *n >= 0.0 => *n as u32,
-                    _ => 0,
-                };
-                let (r, g, b) = if has_rgb {
-                    (num_f32(&r), num_f32(&g), num_f32(&b))
-                } else {
-                    (1.0, 1.0, 1.0)
-                };
-                with_smf(lua, &this, |smf| smf.add_with_id(text, r, g, b, id))
-            },
-        )?,
+    let function = vm.create_function(
+        "ScrollingMessageFrame:AddMessage",
+        |lua, (this, text, r, g, b, id): (Table, Value, Value, Value, Value, Value)| {
+            let Some(text) = super::message_text_context(&text) else {
+                return Ok(());
+            };
+            let has_rgb = is_number(&r) && is_number(&g) && is_number(&b);
+            // The id is the chat-type index (`GetChatTypeIndex`) the line is printed under —
+            // `ChatFrame.lua` passes `info.id` — read from the leg's OWN stack slot: the
+            // sixth argument when rgb are present, the third (i.e. where `r` would be) when
+            // they are not.
+            let id = match if has_rgb { &id } else { &r } {
+                Value::Integer(i) => u32::try_from(*i).unwrap_or(0),
+                Value::Number(n) if n.is_finite() && *n >= 0.0 => *n as u32,
+                _ => 0,
+            };
+            let (r, g, b) = if has_rgb {
+                (num_f32(&r), num_f32(&g), num_f32(&b))
+            } else {
+                (1.0, 1.0, 1.0)
+            };
+            with_smf(lua, &this, |smf| smf.add_with_id(text, r, g, b, id))
+        },
     )?;
+    vm.table_set(&m, "AddMessage", function)?;
 
     // UpdateColorByID(id, r, g, b) — `0x7932b0`. `ChatFrame_OnEvent`'s UPDATE_CHAT_COLOR arm
     // calls it with the type's index and the event's floats so the lines already in the
     // window take the new colour; lines printed under another id are untouched.
-    m.set(
-        "UpdateColorByID",
-        lua.create_function(
-            |lua, (this, id, r, g, b): (Table, Value, Value, Value, Value)| {
-                let id = match &id {
-                    Value::Integer(i) => u32::try_from(*i).unwrap_or(0),
-                    Value::Number(n) if n.is_finite() && *n >= 0.0 => *n as u32,
-                    _ => return Ok(()),
-                };
-                let (r, g, b) = (num_f32(&r), num_f32(&g), num_f32(&b));
-                with_smf(lua, &this, |smf| {
-                    smf.update_color_by_id(id, r, g, b);
-                })
-            },
-        )?,
+    let function = vm.create_function(
+        "ScrollingMessageFrame:UpdateColorByID",
+        |lua, (this, id, r, g, b): (Table, Value, Value, Value, Value)| {
+            let id = match &id {
+                Value::Integer(i) => u32::try_from(*i).unwrap_or(0),
+                Value::Number(n) if n.is_finite() && *n >= 0.0 => *n as u32,
+                _ => return Ok(()),
+            };
+            let (r, g, b) = (num_f32(&r), num_f32(&g), num_f32(&b));
+            with_smf(lua, &this, |smf| {
+                smf.update_color_by_id(id, r, g, b);
+            })
+        },
     )?;
+    vm.table_set(&m, "UpdateColorByID", function)?;
 
-    m.set(
-        "Clear",
-        lua.create_function(|lua, this: Table| with_smf(lua, &this, ScrollingMessageState::clear))?,
-    )?;
-    m.set(
-        "ScrollUp",
-        lua.create_function(|lua, this: Table| {
-            scroll(lua, &this, ScrollingMessageState::scroll_up)
-        })?,
-    )?;
-    m.set(
-        "ScrollDown",
-        lua.create_function(|lua, this: Table| {
-            scroll(lua, &this, ScrollingMessageState::scroll_down)
-        })?,
-    )?;
-    m.set(
-        "ScrollToTop",
-        lua.create_function(|lua, this: Table| {
-            scroll(lua, &this, ScrollingMessageState::scroll_to_top)
-        })?,
-    )?;
-    m.set(
-        "ScrollToBottom",
-        lua.create_function(|lua, this: Table| {
-            scroll(lua, &this, ScrollingMessageState::scroll_to_bottom)
-        })?,
-    )?;
-    m.set(
-        "PageUp",
-        lua.create_function(|lua, this: Table| scroll(lua, &this, ScrollingMessageState::page_up))?,
-    )?;
-    m.set(
-        "PageDown",
-        lua.create_function(|lua, this: Table| {
-            scroll(lua, &this, ScrollingMessageState::page_down)
-        })?,
-    )?;
-    m.set(
-        "AtTop",
-        lua.create_function(|lua, this: Table| with_smf(lua, &this, |smf| smf.at_top()))?,
-    )?;
-    m.set(
-        "AtBottom",
-        lua.create_function(|lua, this: Table| with_smf(lua, &this, |smf| smf.at_bottom()))?,
-    )?;
+    let function = vm.create_function("ScrollingMessageFrame:Clear", |lua, this: Table| {
+        with_smf(lua, &this, ScrollingMessageState::clear)
+    })?;
+    vm.table_set(&m, "Clear", function)?;
+    for (name, operation) in [
+        (
+            "ScrollUp",
+            ScrollingMessageState::scroll_up as fn(&mut _, usize),
+        ),
+        ("ScrollDown", ScrollingMessageState::scroll_down),
+        ("ScrollToTop", ScrollingMessageState::scroll_to_top),
+        ("ScrollToBottom", ScrollingMessageState::scroll_to_bottom),
+        ("PageUp", ScrollingMessageState::page_up),
+        ("PageDown", ScrollingMessageState::page_down),
+    ] {
+        let function =
+            vm.create_function(name, move |lua, this: Table| scroll(lua, &this, operation))?;
+        vm.table_set(&m, name, function)?;
+    }
+    let function = vm.create_function("ScrollingMessageFrame:AtTop", |lua, this: Table| {
+        with_smf(lua, &this, |smf| smf.at_top())
+    })?;
+    vm.table_set(&m, "AtTop", function)?;
+    let function = vm.create_function("ScrollingMessageFrame:AtBottom", |lua, this: Table| {
+        with_smf(lua, &this, |smf| smf.at_bottom())
+    })?;
+    vm.table_set(&m, "AtBottom", function)?;
 
     // SetMaxLines is destructive (msgframe-runtime.md) — the state handles the wipe.
-    m.set(
-        "SetMaxLines",
-        lua.create_function(|lua, (this, n): (Table, i64)| {
+    let function = vm.create_function(
+        "ScrollingMessageFrame:SetMaxLines",
+        |lua, (this, n): (Table, i64)| {
             with_smf(lua, &this, |smf| smf.set_max_lines(n.max(1) as usize))
-        })?,
+        },
     )?;
-    m.set(
-        "GetMaxLines",
-        lua.create_function(|lua, this: Table| with_smf(lua, &this, |smf| smf.max_lines as i64))?,
+    vm.table_set(&m, "SetMaxLines", function)?;
+    let function = vm
+        .create_function("ScrollingMessageFrame:GetMaxLines", |lua, this: Table| {
+            with_smf(lua, &this, |smf| smf.max_lines as i64)
+        })?;
+    vm.table_set(&m, "GetMaxLines", function)?;
+    let function = vm.create_function(
+        "ScrollingMessageFrame:GetNumMessages",
+        |lua, this: Table| with_smf(lua, &this, |smf| smf.lines.len() as i64),
     )?;
-    m.set(
-        "GetNumMessages",
-        lua.create_function(|lua, this: Table| with_smf(lua, &this, |smf| smf.lines.len() as i64))?,
-    )?;
+    vm.table_set(&m, "GetNumMessages", function)?;
 
-    m.set(
-        "SetFading",
-        lua.create_function(|lua, (this, on): (Table, Value)| {
+    let function = vm.create_function(
+        "ScrollingMessageFrame:SetFading",
+        |lua, (this, on): (Table, Value)| {
             let on = !matches!(on, Value::Nil | Value::Boolean(false));
             with_smf(lua, &this, |smf| smf.fading_enabled = on)
-        })?,
+        },
     )?;
+    vm.table_set(&m, "SetFading", function)?;
     // 1/nil, the reference's predicate shape — `binding-shapes.tsv` has this row as
     // `(nil) | (number)`, like every other 1.12 predicate (decision 2118).
-    m.set(
-        "GetFading",
-        lua.create_function(|lua, this: Table| {
-            with_smf(lua, &this, |smf| {
-                crate::script::binding_abi::flag(smf.fading_enabled)
-            })
-        })?,
-    )?;
+    let function = vm.create_function("ScrollingMessageFrame:GetFading", |lua, this: Table| {
+        with_smf(lua, &this, |smf| {
+            crate::script::binding_abi::neutral_flag(smf.fading_enabled)
+        })
+    })?;
+    vm.table_set(&m, "GetFading", function)?;
     // The XML attr is `displayDuration`; the Lua accessors call the same field `TimeVisible`
     // (msgframe-runtime.md).
-    m.set(
-        "SetTimeVisible",
-        lua.create_function(|lua, (this, s): (Table, f32)| {
-            with_smf(lua, &this, |smf| smf.time_visible = s.max(0.0))
-        })?,
+    let function = vm.create_function(
+        "ScrollingMessageFrame:SetTimeVisible",
+        |lua, (this, s): (Table, f32)| with_smf(lua, &this, |smf| smf.time_visible = s.max(0.0)),
     )?;
-    m.set(
-        "GetTimeVisible",
-        lua.create_function(|lua, this: Table| with_smf(lua, &this, |smf| smf.time_visible))?,
+    vm.table_set(&m, "SetTimeVisible", function)?;
+    let function = vm.create_function(
+        "ScrollingMessageFrame:GetTimeVisible",
+        |lua, this: Table| with_smf(lua, &this, |smf| smf.time_visible),
     )?;
-    m.set(
-        "SetFadeDuration",
-        lua.create_function(|lua, (this, s): (Table, f32)| {
-            with_smf(lua, &this, |smf| smf.fade_duration = s.max(0.0))
-        })?,
+    vm.table_set(&m, "GetTimeVisible", function)?;
+    let function = vm.create_function(
+        "ScrollingMessageFrame:SetFadeDuration",
+        |lua, (this, s): (Table, f32)| with_smf(lua, &this, |smf| smf.fade_duration = s.max(0.0)),
     )?;
-    m.set(
-        "GetFadeDuration",
-        lua.create_function(|lua, this: Table| with_smf(lua, &this, |smf| smf.fade_duration))?,
+    vm.table_set(&m, "SetFadeDuration", function)?;
+    let function = vm.create_function(
+        "ScrollingMessageFrame:GetFadeDuration",
+        |lua, this: Table| with_smf(lua, &this, |smf| smf.fade_duration),
     )?;
+    vm.table_set(&m, "GetFadeDuration", function)?;
 
     // ── the shared font block ───────────────────────────────────────────────────────────────
     //
@@ -283,18 +264,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Demand is observed, not counted: `BigWigs/Plugins/Messages.lua:212` is
     // `self.msgframe:SetFontObject(GameFontNormalLarge)` on a frame it has just given
     // `SetInsertMode("TOP")`, and BigWigs dies there every session.
-    crate::script::font_block::install(
-        lua,
-        &m,
-        |lua, this| {
-            let h = frame_handle_of(lua, this)?;
-            super::ensure_font_region(lua, h)
-                .ok_or_else(|| mlua::Error::runtime("not a ScrollingMessageFrame"))
-        },
-        "ScrollingMessageFrame",
-    )?;
-
-    lua.set_named_registry_value(REG_SCROLLINGMESSAGEFRAME_METHODS, m)?;
+    vm.put_registry(REG_SCROLLINGMESSAGEFRAME_METHODS, m.clone())?;
 
     // SubmitChatInput(text) — the chat input EditBox's OnEnterPressed hands the typed line here; it
     // queues into the model for the app to parse into a chat command (the outbound Lua→app seam, the
@@ -302,23 +272,22 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // cancel. Not an EditBox method — a bare global, called with the line the handler read.
     // BenillaChatTabPressed() — the chat edit box's OnTabPressed queues a flag the app's
     // whisper-cycle system drains (UiScript::take_chat_tab), the SubmitChatInput pattern.
-    lua.globals().set(
-        "BenillaChatTabPressed",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.chat_tab = true;
-            Ok(())
-        })?,
-    )?;
-    lua.globals().set(
-        "SubmitChatInput",
-        lua.create_function(|lua, text: Option<String>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.chat_input.push(text.unwrap_or_default());
-            Ok(())
-        })?,
-    )?;
-    Ok(())
+    vm.register_function("BenillaChatTabPressed", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.chat_tab = true;
+        Ok(())
+    })?;
+    vm.register_function("SubmitChatInput", |lua, text: Option<String>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.chat_input.push(text.unwrap_or_default());
+        Ok(())
+    })?;
+    crate::script::font_block::install_context(
+        vm,
+        &m,
+        super::scrolling_font_region_callback,
+        "ScrollingMessageFrame",
+    )
 }
 
 #[cfg(test)]
@@ -835,19 +804,22 @@ mod tests {
     /// nil — and stores 0. Its trailing `5` sits at index 7 and is never read.
     #[test]
     fn the_addmessage_id_index_follows_the_rgb_leg() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
-            "BenillaMF = CreateFrame('ScrollingMessageFrame') \
+            "BenillaMF = CreateFrame('ScrollingMessageFrame', 'BenillaMF') \
              BenillaMF:AddMessage('shorthand', 5) \
              BenillaMF:AddMessage('aceconsole', nil, nil, nil, nil, 5) \
              BenillaMF:AddMessage('coloured', 1, 1, 1, 7)",
         )
         .unwrap();
-        let frame: mlua::Table = s.eval("return BenillaMF").unwrap();
-        let ids: Vec<u32> = super::with_smf(s.lua(), &frame, |smf| {
-            smf.lines.iter().map(|l| l.id).collect()
-        })
-        .unwrap();
+        let model = s.model_ref();
+        let frame = model.arena.lookup("BenillaMF").expect("message frame");
+        let ids: Vec<u32> = match &model.arena.frame(frame).expect("live frame").kind_state {
+            crate::widget::KindState::ScrollingMessage(state) => {
+                state.lines.iter().map(|line| line.id).collect()
+            }
+            _ => panic!("BenillaMF is not a ScrollingMessageFrame"),
+        };
         assert_eq!(
             ids,
             vec![5, 0, 7],
@@ -895,7 +867,7 @@ mod tests {
         );
 
         // And the Lua surface: the fifth argument tags, the method recolours, silently.
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             "local f = CreateFrame('ScrollingMessageFrame') \
              f:AddMessage('a', 1, 1, 1, 11) f:AddMessage('b') \
@@ -906,7 +878,7 @@ mod tests {
 
     #[test]
     fn lua_addmessage_and_scroll_surface() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("CreateFrame('ScrollingMessageFrame', 'CF')").unwrap();
         s.run("CF:SetMaxLines(128)").unwrap();
         assert_eq!(s.eval::<i64>("return CF:GetMaxLines()").unwrap(), 128);

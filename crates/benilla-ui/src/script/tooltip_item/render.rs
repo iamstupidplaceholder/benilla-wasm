@@ -14,9 +14,9 @@
 //! `FrameScript_GetText` hands back the pre-seeded empty string and `AddLine` drops an empty row
 //! before it ever counts it.
 
-use mlua::{Lua, Table};
+use benilla_lua::{LuaContext, Table as LuaTable};
 
-use crate::script::tooltip::{append_line, duration_text, plural_template};
+use crate::script::tooltip::{duration_text, plural_template};
 use crate::script::{ItemTemplateView, Model};
 use crate::strings::{fill, Arg};
 
@@ -139,6 +139,25 @@ pub(super) struct BuilderFlags {
     pub name_only: bool,
 }
 
+/// One line, named by KEY and filled from the template the install carries. A key the table
+/// does not hold emits nothing: the reference's empty `FrameScript_GetText` return reaches
+/// `AddLine`'s `0x530270`, which bails before it increments the line count.
+fn keyed_line(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    key: &str,
+    args: &[Arg<'_>],
+    color: [f32; 4],
+    wrap: bool,
+) -> benilla_lua::Result<()> {
+    match crate::strings::global_context(lua, key) {
+        Some(t) => {
+            crate::script::tooltip::append_line(lua, this, (fill(&t, args), color), None, wrap)
+        }
+        None => Ok(()),
+    }
+}
+
 /// Render one item template into the tooltip — the BYTE-VERIFIED emission law of the shared
 /// renderer `0x52b650` (wow-re `ui/scratch/tooltip-content-law.md`, §5-cross-checked 2026-07-10;
 /// the proficiency-cell and SET legs byte-read directly 2026-07-11; the creator/readable
@@ -146,13 +165,13 @@ pub(super) struct BuilderFlags {
 /// 0915), minus the instance-only families still unfed (soulbound override, cooldown-remaining,
 /// the gift-wrap family).
 pub(super) fn render_view(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     v: &ItemTemplateView,
     flags: BuilderFlags,
     // `None` = a template/link source (the ref's no-object path).
     inst: Option<&ItemInstance>,
-) -> mlua::Result<()> {
+) -> benilla_lua::Result<()> {
     let (req, known_spell, taught_known, set_view, equipped) = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let knows = |id: u32| model.spellbook.slots.iter().any(|s| s.spell_id == id);
@@ -182,22 +201,33 @@ pub(super) fn render_view(
             .collect();
         (model.player_req.clone(), known, taught, set_view, equipped)
     };
-    let add = |l: (String, [f32; 4])| append_line(lua, this, l, None, false);
-    let addw = |l: (String, [f32; 4])| append_line(lua, this, l, None, true);
-    let add2 =
-        |l: (String, [f32; 4]), r: (String, [f32; 4])| append_line(lua, this, l, Some(r), false);
+    // Line builders as macros, not closures: every one of them needs exclusive VM
+    // access, and five long-lived closures each holding `&mut lua` cannot coexist
+    // with each other or with the direct VM uses between them. A macro expands
+    // at its call site with a borrow that ends with the statement, so the
+    // call sites below read exactly as before with one added `!`.
+    macro_rules! add {
+        ($line:expr) => {
+            crate::script::tooltip::append_line(lua, this, $line, None, false)
+        };
+    }
+    macro_rules! addw {
+        ($line:expr) => {
+            crate::script::tooltip::append_line(lua, this, $line, None, true)
+        };
+    }
+    macro_rules! add2 {
+        ($left:expr, $right:expr $(,)?) => {
+            crate::script::tooltip::append_line(lua, this, $left, Some($right), false)
+        };
+    }
     // The VM's own `GlobalStrings.lua`, off the player's patch chain — the one source of every
     // sentence below.
-    let get = |key: &str| crate::strings::global(lua, key);
-    // One line, named by KEY and filled from the template the install carries. A key the table
-    // does not hold emits nothing: the reference's empty `FrameScript_GetText` return reaches
-    // `AddLine`'s `0x530270`, which bails before it increments the line count.
-    let keyed = |key: &str, args: &[Arg<'_>], color: [f32; 4], wrap: bool| -> mlua::Result<()> {
-        match get(key) {
-            Some(t) => append_line(lua, this, (fill(&t, args), color), None, wrap),
-            None => Ok(()),
-        }
-    };
+    macro_rules! get {
+        ($key:expr) => {
+            crate::strings::global_context(lua, $key)
+        };
+    }
 
     // The gray CURRENTLY_EQUIPPED header (`[arg+0x18]≠0`, color ptr `0xc0d3c4`) — and it is the
     // ONLY thing a shopping-tooltip fill adds. **Against a plain `SetInventoryItem` of the same
@@ -210,7 +240,7 @@ pub(super) fn render_view(
     // §1's per-call-site census over all 31 sites of `0x52b650` is what settles it: those two are
     // the only sites in the image passing a literal non-zero p5, and both pass p4 zero.
     if flags.currently_equipped {
-        keyed("CURRENTLY_EQUIPPED", &[], GRAY, false)?;
+        keyed_line(lua, this, "CURRENTLY_EQUIPPED", &[], GRAY, false)?;
     }
     let name = inst
         .and_then(|i| i.name.clone())
@@ -223,7 +253,7 @@ pub(super) fn render_view(
     } else {
         quality_color(v.quality)
     };
-    add((name, name_color))?;
+    add!((name, name_color))?;
     // Line 3 — the petition block, ABOVE the green line and below the name: "Guild Name: X" then
     // "Guild Master: Y" for a charter, "Petition: X" / "Created by Y" for a plain petition. The
     // keys are picked by the record's own charter bit, the same bit `GetPetitionInfo`'s first
@@ -240,22 +270,22 @@ pub(super) fn render_view(
             ("PETITION_TITLE", "PETITION_CREATOR")
         };
         if !p.title.is_empty() {
-            keyed(title_key, &[Arg::S(&p.title)], WHITE, false)?;
+            keyed_line(lua, this, title_key, &[Arg::S(&p.title)], WHITE, false)?;
         }
         if let Some(owner) = p.owner.as_deref().filter(|o| !o.is_empty()) {
-            keyed(creator_key, &[Arg::S(owner)], WHITE, false)?;
+            keyed_line(lua, this, creator_key, &[Arg::S(owner)], WHITE, false)?;
         }
     }
     // ITEM_SIGNABLE (green) — Flags bit 0x2000 (petitions).
     if v.flags & 0x2000 != 0 {
-        keyed("ITEM_SIGNABLE", &[], GREEN, false)?;
+        keyed_line(lua, this, "ITEM_SIGNABLE", &[], GREEN, false)?;
     }
     // **p4's FIRST cut** (`0x52babe`; `0x52bac3 jne 0x52bfad` skips `[0x52bac9, 0x52bfad)`) — the
     // whole bind/lock region. `ITEM_SIGNABLE` just above is NOT in the jumped range and survives.
     if !flags.name_only {
         // ITEM_CONJURED (Flags bit 0x2).
         if v.flags & 0x2 != 0 {
-            keyed("ITEM_CONJURED", &[], WHITE, false)?;
+            keyed_line(lua, this, "ITEM_CONJURED", &[], WHITE, false)?;
         }
         // The bind line (§6, white, one line). Bonding `[record+0x194]` ∈ {1..5} is what decides
         // whether a line prints at ALL — a Bonding-0 item says nothing here however it is held.
@@ -268,28 +298,35 @@ pub(super) fn render_view(
         // forever (B310, Frostshake): the template's `bonding` never changes when the item binds —
         // the instance's flag is the only thing that does.
         match v.bonding {
-            4 | 5 => keyed("ITEM_BIND_QUEST", &[], WHITE, false)?,
+            4 | 5 => keyed_line(lua, this, "ITEM_BIND_QUEST", &[], WHITE, false)?,
             1..=3 if inst.is_some_and(|i| i.already_bound) => {
-                keyed("ITEM_SOULBOUND", &[], WHITE, false)?
+                keyed_line(lua, this, "ITEM_SOULBOUND", &[], WHITE, false)?
             }
-            1 => keyed("ITEM_BIND_ON_PICKUP", &[], WHITE, false)?,
-            2 => keyed("ITEM_BIND_ON_EQUIP", &[], WHITE, false)?,
-            3 => keyed("ITEM_BIND_ON_USE", &[], WHITE, false)?,
+            1 => keyed_line(lua, this, "ITEM_BIND_ON_PICKUP", &[], WHITE, false)?,
+            2 => keyed_line(lua, this, "ITEM_BIND_ON_EQUIP", &[], WHITE, false)?,
+            3 => keyed_line(lua, this, "ITEM_BIND_ON_USE", &[], WHITE, false)?,
             _ => {}
         }
         match v.max_count {
-            1 => keyed("ITEM_UNIQUE", &[], WHITE, false)?,
-            n if n > 1 => keyed("ITEM_UNIQUE_MULTIPLE", &[Arg::D(n.into())], WHITE, false)?,
+            1 => keyed_line(lua, this, "ITEM_UNIQUE", &[], WHITE, false)?,
+            n if n > 1 => keyed_line(
+                lua,
+                this,
+                "ITEM_UNIQUE_MULTIPLE",
+                &[Arg::D(n.into())],
+                WHITE,
+                false,
+            )?,
             _ => {}
         }
         if v.start_quest != 0 {
-            keyed("ITEM_STARTS_QUEST", &[], WHITE, false)?;
+            keyed_line(lua, this, "ITEM_STARTS_QUEST", &[], WHITE, false)?;
         }
         // LOCKED (red) — suppressed once the INSTANCE carries UNLOCKED `0x4` (the law's "and the
         // item is not already unlocked"; the same bit the openable sub-gate reads). The key-item
         // "Requires %s" sub-line joins with the Lock.dbc resolve (the GO-locks follow-up).
         if v.lock_id != 0 && inst.is_none_or(|i| i.flags & 0x4 == 0) {
-            keyed("LOCKED", &[], RED, false)?;
+            keyed_line(lua, this, "LOCKED", &[], RED, false)?;
         }
     }
     // Slot | type — or, for a bag, the single CONTAINER_SLOTS line in the same seat. The type
@@ -317,7 +354,9 @@ pub(super) fn render_view(
         // slot|type one (`0x52c006`/`0x52c018`/`0x52c021` all jump past the whole region), and
         // displayFlags bit 0 is not consulted on this path.
         if let Some(name) = v.sub_class_display.as_deref() {
-            keyed(
+            keyed_line(
+                lua,
+                this,
                 "CONTAINER_SLOTS",
                 &[Arg::D(v.container_slots.into()), Arg::S(name)],
                 WHITE,
@@ -340,7 +379,7 @@ pub(super) fn render_view(
         let slot = if v.class == 6 {
             v.item_type.clone()
         } else {
-            invtype_key(v.inventory_type).and_then(&get)
+            invtype_key(v.inventory_type).and_then(|k| get!(k))
         };
         // The type cell is `ItemSubClass.dbc`'s DisplayName for the pair, app-resolved (the
         // builder's `0xc0db90` row cache read) — never a table in here: 2080 found the same
@@ -368,14 +407,14 @@ pub(super) fn render_view(
             left_red = true;
         }
         match (slot, ty) {
-            (Some(s), Some(t)) => add2(
+            (Some(s), Some(t)) => add2!(
                 (s, req_color(!left_red)),
                 (t.to_string(), req_color(!right_red)),
             )?,
-            (Some(s), None) => add((s, req_color(!left_red)))?,
+            (Some(s), None) => add!((s, req_color(!left_red)))?,
             // No slot name: the type stands alone and takes the hard-miss color (the
             // builder's single-cell fallback keeps flag-1).
-            (None, Some(t)) => add((t.to_string(), req_color(!right_red)))?,
+            (None, Some(t)) => add!((t.to_string(), req_color(!right_red)))?,
             _ => {}
         }
     }
@@ -410,7 +449,9 @@ pub(super) fn render_view(
             // The school WORD is the resolved key; the school NUMBER is what picks the arm. A chain
             // that carries no `SPELL_SCHOOL%d_CAP` still takes the with-school template and fills
             // the hole with the empty string, exactly as `FrameScript_GetText` does.
-            let school_name = school_key(school).and_then(|k| get(&k)).unwrap_or_default();
+            let school_name = school_key(school)
+                .and_then(|k| get!(&k))
+                .unwrap_or_default();
             // `avg` is the two ROUNDED bounds averaged, round-tripped through f32 — and it is NOT
             // divided by anything: `AMMO_DAMAGE_TEMPLATE`'s shipped "Adds %g damage per second" is
             // FrameXML's phrasing over a number the binary never makes per-second (Rough Arrow's
@@ -450,17 +491,17 @@ pub(super) fn render_view(
             // non-weapon, renders left-text-only. `"%s %.2f"` is an `.rdata` LITERAL, not a key —
             // only the word "Speed" is looked up — over `Delay × 0.001`.
             let speed = (first && v.class == 2).then(|| {
-                let word = get("SPEED").unwrap_or_default();
+                let word = get!("SPEED").unwrap_or_default();
                 let secs = f64::from(v.delay_ms) * f64::from(0.001_f32);
                 format!("{word} {secs:.2}")
             });
             // The damage line is white in BOTH cells unconditionally — it never reddens for an item
             // the player cannot use (`0x52c4fa`–`0x52c516`).
-            if let Some(t) = get(&key) {
+            if let Some(t) = get!(&key) {
                 let line = (fill(&t, &args), WHITE);
                 match speed {
-                    Some(s) => add2(line, (s, WHITE))?,
-                    None => add(line)?,
+                    Some(s) => add2!(line, (s, WHITE))?,
+                    None => add!(line)?,
                 }
             }
             // The DPS accumulator runs on the emit path, and it uses the RAW floats — so the
@@ -475,7 +516,9 @@ pub(super) fn render_view(
             // its own number of decimals with no code change (law §12: "the print precision is
             // FRAMEXML-DATA"). There is no divide-by-zero guard in the reference either.
             let secs = f64::from(v.delay_ms) * f64::from(0.001_f32);
-            keyed(
+            keyed_line(
+                lua,
+                this,
                 "DPS_TEMPLATE",
                 &[Arg::F(f64::from(dps_acc) / secs)],
                 WHITE,
@@ -483,10 +526,19 @@ pub(super) fn render_view(
             )?;
         }
         if v.armor > 0 {
-            keyed("ARMOR_TEMPLATE", &[Arg::D(v.armor.into())], WHITE, false)?;
+            keyed_line(
+                lua,
+                this,
+                "ARMOR_TEMPLATE",
+                &[Arg::D(v.armor.into())],
+                WHITE,
+                false,
+            )?;
         }
         if v.block > 0 {
-            keyed(
+            keyed_line(
+                lua,
+                this,
                 "SHIELD_BLOCK_TEMPLATE",
                 &[Arg::D(v.block.into())],
                 WHITE,
@@ -510,7 +562,14 @@ pub(super) fn render_view(
                 // (`"%c%d Agility"`) — the sign is an argument, not a prefix we glue on.
                 let Some(key) = stat_key(t) else { continue };
                 let sign = if val > 0 { "+" } else { "-" };
-                keyed(key, &[Arg::S(sign), Arg::D(val.abs().into())], WHITE, false)?;
+                keyed_line(
+                    lua,
+                    this,
+                    key,
+                    &[Arg::S(sign), Arg::D(val.abs().into())],
+                    WHITE,
+                    false,
+                )?;
             }
         }
         // Resistances: six equal nonzero values collapse to the ALL line; otherwise one line per
@@ -520,7 +579,9 @@ pub(super) fn render_view(
         let first_res = v.resistances[0];
         if first_res != 0 && v.resistances.iter().all(|&r| r == first_res) {
             let sign = if first_res > 0 { "+" } else { "-" };
-            keyed(
+            keyed_line(
+                lua,
+                this,
                 "ITEM_RESIST_ALL",
                 &[Arg::S(sign), Arg::D(first_res.abs().into())],
                 WHITE,
@@ -540,8 +601,12 @@ pub(super) fn render_view(
                     continue;
                 }
                 let sign = if r > 0 { "+" } else { "-" };
-                let school = school_key(school).and_then(|k| get(&k)).unwrap_or_default();
-                keyed(
+                let school = school_key(school)
+                    .and_then(|k| get!(&k))
+                    .unwrap_or_default();
+                keyed_line(
+                    lua,
+                    this,
                     "ITEM_RESIST_SINGLE",
                     &[Arg::S(sign), Arg::D(r.abs().into()), Arg::S(&school)],
                     WHITE,
@@ -586,7 +651,7 @@ pub(super) fn render_view(
         // where the reference shows the rolled lines).
         let no_id_source = inst.is_none_or(|i| i.flags & 0x8 != 0);
         if no_id_source && !signable && v.random_property != 0 {
-            keyed("ITEM_RANDOM_ENCHANT", &[], GREEN, false)?;
+            keyed_line(lua, this, "ITEM_RANDOM_ENCHANT", &[], GREEN, false)?;
         }
         for e in enchant_slots {
             let color = match (e.slot < 2, e.negative) {
@@ -604,7 +669,9 @@ pub(super) fn render_view(
                 // to compose: the reference printf's an empty format into a zeroed buffer and
                 // `AddLine` drops the empty row, so a missing key skips the slot rather than falling
                 // back to the bare name.
-                Some(ms) => match enchant_time_left(&e.name, ms, &get) {
+                Some(ms) => match enchant_time_left(&e.name, ms, &mut |key: &str| {
+                    crate::strings::global_context(lua, key)
+                }) {
                     Some(t) => t,
                     None => continue,
                 },
@@ -614,10 +681,12 @@ pub(super) fn render_view(
             // literal `" (%s)" 0x854820` (`0x52caa6–0x52cb38`), which is the engine's own format and
             // not a string table entry. Only an owned item object carries charges; the session/inspect
             // legs ship ids alone, so this is naturally absent there.
-            if let Some(charges) = charges_phrase(e.charges, &get) {
+            if let Some(charges) = charges_phrase(e.charges, &mut |key: &str| {
+                crate::strings::global_context(lua, key)
+            }) {
                 text.push_str(&format!(" ({charges})"));
             }
-            add((text, color))?;
+            add!((text, color))?;
         }
     }
     if let Some((cur, max)) = inst.and_then(|i| i.durability).filter(|&(_, max)| max > 0) {
@@ -625,7 +694,9 @@ pub(super) fn render_view(
         // "durability (red iff broken==0)", the AddLine colour pointer `0xc0d390`, the same
         // red as the unmet-requirement lines).
         let color = if cur == 0 { RED } else { WHITE };
-        keyed(
+        keyed_line(
+            lua,
+            this,
             "DURABILITY_TEMPLATE",
             &[Arg::D(cur.into()), Arg::D(max.into())],
             color,
@@ -633,7 +704,9 @@ pub(super) fn render_view(
         )?;
     } else if v.max_durability > 0 {
         let full = i64::from(v.max_durability);
-        keyed(
+        keyed_line(
+            lua,
+            this,
             "DURABILITY_TEMPLATE",
             &[Arg::D(full), Arg::D(full)],
             WHITE,
@@ -658,8 +731,10 @@ pub(super) fn render_view(
     // item carries one; the longest shipped duration is a fortnight.
     if let Some(ms) = inst.and_then(|i| i.duration_ms) {
         let ms = u32::try_from(ms).unwrap_or(u32::MAX);
-        if let Some(line) = duration_text(ms, "ITEM_DURATION", true, &get) {
-            add((line, WHITE))?;
+        if let Some(line) = duration_text(ms, "ITEM_DURATION", true, &mut |key: &str| {
+            crate::strings::global_context(lua, key)
+        }) {
+            add!((line, WHITE))?;
         }
     }
     // Class/race lists — red when the player's own bit is absent (the usable ask).
@@ -673,7 +748,9 @@ pub(super) fn render_view(
             .collect();
         if !list.is_empty() {
             let ok = req.class_id > 0 && v.allowable_class & (1 << (req.class_id - 1)) != 0;
-            keyed(
+            keyed_line(
+                lua,
+                this,
                 "ITEM_CLASSES_ALLOWED",
                 &[Arg::S(&list.join(", "))],
                 req_color(ok),
@@ -690,7 +767,9 @@ pub(super) fn render_view(
             .collect();
         if !list.is_empty() {
             let ok = req.race_id > 0 && v.allowable_race & (1 << (req.race_id - 1)) != 0;
-            keyed(
+            keyed_line(
+                lua,
+                this,
                 "ITEM_RACES_ALLOWED",
                 &[Arg::S(&list.join(", "))],
                 req_color(ok),
@@ -702,7 +781,9 @@ pub(super) fn render_view(
     // jle skip`) — a level-1 requirement gates nothing a logged-in player could fail, so the
     // real client hides it on all the level-1 consumables that carry one.
     if v.required_level > 1 {
-        keyed(
+        keyed_line(
+            lua,
+            this,
             "ITEM_MIN_LEVEL",
             &[Arg::D(v.required_level.into())],
             req_color(req.level >= v.required_level),
@@ -719,14 +800,16 @@ pub(super) fn render_view(
         let color = req_color(have >= v.required_skill_rank.max(1));
         if v.required_skill_rank > 0 {
             let args = [Arg::S(skill), Arg::D(v.required_skill_rank.into())];
-            keyed("ITEM_MIN_SKILL", &args, color, false)?;
+            keyed_line(lua, this, "ITEM_MIN_SKILL", &args, color, false)?;
         } else {
-            keyed("ITEM_REQ_SKILL", &[Arg::S(skill)], color, false)?;
+            keyed_line(lua, this, "ITEM_REQ_SKILL", &[Arg::S(skill)], color, false)?;
         }
     }
     if v.required_spell != 0 {
         if let Some(name) = &v.required_spell_name {
-            keyed(
+            keyed_line(
+                lua,
+                this,
                 "ITEM_REQ_SKILL",
                 &[Arg::S(name)],
                 req_color(known_spell),
@@ -743,14 +826,14 @@ pub(super) fn render_view(
             .get(&v.required_rep_faction)
             .copied()
             .unwrap_or(0);
-        add((
+        add!((
             rep.clone(),
             req_color(u32::from(rank) >= v.required_rep_rank),
         ))?;
     }
     // ITEM_SPELL_KNOWN — a taught spell the player already knows, UNCONDITIONALLY red.
     if taught_known {
-        keyed("ITEM_SPELL_KNOWN", &[], RED, false)?;
+        keyed_line(lua, this, "ITEM_SPELL_KNOWN", &[], RED, false)?;
     }
     // Green trigger lines, wrapped — the text is app-resolved (the spell's name in P1; its
     // $-substituted description via the token engine in P2). The prefix is a key, joined to the
@@ -763,11 +846,13 @@ pub(super) fn render_view(
             2 => "ITEM_SPELL_TRIGGER_ONPROC",
             _ => continue,
         };
-        let Some(prefix) = get(key) else { continue };
-        addw((format!("{prefix} {text}"), GREEN))?;
+        let Some(prefix) = get!(key) else { continue };
+        addw!((format!("{prefix} {text}"), GREEN))?;
     }
-    if let Some(charges) = charges_phrase(v.charges.max(0) as u32, &get) {
-        add((charges, WHITE))?;
+    if let Some(charges) = charges_phrase(v.charges.max(0) as u32, &mut |key: &str| {
+        crate::strings::global_context(lua, key)
+    }) {
+        add!((charges, WHITE))?;
     }
     // The item-SET block (§22, above the binary's p4 cut at `0x52e14c`), byte-read at the builder's
     // `0x52d8a0..0x52e0f5`: a blank gold line ([`SET_SPACER`]), the gold "name (owned/total)"
@@ -790,8 +875,10 @@ pub(super) fn render_view(
             .iter()
             .filter(|(id, _)| equipped.contains(id))
             .count();
-        addw((SET_SPACER.into(), GOLD))?;
-        keyed(
+        addw!((SET_SPACER.into(), GOLD))?;
+        keyed_line(
+            lua,
+            this,
             "ITEM_SET_NAME",
             &[
                 Arg::S(&set.name),
@@ -809,9 +896,9 @@ pub(super) fn render_view(
             let color = req_color(skill_met);
             if set.required_skill_rank > 0 {
                 let args = [Arg::S(skill), Arg::D(set.required_skill_rank.into())];
-                keyed("ITEM_MIN_SKILL", &args, color, false)?;
+                keyed_line(lua, this, "ITEM_MIN_SKILL", &args, color, false)?;
             } else {
-                keyed("ITEM_REQ_SKILL", &[Arg::S(skill)], color, false)?;
+                keyed_line(lua, this, "ITEM_REQ_SKILL", &[Arg::S(skill)], color, false)?;
             }
         }
         // The member ladder's two-space indent is the engine's own `"  %s"` literal `0x854b14`,
@@ -819,17 +906,17 @@ pub(super) fn render_view(
         for (id, name) in &set.members {
             let Some(name) = name else { continue };
             let color = if equipped.contains(id) { CREAM } else { GRAY };
-            add((format!("  {name}"), color))?;
+            add!((format!("  {name}"), color))?;
         }
-        addw((SET_SPACER.into(), GOLD))?;
+        addw!((SET_SPACER.into(), GOLD))?;
         let mut bonuses: Vec<&(u32, String)> = set.bonuses.iter().collect();
         bonuses.sort_by_key(|&&(threshold, _)| threshold);
         for &(threshold, ref text) in bonuses {
             if skill_met && owned as u32 >= threshold {
-                keyed("ITEM_SET_BONUS", &[Arg::S(text)], GREEN, true)?;
+                keyed_line(lua, this, "ITEM_SET_BONUS", &[Arg::S(text)], GREEN, true)?;
             } else {
                 let args = [Arg::D(threshold.into()), Arg::S(text)];
-                keyed("ITEM_SET_BONUS_GRAY", &args, GRAY, true)?;
+                keyed_line(lua, this, "ITEM_SET_BONUS_GRAY", &args, GRAY, true)?;
             }
         }
     }
@@ -843,7 +930,7 @@ pub(super) fn render_view(
     }
     // The quoted flavor text — gold, wrapped, literal quotes (all three byte-verified).
     if !v.description.is_empty() {
-        addw((format!("\"{}\"", v.description), GOLD))?;
+        addw!((format!("\"{}\"", v.description), GOLD))?;
     }
     // Everything below rides the REAL-INSTANCE gate (`0x52e1c7`/`0x52e2e0`): a template/link
     // hover emits no creator line and no openable/readable line — you can't right-click a
@@ -864,7 +951,7 @@ pub(super) fn render_view(
             } else {
                 "ITEM_CREATED_BY"
             };
-            keyed(key, &[Arg::S(name)], WHITE, false)?;
+            keyed_line(lua, this, key, &[Arg::S(name)], WHITE, false)?;
         }
     }
     // ITEM_OPENABLE / ITEM_READABLE — ONE line, openable wins outright (the `jmp 0x52e35d` past
@@ -883,9 +970,9 @@ pub(super) fn render_view(
         && ((v.flags & 0x4 != 0 && (v.lock_id == 0 || inst.flags & 0x4 != 0))
             || (v.flags & 0x200 != 0 && inst.flags & 0x8 != 0));
     if openable {
-        keyed("ITEM_OPENABLE", &[], GREEN, false)?;
+        keyed_line(lua, this, "ITEM_OPENABLE", &[], GREEN, false)?;
     } else if v.page_text != 0 || inst.has_text {
-        keyed("ITEM_READABLE", &[], GREEN, false)?;
+        keyed_line(lua, this, "ITEM_READABLE", &[], GREEN, false)?;
     }
     Ok(())
 }
@@ -903,7 +990,11 @@ pub(super) fn render_view(
 /// the `SpellItemEnchantment` row's, DBC data rather than a string-table sentence, so it arrives
 /// as an argument. `None` = the family is absent from the install's string table, and the caller
 /// draws no line at all.
-fn enchant_time_left(name: &str, ms: u64, get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+fn enchant_time_left(
+    name: &str,
+    ms: u64,
+    get: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<String> {
     let (suffix, n) = time_bucket(ms);
     let template = plural_template(&format!("ITEM_ENCHANT_TIME_LEFT_{suffix}"), n, get)?;
     Some(fill(&template, &[Arg::S(name), Arg::D(i64::from(n))]))
@@ -938,7 +1029,7 @@ fn time_bucket(ms: u64) -> (&'static str, u32) {
 ///
 /// Zero answers `None` — the reference never reaches this with a zero count, and neither
 /// consumer here has a line to draw without one.
-fn charges_phrase(n: u32, get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+fn charges_phrase(n: u32, get: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     if n == 0 {
         return None;
     }
@@ -977,7 +1068,7 @@ mod tests {
     /// suffixes reach the same key at every count.
     #[test]
     fn enchant_countdown_buckets_and_rounding() {
-        let t = |ms| enchant_time_left("Rockbiter", ms, &table);
+        let t = |ms| enchant_time_left("Rockbiter", ms, &mut table);
         // Seconds truncate: 1900 ms is 1, not 2.
         assert_eq!(t(1_900).as_deref(), Some("<Rockbiter :: 1 S>"));
         assert_eq!(t(59_999).as_deref(), Some("<Rockbiter :: 59 S>"));
@@ -999,16 +1090,16 @@ mod tests {
     /// the whole point of resolving by key rather than composing (2045).
     #[test]
     fn a_missing_countdown_family_draws_nothing() {
-        assert_eq!(enchant_time_left("Rockbiter", 60_000, &|_| None), None);
-        assert_eq!(charges_phrase(3, &|_| None), None);
+        assert_eq!(enchant_time_left("Rockbiter", 60_000, &mut |_| None), None);
+        assert_eq!(charges_phrase(3, &mut |_| None), None);
     }
 
     /// `ITEM_SPELL_CHARGES` and its `_P1` plural twin — one rule, both consumers (the charges
     /// line and the enchant line's suffix). A zero count has no line either way.
     #[test]
     fn charges_phrase_picks_the_plural() {
-        assert_eq!(charges_phrase(1, &table).as_deref(), Some("<1 chg>"));
-        assert_eq!(charges_phrase(5, &table).as_deref(), Some("<5 chgs>"));
-        assert_eq!(charges_phrase(0, &table), None);
+        assert_eq!(charges_phrase(1, &mut table).as_deref(), Some("<1 chg>"));
+        assert_eq!(charges_phrase(5, &mut table).as_deref(), Some("<5 chgs>"));
+        assert_eq!(charges_phrase(0, &mut table), None);
     }
 }

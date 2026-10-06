@@ -14,10 +14,10 @@
 //! (render world, `PrepareResources`) writes it in place — all bind groups see the new data, zero
 //! rebuilds, regardless of how many tiles/models are loaded or how fast the clock moves.
 
+use benilla_assets::gpu_table::{create_gpu_table, write_gpu_table, GpuTable};
 use benilla_formats::LiquidKind;
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
-use bevy::render::render_resource::{Buffer, BufferDescriptor, BufferUsages};
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::{Render, RenderApp, RenderSystems};
 
@@ -211,12 +211,13 @@ impl Default for WowLightData {
     }
 }
 
-/// The one persistent storage buffer all materials bind. Created once in [`create_shared_light_buffer`]
+/// The one persistent GPU table all materials bind. Native stores it in the original storage
+/// buffer; WebGL2 stores the identical packed rows in an integer texture.
 /// (main world, so material construction can clone it into the `#[storage(90, …)]` field), then cloned
 /// into the render world via `ExtractResource` so [`upload_light`] can write it. `Buffer` clone shares
 /// the same GPU resource.
 #[derive(Resource, Clone, ExtractResource)]
-pub struct SharedLightBuffer(pub Buffer);
+pub struct SharedLightBuffer(pub GpuTable);
 
 /// Wire the shared-light infra into the app. `build_light_data` is chained after the lighting resolve
 /// in [`super::LightingPlugin`]; this adds the resource, the extract plugins, the startup buffer
@@ -258,12 +259,11 @@ pub(super) fn register(app: &mut App) {
 /// returned resource (cloned into the render world for [`upload_light`]). `STORAGE | COPY_DST` (storage
 /// binding + per-frame `write_buffer`).
 pub fn new_shared_light_buffer(device: &RenderDevice) -> SharedLightBuffer {
-    SharedLightBuffer(device.create_buffer(&BufferDescriptor {
-        label: Some("wow_shared_light"),
-        size: light_blob_bytes(),
-        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    }))
+    SharedLightBuffer(create_gpu_table(
+        device,
+        light_blob_bytes(),
+        "wow_shared_light",
+    ))
 }
 
 /// The full byte size of the shared light BUFFER: the per-frame blob ([`LightStd430`] — 19 header
@@ -491,7 +491,7 @@ fn upload_light(
     let (Some(buffer), Some(data)) = (buffer, data) else {
         return;
     };
-    queue.write_buffer(&buffer.0, 0, bytemuck::bytes_of(&data.0));
+    write_gpu_table(&queue, &buffer.0, 0, bytemuck::bytes_of(&data.0));
 }
 
 #[cfg(test)]

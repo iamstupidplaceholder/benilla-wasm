@@ -49,13 +49,34 @@
 //! pinning one into the config would make the A/B sticky), the session runs and saves around
 //! them, and the file keeps whatever it already said for those keys ([`Cvars::own_for_session`]).
 
+use benilla_time::Instant;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Instant;
 
 use bevy::prelude::*;
 
 use crate::ui_script::VmMemo;
 use benilla_ui::script::{SeededCvar, UiScript};
+
+/// Narrow host-write boundary used by glue screens before the in-world UI is
+/// necessarily loaded. Native writes through the production VM mirror; the
+/// browser composition provides the same system parameter without requiring a
+/// fake `UiScript`.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct EngineCvarWriter<'w> {
+    script: Option<NonSendMut<'w, UiScript>>,
+}
+
+impl EngineCvarWriter<'_> {
+    /// Write one engine-owned CVar and report whether its registered mirror
+    /// accepted the value.
+    pub(crate) fn set(&mut self, name: &str, value: &str) -> bool {
+        let Some(script) = self.script.as_deref_mut() else {
+            return false;
+        };
+        script.set_cvar_engine(name, value);
+        script.cvar(name).is_some()
+    }
+}
 
 /// One host-backed CVar: its registered name, benilla's shipped default, and — the column that
 /// exists so a divergence is a *decision* rather than an accident — **what the reference ships**
@@ -316,13 +337,11 @@ pub(crate) const REGISTERED: &[Registered] = &[
     ),
     overridden(
         "uiScale",
-        "0.9",
         "1.0",
-        "a fresh reference client never consults this CVar: `useUiScale` registers \"0\" \
-         (`0x48fce4`), and the OFF leg `0x492f70` computes clamp(768/height, 0.9, 1.0) instead — \
-         0.9 at 854 px tall and up, which is every window we ship against. It is 1.0 at 768 and \
-         below, where our flat 0.9 does diverge; `ui_script::DEFAULT_UI_SCALE` carries that. \
-         See `useUiScale` below, whose row this one used to say did not exist",
+        "1.0",
+        "fixed 100% application default requested 2026-10-05; existing saved settings win. \
+         The reference useUiScale-OFF law computes clamp(768/height, 0.9, 1.0) instead. \
+         Keep this row aligned with ui_scale::DEFAULT_UI_SCALE",
     ),
     // **`useUiScale` (`0x8430c0`, default `"0"`)** — the switch the row above gates on.
     //
@@ -953,13 +972,12 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // the doll renders at half the frame rate while its pane is open; the knob is
     // [`crate::portrait::PaneRate`], and the default mirrors it (welded below).
     //
-    // **Default ON (half-rate) — restored by 1607.** 1444 shipped it on; 1559 turned it off for
-    // a smoother doll (a look-call); the 08-25 weak-GPU perf reports (B329) measured the cost —
-    // ~1.6 ms at 1600×900, 7.6 ms at 4K, per frame while a body pane is open — and the director
-    // retested the 30 fps doll as fine. Full-rate is one `SetCVar("boothHalfRate", 0)` away.
+    // Full-rate by default (2026-10-03 user preference). Hidden panes still sleep;
+    // this only removes alternate-frame pacing from visible live panes. Half-rate
+    // remains available via SetCVar("boothHalfRate", 1) for weaker GPUs.
     ours(
         "boothHalfRate",
-        "1",
+        "0",
         "1444/1607: benilla's own — the reference draws its doll inside the main pass and has no \
          second view to rate-limit",
     ),
@@ -1117,19 +1135,6 @@ pub(crate) const REGISTERED: &[Registered] = &[
         "1",
         "1639: benilla's own — the reference has no off-screen buffer to hang a resolution dial \
          on; its nearest equivalent, `gxResolution`, drops the interface with the world",
-    ),
-    // **The FPS journal** (decision 2008) — benilla's own, and the one instrument that ships:
-    // `/console fpsJournal 1` appends a per-second row of position, frame cost and the GPU's
-    // per-pass split to `benilla-config/Diagnostics/fps-journal.csv` in any build, which is how
-    // a player on hardware we do not own measures for us. The knob is
-    // [`crate::perf::FpsJournalSetting`]. Off by default; persisted like every row, so a
-    // reporter who turns it on keeps it on until they turn it off — the file is theirs to
-    // attach and theirs to delete.
-    ours(
-        "fpsJournal",
-        "0",
-        "2008: benilla's own — 1.12 has no player-side perf log; its nearest thing is the \
-         Ctrl+R framerate label, a number with no file behind it",
     ),
     same(crate::char_select::CVAR_LAST_CHARACTER, "0"),
 ];
@@ -1628,7 +1633,7 @@ impl Cvars {
 
 /// How long a dirty config sits before the save fires — long enough to coalesce a slider drag,
 /// short enough that a crash loses one gesture, not a session ("write-on-change, debounced").
-const SAVE_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
+const SAVE_QUIET: benilla_time::Duration = benilla_time::Duration::from_secs(1);
 
 /// The startup fold of `config.toml` into the registry and, through the observers, the knobs
 /// ([`load_config`]).
@@ -1822,7 +1827,7 @@ fn stored_config() -> StoredConfig {
     let Some(path) = crate::local_state::config_path() else {
         return StoredConfig::Absent; // hermetic capture, or no install — session-only state
     };
-    let text = match std::fs::read_to_string(&path) {
+    let text = match crate::local_state::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return StoredConfig::Absent,
         Err(e) => return StoredConfig::Bad(format!("config: cannot read {}: {e}", path.display())),
@@ -2098,7 +2103,8 @@ mod tests {
     use crate::sound::SoundConfig;
     use crate::target::ClickConfig;
     use crate::ui_loot::LootConfig;
-    use crate::ui_script::{UiScaleCvar, DEFAULT_UI_SCALE};
+    use crate::ui_scale::DEFAULT_UI_SCALE;
+    use crate::ui_script::UiScaleCvar;
     use crate::video::VideoConfig;
     use crate::vplates::VPlateMode;
     use crate::world_backdrop::{RenderScale, RENDER_SCALE_RANGE};
@@ -2516,12 +2522,6 @@ mod tests {
         assert_eq!(res::<RenderScale>(&app).0, *RENDER_SCALE_RANGE.end());
         apply(&mut app, "renderscale", "0");
         assert_eq!(res::<RenderScale>(&app).0, *RENDER_SCALE_RANGE.start());
-        // The FPS journal switch (2008): a flag, case-insensitive, off as shipped.
-        assert!(!res::<crate::perf::FpsJournalSetting>(&app).0);
-        apply(&mut app, "fpsJournal", "1");
-        assert!(res::<crate::perf::FpsJournalSetting>(&app).0);
-        apply(&mut app, "fpsjournal", "0");
-        assert!(!res::<crate::perf::FpsJournalSetting>(&app).0);
         // Enable flags: any nonzero is on, zero is off (the client's int-parse + != 0).
         apply(&mut app, "EnableMusic", "0");
         assert!(!res::<SoundConfig>(&app).music_enabled);
@@ -2882,7 +2882,6 @@ mod tests {
             .init_resource::<crate::ui_guild::GuildMemberNotify>()
             .init_resource::<crate::ui_trade::BlockTrades>()
             .init_resource::<crate::ui_action::AutoSelfCast>()
-            .init_resource::<crate::perf::FpsJournalSetting>()
             .init_resource::<crate::text_filter::TextFilterSwitches>()
             .init_resource::<crate::game_tip::GameTipSetting>()
             .add_plugins(CvarPlugin);
@@ -2954,9 +2953,7 @@ mod tests {
         |app| {
             app.add_observer(crate::portrait::on_cvar);
         },
-        |app| {
-            app.add_observer(crate::perf::on_cvar);
-        },
+        |app| {},
         |app| {
             app.add_observer(crate::realmlist::on_cvar);
         },
@@ -3297,12 +3294,12 @@ mod tests {
     fn a_numeric_row_refuses_what_does_not_parse_and_corrects_the_mirror() {
         let mut cvars = Cvars::default();
         assert_eq!(cvars.set_from_vm("uiScale", "banana"), SetOutcome::Refused);
-        assert_eq!(cvars.get("uiScale"), Some("0.9"));
+        assert_eq!(cvars.get("uiScale"), Some("1.0"));
         assert!(!cvars.has_events());
         assert!(!cvars.dirty);
         assert_eq!(
             cvars.take_outbox(),
-            vec![("uiScale".to_string(), "0.9".to_string())],
+            vec![("uiScale".to_string(), "1.0".to_string())],
             "the VM stored 'banana' synchronously; the host writes the truth back"
         );
         assert_eq!(cvars.set("uiScale", "banana"), SetOutcome::Refused);

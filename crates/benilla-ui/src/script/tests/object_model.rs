@@ -4,7 +4,7 @@ use super::common::script;
 
 #[test]
 fn create_frame_publishes_global_and_names_resolve() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local p = CreateFrame("Frame", "ParentF")
@@ -21,7 +21,7 @@ fn create_frame_publishes_global_and_names_resolve() {
 
 #[test]
 fn wrapper_identity_is_stable_across_lookups() {
-    let s = script();
+    let mut s = script();
     let same: bool = s
         .eval(
             r#"
@@ -37,7 +37,7 @@ fn wrapper_identity_is_stable_across_lookups() {
 
 #[test]
 fn non_overwriting_named_publish() {
-    let s = script();
+    let mut s = script();
     let ok: bool = s
         .eval(
             r#"

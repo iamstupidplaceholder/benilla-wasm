@@ -312,7 +312,7 @@ pub(crate) fn seed_bindings_for_vm(world: &mut World, script: &mut UiScript) {
 /// Read + parse one diff file; `None` when absent/unreadable (defaults).
 fn read_diff(path: &Option<std::path::PathBuf>) -> Option<Vec<(String, Vec<String>)>> {
     let path = path.as_ref()?;
-    match std::fs::read_to_string(path) {
+    match crate::local_state::read_to_string(path) {
         Ok(text) => Some(store::from_diff(&text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
@@ -366,7 +366,7 @@ fn drain_binding_requests(script: Option<NonSendMut<UiScript>>, files: Res<Bindi
         }
         if which == 1 {
             if let Some(chr) = &files.character {
-                match std::fs::remove_file(chr) {
+                match crate::local_state::remove_file(chr) {
                     Ok(()) => info!("bindings: character-specific set deleted"),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => warn!("bindings: deleting {}: {e}", chr.display()),
@@ -483,7 +483,7 @@ fn latch_and_dispatch(
     let dev_plane = ctrl && shift && !alt && crate::run_mode::dev_affordances();
 
     let mut script = script;
-    let armed = script.as_ref().is_some_and(|s| s.bind_capture_armed());
+    let armed = script.as_mut().is_some_and(|s| s.bind_capture_armed());
     let run_lua = |script: &mut Option<NonSendMut<UiScript>>, lua: &str, tag: &str| {
         if let Some(s) = script.as_mut() {
             if let Err(e) = s.run(lua) {
@@ -899,19 +899,8 @@ fn release(
 /// fires another binding must not clear the outer one's `keystate` on the way out.
 fn run_addon(script: &mut Option<NonSendMut<UiScript>>, bind: &AddonBindingBody, keystate: &str) {
     let Some(s) = script.as_mut() else { return };
-    let globals = s.lua().globals();
-    // `Option<String>` rather than a raw Lua value: benilla-app does not depend on mlua, and
-    // `keystate` is a string or nothing — `None` converts back to nil on the way out.
-    let prior: Option<String> = globals.get("keystate").unwrap_or(None);
-    if let Err(e) = globals.set("keystate", keystate) {
-        warn!("bindings({}): setting keystate: {e}", bind.name);
-        return;
-    }
-    if let Err(e) = s.run(&bind.body) {
+    if let Err(e) = s.run_with_string_global("keystate", keystate, &bind.body) {
         warn!("bindings({}): {e}", bind.name);
-    }
-    if let Err(e) = s.lua().globals().set("keystate", prior) {
-        warn!("bindings({}): restoring keystate: {e}", bind.name);
     }
 }
 
@@ -1284,7 +1273,7 @@ mod tests {
         assert_eq!(
             s.eval::<String>(&format!("return {ROW}9Description:GetText()"))
                 .unwrap(),
-            crate::ui_script::keybindings_tests::label(&s, "BINDING_NAME_JUMP", "JUMP")
+            crate::ui_script::keybindings_tests::label(&mut s, "BINDING_NAME_JUMP", "JUMP")
         );
         assert!(s.bind_capture_armed());
         let mut app = vm_harness(s);
@@ -1297,7 +1286,7 @@ mod tests {
         });
         app.update();
         {
-            let s = app.world().non_send_resource::<UiScript>();
+            let mut s = app.world().non_send_resource::<UiScript>();
             assert_eq!(
                 s.eval::<String>(r#"return GetBindingAction("MOUSEWHEELUP")"#)
                     .unwrap(),
@@ -1800,7 +1789,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        let failures = crate::ui_script::load_default_ui(&script);
+        let failures = crate::ui_script::load_default_ui(&mut script);
         assert!(
             failures.is_empty(),
             "default UI failed to load: {failures:?}"

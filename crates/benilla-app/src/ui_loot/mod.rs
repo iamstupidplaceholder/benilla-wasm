@@ -76,11 +76,6 @@ const BIND_CONFIRM_MIN_QUALITY: u32 = 2;
 /// Nothing downstream re-colours it: stock `LootFrame_Update` has no coin special case
 /// (`LootFrame.lua:81-85`) and `ITEM_QUALITY_COLORS[0]` is `0xff9d9d9d`.
 const COIN_QUALITY: u32 = 0;
-/// The 1.12 coin-denomination words, QUOTED from `Interface\FrameXML\GlobalStrings.lua` (verified
-/// extract): `GOLD = "Gold"` (l.2025), `SILVER = "Silver"` (l.3465), `COPPER = "Copper"` (l.865).
-const GOLD_WORD: &str = "Gold";
-const SILVER_WORD: &str = "Silver";
-const COPPER_WORD: &str = "Copper";
 /// Give up re-checking a pending receive line's item name after this many frames (a negative-cached
 /// or genuinely-unknown entry never resolves; ~2s at 60fps is well past a normal template round-trip).
 const RECEIVE_MAX_TRIES: u16 = 120;
@@ -659,25 +654,26 @@ impl Plugin for UiLootPlugin {
 /// GlobalStrings coin words (`GOLD`/`SILVER`/`COPPER`), joined by a single space and dropping leading
 /// zeroes (25 → "25 Copper"; 10025 → "1 Gold 25 Copper"; 0 → "0 Copper"). The coin row's name is
 /// resolved app-side (the loot twin of the merchant's coin display).
+/// Words are read from the active VM's original GlobalStrings, not English constants.
 ///
 /// **Stated approximation (documented gap).** 1.12.1's GlobalStrings has **no** `GOLD_AMOUNT` /
 /// `SILVER_AMOUNT` / `COPPER_AMOUNT` "%d <Word>" patterns — those arrive in a later client. The real
 /// 1.12 coin text is produced inside `GetLootSlotInfo` (a C function, not FrameXML, not RE-recorded),
 /// so we compose "<n> <Word>" from the bare `GOLD`/`SILVER`/`COPPER` words and join them the way
 /// [`format_money`] always has (a single space); the exact client wording/separator is the stand-in.
-fn format_money(copper: u32) -> String {
+fn format_money(copper: u32, words: [Option<&str>; 3]) -> Option<String> {
     let (g, s, c) = (copper / 10000, (copper % 10000) / 100, copper % 100);
     let mut parts: Vec<String> = Vec::new();
     if g > 0 {
-        parts.push(format!("{g} {GOLD_WORD}"));
+        parts.push(format!("{g} {}", words[0]?));
     }
     if s > 0 {
-        parts.push(format!("{s} {SILVER_WORD}"));
+        parts.push(format!("{s} {}", words[1]?));
     }
     if c > 0 || parts.is_empty() {
-        parts.push(format!("{c} {COPPER_WORD}"));
+        parts.push(format!("{c} {}", words[2]?));
     }
-    parts.join(" ")
+    Some(parts.join(" "))
 }
 
 /// The coin-pile icon for a copper amount — the reference's six-step ladder, one table for the
@@ -773,12 +769,13 @@ fn snapshot(
     commands: &NetCommands,
     rolls: RollCatalogs,
     who: Candidates,
+    coin_name: Option<String>,
 ) -> Option<LootSnapshot> {
     loot.source?;
     let mut rows = Vec::with_capacity(loot.items.len() + 1);
     if loot.coin_slot {
         rows.push(loot.has_coin().then(|| LootRow {
-            name: Some(format_money(loot.gold)),
+            name: coin_name,
             texture: Some(coin_icon(loot.gold).into()),
             // 0, not 1, and for the same reason as [`COIN_QUALITY`]: `0x4c22e0`'s coin guard
             // returns before the record read (`0x4c22fd`). Invisible either way — stock
@@ -867,14 +864,25 @@ impl Candidates<'_> {
 /// received) pair with created winning (`0x491c04`-`0x491c1b` / `0x491c60`-`0x491c77`), exactly as
 /// the server sets them (vmangos `SendNewItem`: crafting → created, vendor/quest → received,
 /// loot → neither).
-fn receive_line(r: &PendingReceive, name: &str, quality: u32) -> String {
-    let verb = if r.created {
-        "You create"
+fn receive_line(
+    r: &PendingReceive,
+    name: &str,
+    quality: u32,
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    let key = if r.created {
+        "LOOT_ITEM_CREATED_SELF"
     } else if r.from_npc {
-        "You receive item"
+        "LOOT_ITEM_PUSHED_SELF"
     } else {
-        "You receive loot"
+        "LOOT_ITEM_SELF"
     };
+    let key = if r.count > 1 {
+        format!("{key}_MULTIPLE")
+    } else {
+        key.into()
+    };
+    let template = get(&key)?;
     let link = crate::ui_items::item_link_full(
         r.entry,
         0,
@@ -883,11 +891,13 @@ fn receive_line(r: &PendingReceive, name: &str, quality: u32) -> String {
         name,
         quality,
     );
-    if r.count > 1 {
-        format!("{verb}: {link}x{}.", r.count)
-    } else {
-        format!("{verb}: {link}.")
-    }
+    Some(benilla_ui::strings::fill(
+        &template,
+        &[
+            benilla_ui::strings::Arg::S(&link),
+            benilla_ui::strings::Arg::D(i64::from(r.count)),
+        ],
+    ))
 }
 
 /// Emit any pending pushes (`SMSG_ITEM_PUSH_RESULT`) once their item template resolves — the whole
@@ -937,10 +947,17 @@ fn drain_receives(
                     );
                 }
                 if r.in_chat {
-                    chat.push_event(crate::ui_chat::ChatEvent::text_only(
-                        crate::ui_chat::ChatEventKind::Loot,
-                        receive_line(&r, &rolls.name(&name, r.random_property_id), quality),
-                    ));
+                    if let Some(line) = receive_line(
+                        &r,
+                        &rolls.name(&name, r.random_property_id),
+                        quality,
+                        &mut |key| script.global_string(key),
+                    ) {
+                        chat.push_event(crate::ui_chat::ChatEvent::text_only(
+                            crate::ui_chat::ChatEventKind::Loot,
+                            line,
+                        ));
+                    }
                 }
             }
             None => {
@@ -999,7 +1016,21 @@ fn feed_loot(
         group: &group,
         names: &names,
     };
-    let fresh = snapshot(&loot, &items, icons.as_deref(), &commands, rolls, who);
+    let coin_name = if loot.has_coin() {
+        let words = ["GOLD", "SILVER", "COPPER"].map(|key| script.global_string(key));
+        format_money(loot.gold, words.each_ref().map(|word| word.as_deref()))
+    } else {
+        None
+    };
+    let fresh = snapshot(
+        &loot,
+        &items,
+        icons.as_deref(),
+        &commands,
+        rolls,
+        who,
+        coin_name,
+    );
     if fresh == *last {
         return;
     }
@@ -1347,6 +1378,26 @@ fn drain_loot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Existing line fixtures retain their authored English templates; the
+    // production path now reads the same keys from the active VM.
+    fn receive_line(r: &PendingReceive, name: &str, quality: u32) -> String {
+        super::receive_line(r, name, quality, &mut |key| {
+            Some(
+                match key {
+                    "LOOT_ITEM_SELF" => "You receive loot: %s.",
+                    "LOOT_ITEM_SELF_MULTIPLE" => "You receive loot: %sx%d.",
+                    "LOOT_ITEM_PUSHED_SELF" => "You receive item: %s.",
+                    "LOOT_ITEM_PUSHED_SELF_MULTIPLE" => "You receive item: %sx%d.",
+                    "LOOT_ITEM_CREATED_SELF" => "You create: %s.",
+                    "LOOT_ITEM_CREATED_SELF_MULTIPLE" => "You create: %sx%d.",
+                    _ => return None,
+                }
+                .into(),
+            )
+        })
+        .expect("fixture template")
+    }
     use benilla_protocol::messages::loot_type;
     use benilla_protocol::messages::GroupMemberEntry;
     use benilla_protocol::messages::ItemInfo;
@@ -1492,7 +1543,7 @@ mod tests {
             .resource_mut::<LootState>()
             .open(0x42, loot_type::CORPSE, gold, rows);
 
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         // A listener, so the event is observed where the real dialog driver sits rather than
         // through a test-only back door.
         script
@@ -1554,7 +1605,7 @@ mod tests {
                 vec![item(3, TOUGH_JERKY, 1)],
             );
 
-            let script = UiScript::new().unwrap();
+            let mut script = UiScript::new().unwrap();
             script
                 .run(
                     "OPENS = 0\n\
@@ -1603,7 +1654,7 @@ mod tests {
 
     /// The rows `LOOT_BIND_CONFIRM` has named so far, in order.
     fn confirms(app: &mut App) -> Vec<i64> {
-        let script = app.world_mut().non_send_resource_mut::<UiScript>();
+        let mut script = app.world_mut().non_send_resource_mut::<UiScript>();
         let n = script.eval::<i64>("return getn(BIND_CONFIRMS)").unwrap();
         (1..=n)
             .map(|i| {
@@ -1753,7 +1804,7 @@ mod tests {
 
         // SMSG_LOOT_REMOVED for that wire slot: the row becomes a gap.
         app.world_mut().resource_mut::<LootState>().remove_slot(2);
-        let script = app.world_mut().non_send_resource_mut::<UiScript>();
+        let mut script = app.world_mut().non_send_resource_mut::<UiScript>();
         script.run("LootSlot(1)").unwrap();
         app.world_mut().run_system_once(drain_loot).unwrap();
 
@@ -1838,7 +1889,7 @@ mod tests {
                 item(7, TOUGH_JERKY, 1),
             ],
         );
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 "BIND_CONFIRMS = {}\n\
@@ -2360,12 +2411,13 @@ mod tests {
 
     #[test]
     fn money_formats_with_real_words_dropping_zero_denominations() {
-        assert_eq!(format_money(0), "0 Copper");
-        assert_eq!(format_money(4), "4 Copper");
-        assert_eq!(format_money(25), "25 Copper");
-        assert_eq!(format_money(10025), "1 Gold 25 Copper");
-        assert_eq!(format_money(12_345), "1 Gold 23 Silver 45 Copper");
-        assert_eq!(format_money(10_000), "1 Gold");
+        let money = |n| format_money(n, [Some("Gold"), Some("Silver"), Some("Copper")]).unwrap();
+        assert_eq!(money(0), "0 Copper");
+        assert_eq!(money(4), "4 Copper");
+        assert_eq!(money(25), "25 Copper");
+        assert_eq!(money(10025), "1 Gold 25 Copper");
+        assert_eq!(money(12_345), "1 Gold 23 Silver 45 Copper");
+        assert_eq!(money(10_000), "1 Gold");
     }
 
     /// The reference's six-step ladder at `0x6c6307`–`0x6c6386`, both sides of every boundary.
@@ -2405,6 +2457,7 @@ mod tests {
                 group: &grp,
                 names: &nm,
             },
+            Some("4 Copper".into()),
         )
         .expect("open");
         assert_eq!(snap.rows.len(), 1, "coin row only");
@@ -2432,6 +2485,7 @@ mod tests {
                 group: &grp,
                 names: &nm,
             },
+            None,
         )
         .is_none());
         loot.open(0x42, loot_type::CORPSE, 12_345, vec![item(0, 117, 3)]);
@@ -2445,6 +2499,7 @@ mod tests {
                 group: &grp,
                 names: &nm,
             },
+            Some("1 Gold 23 Silver 45 Copper".into()),
         )
         .expect("open");
         assert_eq!(snap.rows.len(), 2, "coin + one item");
@@ -2471,6 +2526,7 @@ mod tests {
                 group: &grp,
                 names: &nm,
             },
+            None,
         )
         .expect("still open");
         assert_eq!(snap.rows.len(), 2, "the layout keeps both slots");
@@ -2489,6 +2545,7 @@ mod tests {
                 group: &grp,
                 names: &nm,
             },
+            None,
         )
         .expect("still open");
         assert_eq!(snap.rows, vec![None, None]);

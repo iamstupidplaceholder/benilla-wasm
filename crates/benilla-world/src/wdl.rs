@@ -43,6 +43,15 @@ pub(crate) struct WdlPlugin;
 
 impl Plugin for WdlPlugin {
     fn build(&self, app: &mut App) {
+        // WDL still binds the shared light as a storage buffer. WebGL2 leaves the optional
+        // horizon ring absent until that material joins the common texture-backed table seam;
+        // detailed ADT terrain remains the authoritative world surface.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = app;
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         app.add_plugins(MaterialPlugin::<WdlMaterial>::default())
             .add_systems(Startup, setup_wdl.after(AssetSet::Open))
             // The distant ring is world, and follows the world's lifecycle (decision 0777): it

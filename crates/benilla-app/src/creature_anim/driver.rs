@@ -14,7 +14,7 @@
 //! apart on a module boundary the way the four children did — decision 0933 records which cut was
 //! taken, which was not, and why.
 
-use std::time::Duration;
+use benilla_time::Duration;
 
 use benilla_assets::ModelAnimations;
 use benilla_formats::AnimDataCatalog;
@@ -599,8 +599,8 @@ pub(super) fn drive_animations(
         // fallback for remote bodies, but it is only a heuristic: under a short land-and-relaunch
         // it may never observe the grounded sample between the two arcs.
         let prev_vertical = std::mem::replace(&mut drv.last_vertical_speed, mv.vertical_speed);
-        let launched = mv.jumped
-            || (mv.vertical_speed > JUMP_ARC_MIN_UP && prev_vertical <= JUMP_ARC_MIN_UP);
+        let launched =
+            mv.jumped || (mv.vertical_speed > JUMP_ARC_MIN_UP && prev_vertical <= JUMP_ARC_MIN_UP);
         // The resting predicate, counted (never acted on — see the counter's note above): mode
         // Gait with nothing in flight, nothing pending, grounded and motionless. A strict lower
         // bound on what an input-memo would skip.

@@ -35,7 +35,7 @@
 //! built where the reference has it — in the dispatcher, covering every caller — rather than as a
 //! private flag here.
 
-use std::time::Duration;
+use benilla_time::Duration;
 
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseButtonInput, MouseWheel};
@@ -285,13 +285,13 @@ pub(crate) fn idle_handler(
         stand.write(crate::player::StandStateRequest { state: 1 });
     }
 
-    let strings = |key: &str| crate::ui_chat::combat::global_string(&script, key);
+    let mut strings = |key: &str| crate::ui_chat::combat::global_string(&mut script, key);
     if action.afk {
         // `SetAFK(NULL)` is `/afk` with an empty message and the mirror clear — the one row of the
         // §12 truth table this can reach, which is why it goes through the same function rather
         // than composing its own line: same `MARKED_AFK_MESSAGE % DEFAULT_AFK_MESSAGE` echo, the
         // same client-side default substitution reaching the wire, the same optimistic mirror.
-        let out = afk_line("", *mirror, &strings);
+        let out = afk_line("", *mirror, &mut strings);
         if let Some(line) = out.line {
             push_system(&mut chat, line);
         }
@@ -645,7 +645,7 @@ mod tests {
         app.world_mut()
             .spawn((SelfPlayer, ObjectStore(ObjectFields::from_pairs(fields))));
 
-        let script = benilla_ui::script::UiScript::new().unwrap();
+        let mut script = benilla_ui::script::UiScript::new().unwrap();
         // The three GlobalStrings this handler reaches for, exactly as the install ships them.
         script
             .run(

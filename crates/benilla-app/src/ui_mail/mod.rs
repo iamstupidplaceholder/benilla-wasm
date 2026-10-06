@@ -301,7 +301,7 @@ fn resolve_row(
     // The VM's own GlobalStrings, for the auction notice's subject template. A resolver rather than
     // a table because the strings are the player's install's, and Rust must never carry a copy of
     // them (decision 0669's shape).
-    get_text: &dyn Fn(&str) -> Option<String>,
+    get_text: &mut dyn FnMut(&str) -> Option<String>,
 ) -> MailInboxRow {
     let is_gm = entry.stationery == STATIONERY_GM;
     let returned = entry.checked & CHECKED_RETURNED != 0;
@@ -495,7 +495,7 @@ fn snapshot(
     commands: &NetCommands,
     rolls: crate::items::RollCatalogs,
     macros: &crate::npc_text::MacroContext,
-    get_text: &dyn Fn(&str) -> Option<String>,
+    get_text: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<MailState> {
     mail.mailbox?;
     Some(MailState {
@@ -540,7 +540,7 @@ fn feed_mail(
     items: Res<Items>,
     icons: Option<Res<ItemDisplays>>,
     stationery: Option<Res<Stationery>>,
-    names: Res<NameCache>,
+    names: (Res<NameCache>, crate::npc_text::MacroNames),
     commands: Res<NetCommands>,
     mut pending: ResMut<MailPending>,
     time: Res<Time>,
@@ -553,6 +553,7 @@ fn feed_mail(
     // The random-suffix roll's catalogs (1547): an enclosed item's rolled name.
     extras: MailFeedExtras,
 ) {
+    let (names, labels) = names;
     let Some(mut script) = script else {
         return;
     };
@@ -573,7 +574,7 @@ fn feed_mail(
     // Take/return/delete failures go to the surface — and the voice — their message record names.
     let refusals: Vec<_> = std::mem::take(&mut mail.errors)
         .into_iter()
-        .filter_map(|key| crate::ui_action::keyed_line(&script, key))
+        .filter_map(|key| crate::ui_action::keyed_line(&mut script, key))
         .collect();
     crate::ui_action::show_messages(&mut script, &mut sink, "ui_mail", refusals);
     // SEND acks: MAIL_FAILED on EVERY send result (unblocks the button — wow-re §5), plus
@@ -596,7 +597,7 @@ fn feed_mail(
         } else {
             ack.refusal
         };
-        let line = key.and_then(|k| crate::ui_action::keyed_line(&script, k));
+        let line = key.and_then(|k| crate::ui_action::keyed_line(&mut script, k));
         crate::ui_action::show_messages(&mut script, &mut sink, "ui_mail", line);
         if ack.ok {
             script.reset_compose_tab();
@@ -607,14 +608,14 @@ fn feed_mail(
     // The macro subject, resolved before the row walk borrows the name cache again. `None` until
     // the player is streamed and named — the feed diffs on the substituted text, so a letter opened
     // that early re-substitutes as soon as it lands.
-    let subject = crate::npc_text::player_identity(&self_q, &names, &commands);
+    let subject = crate::npc_text::player_identity(&self_q, &names, &commands, &labels);
     let macros = crate::npc_text::MacroContext {
         subject: subject.as_ref(),
         states: &states,
     };
     let fresh = {
         // Scoped: the resolver borrows the VM, and `set_mail` below needs it back.
-        let get_text = |key: &str| script.lua().globals().get::<String>(key).ok();
+        let mut get_text = |key: &str| script.global_string(key);
         snapshot(
             &mail,
             &items,
@@ -624,7 +625,7 @@ fn feed_mail(
             &commands,
             rolls,
             &macros,
-            &get_text,
+            &mut get_text,
         )
     };
     let opened = last_mailbox.is_none() && mail.mailbox.is_some();
@@ -1003,7 +1004,7 @@ mod tests {
             &commands,
             crate::items::RollCatalogs::NONE,
             &no_macros(&states),
-            &no_strings,
+            &mut no_strings,
         );
         assert!(row.can_reply);
         assert!(row.can_delete);
@@ -1023,7 +1024,7 @@ mod tests {
             &commands,
             crate::items::RollCatalogs::NONE,
             &no_macros(&states),
-            &no_strings,
+            &mut no_strings,
         );
         assert!(row.can_reply);
         assert!(!row.can_delete);
@@ -1040,7 +1041,7 @@ mod tests {
             &commands,
             crate::items::RollCatalogs::NONE,
             &no_macros(&states),
-            &no_strings,
+            &mut no_strings,
         );
         assert!(!row.can_reply);
         assert!(row.can_delete);
@@ -1057,7 +1058,7 @@ mod tests {
             &commands,
             crate::items::RollCatalogs::NONE,
             &no_macros(&states),
-            &no_strings,
+            &mut no_strings,
         );
         assert!(row.can_delete);
     }
@@ -1094,7 +1095,7 @@ mod tests {
             &commands,
             crate::items::RollCatalogs::NONE,
             &no_macros(&states),
-            &no_strings,
+            &mut no_strings,
         );
         assert_eq!(row.item_id, 2589);
         assert_eq!(row.item_count, 5);

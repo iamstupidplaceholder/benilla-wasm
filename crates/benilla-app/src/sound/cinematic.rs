@@ -24,7 +24,11 @@
 
 use bevy::prelude::*;
 
-use benilla_assets::{LockRecover, WorldAssets};
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
+use benilla_assets::LockRecover;
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
 use benilla_world::schedule::WorldStage;
 
 use super::mixer::{self, StreamingSoundHandle};
@@ -49,7 +53,7 @@ pub(super) struct CinematicVoice {
     /// and a sequence-keyed identity would have matched and left the voice running from wherever
     /// it had reached.
     shot: Option<(u64, usize)>,
-    handle: Option<StreamingSoundHandle<kira::sound::FromFileError>>,
+    handle: Option<StreamingSoundHandle<mixer::FromFileError>>,
 }
 
 impl CinematicVoice {
@@ -59,7 +63,7 @@ impl CinematicVoice {
     fn is_live(&self) -> bool {
         self.handle
             .as_ref()
-            .is_some_and(|h| !matches!(h.state(), kira::sound::PlaybackState::Stopped))
+            .is_some_and(|h| !matches!(h.state(), mixer::PlaybackState::Stopped))
     }
 
     fn stop(&mut self) {
@@ -122,6 +126,9 @@ fn narrate(
         return;
     };
     if voice.shot == Some((run, index)) {
+        return;
+    }
+    if !out.mixer.as_ref().is_some_and(|m| m.ready()) {
         return;
     }
     // A new shot: the previous one's narration, if any, does not carry over.

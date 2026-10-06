@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -176,7 +176,7 @@ fn unit_blood_schema() -> Schema {
 }
 
 /// Load both blood tables from the patch chain into a [`BloodCatalog`].
-pub fn load_blood_catalog(chain: &mut Chain) -> Result<BloodCatalog> {
+pub fn load_blood_catalog(chain: &mut impl FileSource) -> Result<BloodCatalog> {
     let (levels, default_level) = {
         let bytes = chain
             .read_file(UNIT_BLOOD_LEVELS)

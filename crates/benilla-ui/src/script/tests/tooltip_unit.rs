@@ -26,6 +26,10 @@ fn seed_level_strings(s: &mut UiScript) {
         PLAYER = "[PLAYER]"
         ELITE  = "[ELITE]"
         BOSS   = "[BOSS]"
+        PVP_ENABLED = "PvP"
+        UNIT_SKINNABLE = "Skinnable"
+        PVP_RANK_CIVILIAN = "Civilian"
+        PVP_RANK_LEADER = "Leader"
     "#,
     )
     .unwrap();

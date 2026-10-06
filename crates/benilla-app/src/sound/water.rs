@@ -23,8 +23,11 @@ use bevy::prelude::*;
 
 use benilla_assets::coords::bevy_to_wow;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::entities::CollisionHeight;
 use crate::net::NetEntity;
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::WorldAssets;
 use benilla_world::schedule::WorldStage;
 

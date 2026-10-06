@@ -49,7 +49,7 @@ pub struct TokenContext<'a> {
     /// prints "14 to 22".
     ///
     /// `None` (key absent, or no table at all) leaves the token raw, like any unresolved token.
-    pub text: &'a dyn Fn(&str, &[i64]) -> Option<String>,
+    pub text: &'a mut dyn FnMut(&str, &[i64]) -> Option<String>,
 }
 
 /// The byte-verified effect bounds (`0x6e3800`, flat term): `(min, max)`.
@@ -81,7 +81,7 @@ fn duration_ms(d: &SpellDisplay, ctx: &TokenContext) -> Option<i64> {
 /// a twin in this family, so the other three fall back to the bare token — which is the same
 /// fallback `plural_template` takes, and the reason `INT_SPELL_DURATION_MIN` reads "1 min" and
 /// "9 min" alike.
-fn duration_text(ms: i64, ctx: &TokenContext) -> Option<String> {
+fn duration_text(ms: i64, ctx: &mut TokenContext) -> Option<String> {
     if ms < 0 {
         return (ctx.text)("SPELL_DURATION_UNTIL_CANCELLED", &[]);
     }
@@ -108,7 +108,7 @@ fn duration_text(ms: i64, ctx: &TokenContext) -> Option<String> {
 /// the float one is spelled `"%.1f to %.1f"`, so reaching for it would print "14.0 to 22.0" where
 /// Fireball rank 1 says "14 to 22". `effect_bounds` is integral by construction (base + dice ×
 /// sides, all `i32` columns), which is what makes the integer key the right one here.
-fn spread_text(min: i64, max: i64, ctx: &TokenContext) -> Option<String> {
+fn spread_text(min: i64, max: i64, ctx: &mut TokenContext) -> Option<String> {
     (ctx.text)("INT_SPELL_POINTS_SPREAD_TEMPLATE", &[min, max])
 }
 
@@ -126,7 +126,7 @@ fn token_value(
     letter: char,
     slot: usize,
     d: &SpellDisplay,
-    ctx: &TokenContext,
+    ctx: &mut TokenContext,
     scale: f64,
 ) -> Option<(String, f64)> {
     let scaled = |v: i64| -> i64 {
@@ -161,7 +161,7 @@ fn token_value(
             let (min, max) = effect_bounds(d, slot);
             let period = i64::from(*d.effect_amplitude.get(slot).unwrap_or(&0)).max(0);
             let period = if period == 0 { 5000 } else { period };
-            let dur = duration_ms(d, ctx).unwrap_or(0).max(0);
+            let dur = duration_ms(d, &*ctx).unwrap_or(0).max(0);
             let total = |v: i64| scaled((v.abs() * dur / period).max(0));
             let (tmin, tmax) = (total(min), total(max));
             Some(if tmin == tmax {
@@ -171,7 +171,7 @@ fn token_value(
             })
         }
         'd' => {
-            let ms = duration_ms(d, ctx)?;
+            let ms = duration_ms(d, &*ctx)?;
             let v = if ms < 0 { 0.0 } else { ms as f64 / 1000.0 };
             Some((duration_text(ms, ctx)?, v))
         }
@@ -211,7 +211,7 @@ fn token_value(
 }
 
 /// Substitute every `$`-token in `text` against `spell` (byte-verified formulas, module doc).
-pub fn substitute(text: &str, spell: &SpellDisplay, ctx: &TokenContext) -> String {
+pub fn substitute(text: &str, spell: &SpellDisplay, ctx: &mut TokenContext) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -355,13 +355,14 @@ mod tests {
         durations: &'a SpellDurationCatalog,
         radii: &'a SpellRadiusCatalog,
         lookup: &'a dyn Fn(u32) -> Option<&'a SpellDisplay>,
+        text: &'a mut dyn FnMut(&str, &[i64]) -> Option<String>,
     ) -> TokenContext<'a> {
         TokenContext {
             home_area: None,
             durations,
             radii,
             lookup,
-            text: &text,
+            text,
         }
     }
 
@@ -385,15 +386,16 @@ mod tests {
         ] {
             durations.insert_for_tests(idx, ms);
         }
-        let c = ctx(&durations, &radii, &none_lookup);
-        let d = |duration_index| {
+        let mut text = text;
+        let mut c = ctx(&durations, &radii, &none_lookup, &mut text);
+        let mut d = |duration_index| {
             substitute(
                 "$d",
                 &SpellDisplay {
                     duration_index,
                     ..Default::default()
                 },
-                &c,
+                &mut c,
             )
         };
         assert_eq!(d(1), "<30sec>");
@@ -420,9 +422,10 @@ mod tests {
             effect_die_sides: [9, 0, 0],
             ..Default::default()
         };
-        let c = ctx(&durations, &radii, &none_lookup);
+        let mut text = text;
+        let mut c = ctx(&durations, &radii, &none_lookup, &mut text);
         assert_eq!(
-            substitute("causes $s1 Fire damage and $s2 more", &d, &c),
+            substitute("causes $s1 Fire damage and $s2 more", &d, &mut c),
             "causes <14..22> Fire damage and 24 more"
         );
         // Negative base points print absolute (the client's "reduces by N" phrasing).
@@ -430,7 +433,7 @@ mod tests {
         d.effect_base_dice = [1, 0, 0];
         d.effect_die_sides = [1, 0, 0];
         assert_eq!(
-            substitute("reduces armor by $s1", &d, &c),
+            substitute("reduces armor by $s1", &d, &mut c),
             "reduces armor by 30"
         );
     }
@@ -450,13 +453,14 @@ mod tests {
             effect_amplitude: [3000, 0, 0],
             ..Default::default()
         };
-        let c = ctx(&durations, &radii, &none_lookup);
+        let mut text = text;
+        let mut c = ctx(&durations, &radii, &none_lookup, &mut text);
         assert_eq!(
-            substitute("Deals $o1 damage over $d, every $t1 sec.", &d, &c),
+            substitute("Deals $o1 damage over $d, every $t1 sec.", &d, &mut c),
             "Deals 18 damage over <18sec>, every 3 sec."
         );
         assert_eq!(
-            substitute("Restores $/2;s1 health: $l point:points;.", &d, &c),
+            substitute("Restores $/2;s1 health: $l point:points;.", &d, &mut c),
             // 3/2 rounds to 2 (min==max==3 scaled by 0.5 → 2, rounded); plural picks "points"
             "Restores 2 health: points.".to_string()
         );
@@ -475,33 +479,39 @@ mod tests {
         };
         let lookup = |id: u32| -> Option<&SpellDisplay> { (id == 1234).then_some(&other) };
         let d = SpellDisplay::default();
-        let c = TokenContext {
-            home_area: Some("Goldshire"),
-            durations: &durations,
-            radii: &radii,
-            lookup: &lookup,
-            text: &text,
-        };
-        assert_eq!(
-            substitute("as strong as $1234s1 hits", &d, &c),
-            "as strong as 100 hits"
-        );
-        assert_eq!(substitute("stacks $u times", &d, &c), "stacks $u times");
-        // $z — the home-bind area (the hearthstone's "Returns you to $z."); raw when unfed.
-        assert_eq!(
-            substitute("Returns you to $z.", &d, &c),
-            "Returns you to Goldshire."
-        );
-        let unbound = TokenContext {
+        // One referent per context: the test resolver is a zero-sized function item,
+        // so each context gets its own copy rather than two exclusive borrows of one.
+        let mut text_unbound = text;
+        let mut text_c = text;
+        let mut unbound = TokenContext {
             home_area: None,
             durations: &durations,
             radii: &radii,
             lookup: &lookup,
-            text: &text,
+            text: &mut text_unbound,
         };
         assert_eq!(
-            substitute("Returns you to $z.", &d, &unbound),
+            substitute("Returns you to $z.", &d, &mut unbound),
             "Returns you to $z."
         );
+        {
+            let mut c = TokenContext {
+            home_area: Some("Goldshire"),
+            durations: &durations,
+            radii: &radii,
+            lookup: &lookup,
+            text: &mut text_c,
+        };
+        assert_eq!(
+            substitute("as strong as $1234s1 hits", &d, &mut c),
+            "as strong as 100 hits"
+        );
+        assert_eq!(substitute("stacks $u times", &d, &mut c), "stacks $u times");
+        // $z — the home-bind area (the hearthstone's "Returns you to $z."); raw when unfed.
+        assert_eq!(
+            substitute("Returns you to $z.", &d, &mut c),
+            "Returns you to Goldshire."
+        );
+        }
     }
 }

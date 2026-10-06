@@ -10,7 +10,7 @@ use super::common::script;
 /// below its own parent, exactly as shipped.
 #[test]
 fn reparent_relevels_the_moved_frame_only() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         High = CreateFrame("Frame", "High")
@@ -48,7 +48,7 @@ fn reparent_relevels_the_moved_frame_only() {
 /// current".
 #[test]
 fn reparent_to_nil_resets_strata_and_level() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         High = CreateFrame("Frame", "SPHigh")
@@ -73,7 +73,7 @@ fn reparent_to_nil_resets_strata_and_level() {
 /// the round-trip is what makes it run.
 #[test]
 fn a_visible_reparent_refires_onhide_then_onshow() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         log = {}
@@ -96,7 +96,7 @@ fn a_visible_reparent_refires_onhide_then_onshow() {
         "#,
     )
     .unwrap();
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(
         log,
         vec!["hide:RTOld", "show:RTNew", "kidshow"],
@@ -121,7 +121,7 @@ fn a_visible_reparent_refires_onhide_then_onshow() {
 /// something shows it. Shipped behaviour, byte-verified — not an oversight.
 #[test]
 fn a_hidden_reparent_fires_nothing_and_leaves_visibility_stale() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         fired = 0
@@ -141,7 +141,7 @@ fn a_hidden_reparent_fires_nothing_and_leaves_visibility_stale() {
         "neither event fired"
     );
     assert!(
-        s.eval::<bool>("return STF:IsShown() and not STF:IsVisible()")
+        s.eval_truthy("return STF:IsShown() and not STF:IsVisible()")
             .unwrap(),
         "shown bit intact, effective visibility stale-false under the visible new parent"
     );
@@ -149,7 +149,7 @@ fn a_hidden_reparent_fires_nothing_and_leaves_visibility_stale() {
     // a real transition needs the toggle. The Hide half fires no OnHide (the frame was already
     // effectively invisible — transition-gated); only the Show half's false→true fires.
     s.run("STF:Hide(); STF:Show()").unwrap();
-    assert!(s.eval::<bool>("return STF:IsVisible()").unwrap());
+    assert!(s.eval_truthy("return STF:IsVisible()").unwrap());
     assert_eq!(
         s.eval::<i64>("return fired").unwrap(),
         1,
@@ -162,7 +162,7 @@ fn a_hidden_reparent_fires_nothing_and_leaves_visibility_stale() {
 /// — not the nil path. The same-parent call is a total no-op that fires nothing.
 #[test]
 fn the_binding_raises_on_cycle_bad_name_and_absent_argument() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         A = CreateFrame("Frame", "ErrA")

@@ -23,7 +23,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 mod atmosphere; // the resolved `Atmosphere` output type + the DBC row/field → meaning constants
 mod tables; // raw LightIntBand/FloatBand decode + time-of-day interpolation
@@ -334,10 +334,13 @@ fn blend_alpha(dist: f32, start: f32, end: f32) -> f32 {
 }
 
 impl LightCatalog {
-    /// Read the three lighting DBCs off the patch chain.
-    pub fn load(chain: &mut Chain) -> Result<Self> {
+    /// Read the lighting DBC family from any client-file source.
+    ///
+    /// Native callers normally pass the MPQ [`crate::Chain`]. Browser callers can supply an
+    /// asynchronously populated in-memory source without changing the decoder or lighting model.
+    pub fn load(source: &mut impl FileSource) -> Result<Self> {
         let lights = {
-            let bytes = chain
+            let bytes = source
                 .read_file(LIGHT)
                 .with_context(|| format!("reading {LIGHT}"))?;
             let rs = parse(&bytes, light_schema(), "Light")?;
@@ -378,12 +381,12 @@ impl LightCatalog {
             v
         };
         let int_bands = load_bands(
-            chain,
+            source,
             INT_BAND,
             band_schema("LightIntBand", FieldType::UInt32),
         )?;
         let float_bands = load_float_bands(
-            chain,
+            source,
             FLOAT_BAND,
             band_schema("LightFloatBand", FieldType::Float32),
         )?;
@@ -393,7 +396,7 @@ impl LightCatalog {
             light_params_water_alpha,
             light_params_skybox,
         ) = {
-            let bytes = chain
+            let bytes = source
                 .read_file(LIGHT_PARAMS)
                 .with_context(|| format!("reading {LIGHT_PARAMS}"))?;
             let rs = parse(&bytes, light_params_schema(), "LightParams")?;
@@ -433,7 +436,7 @@ impl LightCatalog {
         };
         // `LightSkybox.dbc` — 6 records × 2 fields (`ID`, `Name`), the model each skybox id names.
         let skyboxes = {
-            let bytes = chain
+            let bytes = source
                 .read_file(LIGHT_SKYBOX)
                 .with_context(|| format!("reading {LIGHT_SKYBOX}"))?;
             let mut schema = Schema::new("LightSkybox");

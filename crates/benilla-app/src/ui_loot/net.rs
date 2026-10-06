@@ -80,8 +80,19 @@ fn on_release_response(
     In(ev): In<SessionEvent>,
     mut loot: ResMut<LootState>,
     mut latch: ResMut<LootLatch>,
+    commands: Res<NetCommands>,
 ) {
     if let SessionEvent::LootReleaseResponse { guid } = ev {
+        // A server may close the window immediately after notifying the last
+        // slot removal, within the same network batch. Do not let that teardown
+        // erase the client's already-armed last-slot release before drain_loot
+        // runs: CMaNGOS finalizes item destruction on the explicit release.
+        // Match the live source and consume the one-shot edge; a response to a
+        // release we already sent (or an old source) must not send another.
+        if loot.source() == Some(guid) && loot.take_auto_release() {
+            debug!("ui_loot: server closed emptied loot {guid:#x} — flush pending auto-release");
+            let _ = commands.0.send(ClientCommand::LootRelease { guid });
+        }
         loot_release_response(guid, &mut loot, &mut latch);
     }
 }
@@ -439,9 +450,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).expect(key);
+        let mut g = |key: &str| s.global_string(key).expect(key);
         assert_eq!(g("ERR_FISH_NOT_HOOKED"), "No fish are hooked.");
         assert_eq!(g("ERR_FISH_ESCAPED"), "Your fish got away!");
     }
@@ -529,9 +540,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).expect(key);
+        let mut g = |key: &str| s.global_string(key).expect(key);
 
         for (code, want) in [
             (4u8, "You are too far away to loot that corpse."),

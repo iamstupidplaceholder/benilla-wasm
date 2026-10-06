@@ -208,8 +208,8 @@ pub(crate) struct DamageTextFont(pub(crate) Option<String>);
 /// `0x704350` accepts a Lua **string or number** (`lua_isstring`) and reports failure by leaving
 /// `0x703bf0`'s pre-seeded `""` in place, so an absent, nil or non-string global reads as empty —
 /// which is the same thing the factory's own name guard rejects. Empty folds to `None` here.
-pub(crate) fn read_damage_text_font(script: &benilla_ui::script::UiScript) -> DamageTextFont {
-    let value: Option<String> = script.lua().globals().get("DAMAGE_TEXT_FONT").ok();
+pub(crate) fn read_damage_text_font(script: &mut benilla_ui::script::UiScript) -> DamageTextFont {
+    let value: Option<String> = script.global_string("DAMAGE_TEXT_FONT");
     DamageTextFont(value.filter(|v| !v.is_empty()))
 }
 
@@ -258,6 +258,7 @@ pub(crate) fn float_combat_text(
     // The face, bound once on the world-entry load edge ([`DamageTextFont`]). Absent in a bare
     // test world, where the fallback face is what the reference's stock `Fonts.xml` names anyway.
     font: Option<Res<DamageTextFont>>,
+    mut script: Option<NonSendMut<benilla_ui::script::UiScript>>,
 ) {
     let now = time.elapsed_secs_f64();
     // Headless (captures/tests) the camera is None — spawns/expiry still run, nothing draws.
@@ -267,6 +268,18 @@ pub(crate) fn float_combat_text(
         .map(|(c, pose)| (c, GlobalTransform::from(*pose)));
     let viewport = cam.as_ref().and_then(|(c, _)| c.logical_viewport_size());
     for spawn in spawns.read() {
+        let body = if let Some(key) = law::outcome_key(&spawn.text) {
+            let Some(word) = script
+                .as_mut()
+                .and_then(|s| s.global_string(key))
+                .filter(|word| !word.is_empty())
+            else {
+                continue;
+            };
+            word
+        } else {
+            spawn.text.clone()
+        };
         let Some(slot) = free_slot(&texts.0, spawn.anchor) else {
             continue; // the 4-slot hard drop
         };
@@ -286,7 +299,7 @@ pub(crate) fn float_combat_text(
         );
         debug!(
             "fct: \"{}\" (cat {}) over {:?}",
-            spawn.text, spawn.category, spawn.anchor
+            body, spawn.category, spawn.anchor
         );
         if benilla_assets::trace::enabled() {
             let via_attach = anchors
@@ -296,7 +309,7 @@ pub(crate) fn float_combat_text(
                 "fct",
                 &format!(
                     "spawn \"{}\" cat={} anchor={:?} pos=({:.3},{:.3},{:.3}) attach18={}",
-                    spawn.text,
+                    body,
                     spawn.category,
                     spawn.anchor,
                     overhead.x,
@@ -311,7 +324,7 @@ pub(crate) fn float_combat_text(
             anchor: spawn.anchor,
             pos,
             born: now,
-            text: spawn.text.clone(),
+            text: body,
             category: spawn.category,
             color: spawn
                 .color

@@ -14,21 +14,21 @@ use super::test_ui::load_ui as load_xml;
 fn harness(extra: &[&str]) -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
     for f in extra {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s
@@ -309,7 +309,7 @@ fn hovering_the_meter_shows_the_live_latency() {
 /// the bar's end-to-end test pins, kept here so the two move together.
 #[test]
 fn the_meter_adds_its_two_frames_to_the_bar() {
-    let s = harness(&[]);
+    let mut s = harness(&[]);
     for name in [
         "MainMenuBarPerformanceBarFrame",
         "MainMenuBarPerformanceBarFrameButton",

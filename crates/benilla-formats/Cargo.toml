@@ -15,7 +15,7 @@ workspace = true
 # (decision 1175). EVERY dependent must take this crate with `default-features = false` and
 # re-export `dev`, or feature unification puts `/Users/…` back into a player binary —
 # `scripts/gates.sh`'s `--no-default-features` line is what catches getting that wrong.
-default = ["dev"]
+default = []
 dev = []
 
 [dependencies]

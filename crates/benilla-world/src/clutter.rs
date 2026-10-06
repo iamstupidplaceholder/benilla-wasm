@@ -30,23 +30,29 @@ use benilla_formats::{
 /// so they don't depend on the terrain streamer's own setup (which lets the streamer be swapped).
 pub(crate) struct ClutterPlugin;
 
+#[cfg(target_arch = "wasm32")]
+mod browser;
+
 impl Plugin for ClutterPlugin {
     fn build(&self, app: &mut App) {
         // The config exists from plugin build, not `setup_clutter`: the CVar loader
         // (`crate::cvars::load_config`, also Startup) applies a saved `WorldDetail` onto it, and
         // an ordering flip must not silently drop the file's value (0992).
-        app.init_resource::<ClutterConfig>()
-            .add_systems(Startup, setup_clutter.after(AssetSet::Open))
-            .add_systems(
-                Update,
-                (
-                    remesh_on_cutout_change,
-                    stream_chunk_clutter,
-                    evict_clutter_geometry,
-                    scope_clutter_geometry,
-                )
-                    .chain(),
-            );
+        app.init_resource::<ClutterConfig>();
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Startup, setup_clutter.after(AssetSet::Open));
+        #[cfg(target_arch = "wasm32")]
+        browser::plugin(app);
+        app.add_systems(
+            Update,
+            (
+                remesh_on_cutout_change,
+                stream_chunk_clutter,
+                evict_clutter_geometry,
+                scope_clutter_geometry,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -118,6 +124,7 @@ fn scope_clutter_geometry(
 
 /// Startup: load the ground-effect (clutter) catalog off the shared chain + insert the per-chunk
 /// geometry cache. (Moved out of the terrain streamer's `setup_terrain`.)
+#[cfg(not(target_arch = "wasm32"))]
 fn setup_clutter(mut commands: Commands, world_assets: Option<ResMut<WorldAssets>>) {
     let Some(world_assets) = world_assets else {
         return;
@@ -126,7 +133,7 @@ fn setup_clutter(mut commands: Commands, world_assets: Option<ResMut<WorldAssets
     commands.insert_resource(ClutterGeometry::default());
     let mut chain = world_assets.chain.lock_recover();
     // key_by_internal_id = true: the faithful GroundEffectDoodad keying (see load_ground_effect_catalog).
-    match load_ground_effect_catalog(&mut chain, true) {
+    match load_ground_effect_catalog(&mut *chain, true) {
         Ok(catalog) => {
             info!("ground-effect catalog: {} effects", catalog.len());
             commands.insert_resource(GroundClutter { catalog });
@@ -406,7 +413,8 @@ fn build_chunk_clutter(
     alpha_ref: f32,
     fade_far: f32,
     geometry: &mut ClutterGeometry,
-    assets: &mut WorldAssets,
+    #[cfg(not(target_arch = "wasm32"))] assets: &mut WorldAssets,
+    #[cfg(target_arch = "wasm32")] assets: &mut browser::Host,
     meshes: &mut Assets<Mesh>,
     images: &mut Assets<Image>,
     materials: &mut Assets<WowModelMaterial>,
@@ -414,9 +422,14 @@ fn build_chunk_clutter(
 ) -> Vec<Entity> {
     let mut out = Vec::new();
     for (model_path, placements) in models {
+        #[cfg(not(target_arch = "wasm32"))]
         let subs = geometry.0.or_insert_with(model_path.clone(), || {
             load_m2_mesh(&mut assets.chain.lock_recover(), model_path).unwrap_or_default()
         });
+        #[cfg(target_arch = "wasm32")]
+        let Some(subs) = geometry.0.fetch(model_path) else {
+            continue;
+        };
         if subs.is_empty() {
             continue;
         }
@@ -552,7 +565,8 @@ pub(crate) fn stream_chunk_clutter(
     mut chunks: Query<(Entity, &mut ClutterChunk)>,
     cfg: Res<ClutterConfig>,
     geometry: Option<ResMut<ClutterGeometry>>,
-    assets: Option<ResMut<WorldAssets>>,
+    #[cfg(not(target_arch = "wasm32"))] assets: Option<ResMut<WorldAssets>>,
+    #[cfg(target_arch = "wasm32")] mut assets: browser::Host,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<WowModelMaterial>>,
@@ -561,7 +575,12 @@ pub(crate) fn stream_chunk_clutter(
     // hard `ResMut` here is a *validation* failure, not a `None` the body can handle: the system
     // never runs, Bevy's default error handler panics, and a client that found no install died on
     // its first frame instead of sitting at the login screen (decision 1451).
-    let (Some(mut geometry), Some(mut assets)) = (geometry, assets) else {
+    #[cfg(not(target_arch = "wasm32"))]
+    let Some(mut assets) = assets
+    else {
+        return;
+    };
+    let Some(mut geometry) = geometry else {
         return;
     };
     let Some((cam_tf, projection)) = cam.iter().next() else {
@@ -619,6 +638,10 @@ pub(crate) fn stream_chunk_clutter(
         let Ok((_, mut cc)) = chunks.get_mut(ent) else {
             continue;
         };
+        #[cfg(target_arch = "wasm32")]
+        if !assets.ready(&cc.models, &mut geometry, &images) {
+            continue;
+        }
         if d2 < visible_d2 {
             late += 1;
             late_nearest = late_nearest.min(d2.sqrt());

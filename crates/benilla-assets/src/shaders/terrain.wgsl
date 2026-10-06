@@ -68,7 +68,83 @@ struct WowLight {
     point_count: vec4<f32>,
     points: array<vec4<f32>, 512>,
 };
+#ifdef WOW_LIGHT_TEXTURE
+@group(#{MATERIAL_BIND_GROUP}) @binding(90) var wow_light_table: texture_2d<u32>;
+
+const WOW_TABLE_WIDTH: u32 = 2048u;
+
+fn wow_table_f32(row: u32) -> vec4<f32> {
+    let x = row % WOW_TABLE_WIDTH;
+    let y = row / WOW_TABLE_WIDTH;
+    return bitcast<vec4<f32>>(textureLoad(wow_light_table, vec2<i32>(i32(x), i32(y)), 0));
+}
+#else
 @group(#{MATERIAL_BIND_GROUP}) @binding(90) var<storage, read> wow_light: WowLight;
+#endif
+
+fn light_ambient() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(0u);
+#else
+    return wow_light.light_ambient;
+#endif
+}
+
+fn light_diffuse() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(1u);
+#else
+    return wow_light.light_diffuse;
+#endif
+}
+
+fn light_sun() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(2u);
+#else
+    return wow_light.light_sun;
+#endif
+}
+
+fn light_spec() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(3u);
+#else
+    return wow_light.light_spec;
+#endif
+}
+
+fn fog_color() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(4u);
+#else
+    return wow_light.fog_color;
+#endif
+}
+
+fn fog_params() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(5u);
+#else
+    return wow_light.fog_params;
+#endif
+}
+
+fn point_count() -> u32 {
+#ifdef WOW_LIGHT_TEXTURE
+    return u32(wow_table_f32(20u).x);
+#else
+    return u32(wow_light.point_count.x);
+#endif
+}
+
+fn point_row(row: u32) -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(21u + row);
+#else
+    return wow_light.points[row];
+#endif
+}
 
 // Custom vertex→fragment payload: the standard fields the splat fragment needs, PLUS `specular` — the
 // per-vertex-clamped sun glint that must be Gouraud-interpolated (Q14). Same struct on both stages, so
@@ -125,11 +201,11 @@ const TERRAIN_REACH: f32 = 33.570166;
 // box, a *different* byte-pinned number), a change that would move the approved interior look, so it
 // is the director's to weigh. The two lanes diverge on purpose; do not "fix" them back into one.
 fn point_light_sum(P: vec3<f32>, N: vec3<f32>, anchor: vec3<f32>) -> vec3<f32> {
-    let count = u32(wow_light.point_count.x);
+    let count = point_count();
     var sel = array<u32, 3>(0u, 0u, 0u);
     var sd = array<f32, 3>(1e30, 1e30, 1e30);
     for (var i = 0u; i < count; i = i + 1u) {
-        let pos_range = wow_light.points[2u * i];
+        let pos_range = point_row(2u * i);
         let dv = pos_range.xyz - anchor;
         let d2 = dot(dv, dv);
         // The hash sweep is horizontal (the grid keys on WoW x/y = Bevy z/x) and has no vertical
@@ -153,12 +229,12 @@ fn point_light_sum(P: vec3<f32>, N: vec3<f32>, anchor: vec3<f32>) -> vec3<f32> {
         if (sd[s] > 9.9e29) {
             break;
         }
-        let pos_range = wow_light.points[2u * sel[s]];
+        let pos_range = point_row(2u * sel[s]);
         let to_light = pos_range.xyz - P;
         let d = length(to_light);
         let atten = 1.0 / (0.7 * d + 0.03 * d * d);
         let nl = max(dot(N, to_light / max(d, 1e-4)), 0.0);
-        sum += wow_light.points[2u * sel[s] + 1u].rgb * (atten * nl);
+        sum += point_row(2u * sel[s] + 1u).rgb * (atten * nl);
     }
     return sum;
 }
@@ -204,11 +280,11 @@ fn vertex(in: Vertex) -> TerrainVsOut {
     // wow_light.light_spec.w (20), spec color = row 9 (wow_light.light_spec.rgb); H = halfway(to-light, to-eye) with
     // the LOCAL viewer (per-vertex eye dir). Clamp HERE, per vertex — rasterizer Gouraud-interpolates.
     let n = normalize(world_normal);
-    let l = -normalize(wow_light.light_sun.xyz); // to-light (the sun travels along +light_sun)
+    let l = -normalize(light_sun().xyz); // to-light (the sun travels along +light_sun)
     let v = normalize(view.world_position.xyz - out.world_position.xyz); // to-eye (local viewer)
     let h = normalize(l + v);
     let ndoth = max(dot(n, h), 0.0);
-    out.specular = clamp(wow_light.light_spec.rgb * pow(ndoth, wow_light.light_spec.w), vec3<f32>(0.0), vec3<f32>(1.0));
+    out.specular = clamp(light_spec().rgb * pow(ndoth, light_spec().w), vec3<f32>(0.0), vec3<f32>(1.0));
 
     // STEP 3 at the faithful locus — the WHOLE diffuse sum, clamped HERE per vertex (see the
     // struct note). Sun: `ambient + diffuse·max(N·L,0)` on the MCNR normal; points: the ≤3-nearest
@@ -217,7 +293,7 @@ fn vertex(in: Vertex) -> TerrainVsOut {
     let ndotl = max(dot(n, l), 0.0);
     let points = point_light_sum(out.world_position.xyz, n, mcnk_cell_anchor(out.world_position.xyz));
     out.primary = clamp(
-        wow_light.light_ambient.rgb + wow_light.light_diffuse.rgb * ndotl + points,
+        light_ambient().rgb + light_diffuse().rgb * ndotl + points,
         vec3<f32>(0.0),
         vec3<f32>(1.0),
     );
@@ -231,9 +307,9 @@ fn fragment(in: TerrainVsOut) -> @location(0) vec4<f32> {
     // closest-part-first as you approach and the sky/WDL shows behind it. We reproduce that with a
     // per-fragment discard on PLANAR eye-Z (same coordinate as the fog) beyond `fog_params.w` = farclip
     // (0 ⇒ disabled). WDL/sky use other shaders, so they still render to the horizon behind the wall.
-    if (wow_light.fog_params.w > 0.0) {
+    if (fog_params().w > 0.0) {
         let clip_z = -(view.view_from_world * vec4<f32>(in.world_position.xyz, 1.0)).z;
-        if (clip_z > wow_light.fog_params.w) {
+        if (clip_z > fog_params().w) {
             discard;
         }
     }
@@ -313,11 +389,11 @@ fn fragment(in: TerrainVsOut) -> @location(0) vec4<f32> {
     // Duskwood, +0.26–0.32 fog factor at the corners). The per-vertex T&L original and this
     // per-pixel form land on the same byte under LINEAR fog (the factor interpolates exactly), and
     // the per-pixel form is what survives Bevy's mesh interpolators without a custom slot.
-    if (wow_light.fog_color.w > 0.5) {
+    if (fog_color().w > 0.5) {
         let eye_z = -(view.view_from_world * vec4<f32>(in.world_position.xyz, 1.0)).z;
-        let denom = max(wow_light.fog_params.y - wow_light.fog_params.x, 0.001);
-        let factor = clamp((wow_light.fog_params.y - eye_z) / denom, 0.0, 1.0);
-        tuned = mix(wow_light.fog_color.xyz, tuned, factor);
+        let denom = max(fog_params().y - fog_params().x, 0.001);
+        let factor = clamp((fog_params().y - eye_z) / denom, 0.0, 1.0);
+        tuned = mix(fog_color().xyz, tuned, factor);
     }
 
     // GAMMA LANE (decision 0161): the framebuffer HOLDS gamma bytes — all blending happens in

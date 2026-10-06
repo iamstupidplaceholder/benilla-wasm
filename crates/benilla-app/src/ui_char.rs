@@ -178,12 +178,8 @@ type SkillBlock = Option<(u64, std::collections::HashMap<u16, u16>)>;
 /// the shared ones; only the surface is carried here, until the sink learns `chat_type`.
 ///
 /// An absent or empty key shows nothing — the reference's own null/empty guard.
-fn skill_line(script: &UiScript, chat: &mut crate::ui_chat::ChatLog, key: &str, args: &[Arg<'_>]) {
-    let Some(template) = script
-        .lua()
-        .globals()
-        .get::<String>(key)
-        .ok()
+fn skill_line(script: &mut UiScript, chat: &mut crate::ui_chat::ChatLog, key: &str, args: &[Arg<'_>]) {
+    let Some(template) = benilla_ui::strings::global_context(script.vm_mut(), key)
         .filter(|t| !t.is_empty())
     else {
         return;
@@ -270,7 +266,7 @@ fn watch_skill_ups(
                             if announces() {
                                 debug!("chat: skill-up announced ({name} {old}→{value})");
                                 skill_line(
-                                    &script,
+                                    &mut script,
                                     &mut chat,
                                     "ERR_SKILL_UP_SI",
                                     &[Arg::S(&name), Arg::D(i64::from(value))],
@@ -288,7 +284,7 @@ fn watch_skill_ups(
                             if announces() {
                                 debug!("chat: skill-gain announced ({name} at {value})");
                                 skill_line(
-                                    &script,
+                                    &mut script,
                                     &mut chat,
                                     "ERR_SKILL_GAINED_S",
                                     &[Arg::S(&name)],
@@ -851,12 +847,10 @@ fn inventory_slots(
             quality,
             name,
             link,
-            // The ammo slot is a named deferral this slice (decision 0208 phase 1b): no click
-            // path wires it, so there's nothing for a pending op to lock and nowhere for it to
-            // fit — both stay the inert default.
+            // Ammo selects a template entry; no equipped-instance pending lock.
             locked: false,
             equip_slots: Vec::new(),
-            // Ammo is a named deferral too: no drag path reaches the bar from this slot.
+            // The selection has no physical stack to place on an action bar.
             bar_placeable: false,
             creator: None,
             // Ammo carries no enchant slots to read: the wire never streams an ammo instance
@@ -1410,7 +1404,7 @@ mod tests {
                 Some(crate::items::test_template("Traveler's Backpack")),
             );
         }
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 r#"
@@ -1429,8 +1423,8 @@ mod tests {
     }
 
     fn seen(app: &mut App) -> Vec<String> {
-        let script = app.world_mut().non_send_resource_mut::<UiScript>();
-        let out = script.eval::<Vec<String>>("return SEEN").unwrap();
+        let mut script = app.world_mut().non_send_resource_mut::<UiScript>();
+        let out = script.eval_sequence::<String>("return SEEN").unwrap();
         script.run("SEEN = {}").unwrap();
         out
     }

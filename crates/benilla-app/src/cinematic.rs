@@ -68,7 +68,7 @@
 //! `CinematicFrame`'s letterbox and makes `InCinematic()` answer truthfully so `StaticPopup`
 //! suppresses dialogs the way the reference's does.
 
-use std::time::Duration;
+use benilla_time::Duration;
 
 use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 use benilla_formats::{CinematicCatalog, CinematicPath};
@@ -85,6 +85,9 @@ use crate::player::PlayerControlSet;
 /// Both cinematic DBCs, read once at startup.
 #[derive(Resource, Default)]
 pub(crate) struct Cinematics(pub(crate) CinematicCatalog);
+
+#[derive(Resource)]
+pub(crate) struct CinematicFiles(pub(crate) benilla_formats::MemoryFileSource);
 
 /// The shot being played, plus the deferred-start latch.
 #[derive(Resource, Default)]
@@ -333,12 +336,12 @@ fn drive_letterbox(
     // (`player::control`'s shadow-copy note, the 0366 frame-tail hunt).
     if let Ok(mut opts) = cursor.single_mut() {
         if playing && opts.visible {
-            opts.visible = false;
+            crate::cursor::set_visible(&mut opts, false);
             ours.cursor = true;
         } else if !playing && ours.cursor {
             ours.cursor = false;
             if !opts.visible {
-                opts.visible = true;
+                crate::cursor::set_visible(&mut opts, true);
             }
         }
     }
@@ -378,7 +381,7 @@ fn drive_letterbox(
 fn load_catalog(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let mut chain = assets.chain.lock_recover();
-    match benilla_formats::load_cinematics(&mut chain) {
+    match benilla_formats::load_cinematics(&mut *chain) {
         Ok(cat) => {
             info!(
                 "cinematic: {} sequences, {} cameras",
@@ -445,6 +448,7 @@ fn start_pending(
     mut cine: ResMut<Cinematic>,
     catalog: Option<Res<Cinematics>>,
     assets: Option<Res<WorldAssets>>,
+    mut delivered: Option<ResMut<CinematicFiles>>,
     screen: Option<Res<LoadingScreen>>,
     net: Option<Res<NetCommands>>,
     state: Res<State<ClientState>>,
@@ -457,9 +461,12 @@ fn start_pending(
     if *state.get() != ClientState::InWorld || screen.is_some_and(|s| s.covering()) {
         return;
     }
-    let (Some(catalog), Some(assets)) = (catalog, assets) else {
+    let Some(catalog) = catalog else {
         return;
     };
+    if delivered.is_none() && assets.is_none() {
+        return;
+    }
     // **The reference does not arm the shot here — it fades out, and the arm is the fade's
     // completion callback** (`0x48edc5` arms `0x4c0d10(0x48edd0, 0, 0.25)`). So the world's last
     // frame darkens first and everything below runs at full black: the chain read, the camera
@@ -472,10 +479,15 @@ fn start_pending(
     cine.pending = None;
 
     let rows: Vec<_> = catalog.0.shots(id).into_iter().cloned().collect();
-    let mut chain = assets.chain.lock_recover();
     let mut shots = Vec::with_capacity(rows.len());
     for row in &rows {
-        match CinematicPath::load(&mut chain, row) {
+        let loaded = if let Some(files) = delivered.as_mut() {
+            CinematicPath::load(&mut files.0, row)
+        } else {
+            let mut chain = assets.as_ref().unwrap().chain.lock_recover();
+            CinematicPath::load(&mut *chain, row)
+        };
+        match loaded {
             Ok(p) => shots.push(p),
             // One unreadable shot does not have to sink the whole cinematic: play what parses.
             Err(e) => warn!("cinematic: camera {} failed to load: {e:#}", row.id),

@@ -6,7 +6,7 @@
 //! `zoom_to_scale` tables (`0x6da9b0`). The engine core carries only the index
 //! ([`MinimapState`]); the app renderer maps it to a world radius and draws the tiles
 //! (decision 0203). The two model attrs (`minimapArrowModel=`/`minimapPlayerModel=`) are modeled
-//! only as far as the Lua surface can see them: [`apply_model_attrs`] names the nine engine
+//! only as far as the Lua surface can see them: [`apply_model_attrs_context`] names the nine engine
 //! children the ctor built, and the app still draws every arrow from its own art.
 //!
 //! **The ping** (decision 1596) is the same split, one rung further out: the two methods here are
@@ -26,9 +26,8 @@
 //! The methods live in their own registry table, consulted by the frame `__index` dispatcher only
 //! for Minimap frames — the same duck-typing posture as StatusBar's.
 
-use mlua::{Lua, Table};
+use benilla_lua::{LuaContext, Table, Vm};
 
-use super::object::frame_handle_of;
 use super::Model;
 use crate::widget::{KindState, MinimapState, MINIMAP_ZOOM_LEVELS};
 
@@ -39,19 +38,19 @@ pub(super) const REG_MINIMAP_METHODS: &str = "__benilla_minimap_methods";
 /// live Minimap (unreachable through the kind dispatcher, but the method table is a plain Lua
 /// value — a caller can fish it out and misapply it).
 fn with_minimap<T>(
-    lua: &Lua,
+    lua: &mut impl LuaContext,
     this: &Table,
     f: impl FnOnce(&mut MinimapState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = super::object::frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::Minimap(m) => Ok(f(m)),
-        _ => Err(mlua::Error::runtime("not a Minimap")),
+        _ => Err(benilla_lua::Error::runtime("not a Minimap")),
     }
 }
 
@@ -67,13 +66,13 @@ fn with_minimap<T>(
 ///
 /// Runs before the `<Frames>` descent, because `0x4ee2b0` does its own work and only then chains to
 /// `CSimpleFrame::LoadXML 0x76a2f0`, which is what recurses into the children.
-pub(crate) fn apply_model_attrs(
-    lua: &Lua,
+pub(crate) fn apply_model_attrs_context(
+    lua: &mut impl LuaContext,
     this: &Table,
     arrow: &str,
     player: &str,
-) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<()> {
+    let h = super::object::frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let Some(children) = model.arena.frame(h).map(|f| f.children.clone()) else {
         return Ok(());
@@ -97,44 +96,41 @@ pub(crate) fn apply_model_attrs(
     Ok(())
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    let methods = lua.create_table()?;
 
-    m.set(
-        "GetZoom",
-        // Reads whichever index is live — the indoor one (`0x86f69c`) while inside a WMO, else the
-        // outdoor one (`0x86f698`). The client's `get_zoom_index` routes on the same flag.
-        lua.create_function(|lua, this: Table| with_minimap(lua, &this, |m| m.active_zoom()))?,
-    )?;
-    m.set(
-        "SetZoom",
-        lua.create_function(|lua, (this, zoom): (Table, f64)| {
-            // The client's set_zoom clamps into [0, levels-1] (`0x6daa10`: clamp at 5). A negative
-            // or fractional Lua number truncates like lua_tonumber → int. It writes the index the
-            // inside flag selects, so the +/- buttons zoom the map you're actually looking at and
-            // each mode keeps its own level.
-            let clamped = (zoom.max(0.0) as u8).min(MINIMAP_ZOOM_LEVELS - 1);
-            let inside = with_minimap(lua, &this, |m| {
-                m.set_active_zoom(clamped);
-                m.inside
-            })?;
-            // …and it persists the level in the same breath: `set_zoom` writes the live index AND
-            // `CVar::Set`s the matching CVar (`minimapInsideZoom` indoors, `minimapZoom` out), which
-            // is the whole reason a zoom level survives a restart. The borrow above is released
-            // before this one — both reach the same `Model` app_data.
-            super::cvars::set_from_engine(
-                &mut lua.app_data_mut::<Model>().expect("model app_data"),
-                if inside {
-                    "minimapInsideZoom"
-                } else {
-                    "minimapZoom"
-                },
-                clamped.to_string(),
-            );
-            Ok(())
-        })?,
-    )?;
-    m.set(
+    let get_zoom = lua.create_function("Minimap:GetZoom", |lua, this: Table| {
+        with_minimap(lua, &this, |minimap| minimap.active_zoom())
+    })?;
+    lua.table_set_function(&methods, "GetZoom", &get_zoom)?;
+    let set_zoom = lua.create_function("Minimap:SetZoom", |lua, (this, zoom): (Table, f64)| {
+        // The client's set_zoom clamps into [0, levels-1] (`0x6daa10`: clamp at 5). A negative
+        // or fractional Lua number truncates like lua_tonumber → int. It writes the index the
+        // inside flag selects, so the +/- buttons zoom the map you're actually looking at and
+        // each mode keeps its own level.
+        let clamped = (zoom.max(0.0) as u8).min(MINIMAP_ZOOM_LEVELS - 1);
+        let inside = with_minimap(lua, &this, |minimap| {
+            minimap.set_active_zoom(clamped);
+            minimap.inside
+        })?;
+        // …and it persists the level in the same breath: `set_zoom` writes the live index AND
+        // `CVar::Set`s the matching CVar (`minimapInsideZoom` indoors, `minimapZoom` out), which
+        // is the whole reason a zoom level survives a restart. The borrow above is released
+        // before this one — both reach the same `Model` app_data.
+        super::cvars::set_from_engine(
+            &mut lua.app_data_mut::<Model>().expect("model app_data"),
+            if inside {
+                "minimapInsideZoom"
+            } else {
+                "minimapZoom"
+            },
+            clamped.to_string(),
+        );
+        Ok(())
+    })?;
+    lua.table_set_function(&methods, "SetZoom", &set_zoom)?;
+    let set_mask_texture = lua.create_function(
+        "Minimap:SetMaskTexture",
         // SetMaskTexture(path) — the disc's mask art. A real 1.12 method (the name is in the 5875
         // image) with no getter beside it, so this is write-only from Lua, exactly as there.
         //
@@ -142,22 +138,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // unmasked: `SetMaskTexture` is how a UI replaces the circle, never how it removes one,
         // and a nil-means-square reading would hand every mistyped path a square minimap with no
         // error. (pfUI passes a real path; this is about the failure mode, not about pfUI.)
-        "SetMaskTexture",
-        lua.create_function(|lua, (this, path): (Table, Option<String>)| {
+        |lua, (this, path): (Table, Option<String>)| {
             let path = path.filter(|p| !p.is_empty());
-            with_minimap(lua, &this, |m| m.mask_texture = path)
-        })?,
+            with_minimap(lua, &this, |minimap| minimap.mask_texture = path)
+        },
     )?;
-    m.set(
-        "GetZoomLevels",
-        lua.create_function(|lua, this: Table| {
-            // Validate the receiver like every kind method (the constant is per the client's
-            // `get_zoom_levels`, but a non-Minimap receiver is still a caller bug).
-            with_minimap(lua, &this, |_| MINIMAP_ZOOM_LEVELS)
-        })?,
-    )?;
-    m.set(
-        "PingLocation",
+    lua.table_set_function(&methods, "SetMaskTexture", &set_mask_texture)?;
+    let get_zoom_levels = lua.create_function("Minimap:GetZoomLevels", |lua, this: Table| {
+        with_minimap(lua, &this, |_| MINIMAP_ZOOM_LEVELS)
+    })?;
+    lua.table_set_function(&methods, "GetZoomLevels", &get_zoom_levels)?;
+    let ping_location = lua.create_function(
+        "Minimap:PingLocation",
         // The minimap click (our own `Minimap_OnClick`, and any addon that replaced it): centre-
         // relative offsets in **UI units**, x right / y up — exactly `GetCursorPosition()` minus
         // `Minimap:GetCenter()`, both of which are UI-space. Parked, not converted: the app owns
@@ -166,16 +158,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         //
         // The receiver is validated but the value lives on the model — one pending click, not one
         // per Minimap widget.
-        lua.create_function(|lua, (this, x, y): (Table, f32, f32)| {
+        |lua, (this, x, y): (Table, f32, f32)| {
             with_minimap(lua, &this, |_| ())?;
             lua.app_data_mut::<Model>()
                 .expect("model app_data")
                 .minimap_ping_request = Some((x, y));
             Ok(())
-        })?,
+        },
     )?;
-    m.set(
-        "GetPingPosition",
+    lua.table_set_function(&methods, "PingLocation", &ping_location)?;
+    let get_ping_position = lua.create_function(
+        "Minimap:GetPingPosition",
         // The ping's normalized offsets from the widget centre (fractions of the widget side,
         // x right / y up — the `MINIMAP_PING` event's own arg2/arg3 space), recomputed by the app
         // from the stored world point every frame. So a caller polling this while walking sees
@@ -186,15 +179,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // recomputes from statics nothing ever clears, and the stock `Minimap_OnUpdate` feeds the
         // answer straight into `x * Minimap:GetWidth()` for the whole of its 5 s timer — a nil
         // here is a Lua error on every frame of that window (1974).
-        lua.create_function(|lua, this: Table| {
+        |lua, this: Table| {
             with_minimap(lua, &this, |_| ())?;
             let (x, y) = lua
                 .app_data_ref::<Model>()
                 .expect("model app_data")
                 .minimap_ping;
             Ok((x, y))
-        })?,
+        },
     )?;
-    lua.set_named_registry_value(REG_MINIMAP_METHODS, m)?;
-    Ok(())
+    lua.table_set_function(&methods, "GetPingPosition", &get_ping_position)?;
+    lua.put_registry(REG_MINIMAP_METHODS, methods)
 }

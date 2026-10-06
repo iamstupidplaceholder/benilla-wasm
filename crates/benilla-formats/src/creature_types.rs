@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const CREATURE_TYPE: &str = "DBFilesClient\\CreatureType.dbc";
 
@@ -54,7 +54,7 @@ fn creature_type_schema() -> Schema {
 }
 
 /// Load CreatureType.dbc from the patch chain.
-pub fn load_creature_type_flags(chain: &mut Chain) -> Result<CreatureTypeFlags> {
+pub fn load_creature_type_flags(chain: &mut impl FileSource) -> Result<CreatureTypeFlags> {
     let bytes = chain
         .read_file(CREATURE_TYPE)
         .with_context(|| format!("reading {CREATURE_TYPE}"))?;

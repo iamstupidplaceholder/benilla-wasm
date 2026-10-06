@@ -19,7 +19,9 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -159,7 +161,7 @@ fn schema() -> Schema {
 }
 
 /// Load Lock.dbc from the patch chain into a [`LockCatalog`].
-pub fn load_lock_catalog(chain: &mut Chain) -> Result<LockCatalog> {
+pub fn load_lock_catalog(chain: &mut impl FileSource) -> Result<LockCatalog> {
     let bytes = chain
         .read_file(LOCK)
         .with_context(|| format!("reading {LOCK}"))?;

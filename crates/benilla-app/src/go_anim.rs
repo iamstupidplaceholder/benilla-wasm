@@ -67,10 +67,10 @@
 
 use avian3d::prelude::{Collider, ColliderDisabled};
 use benilla_assets::ModelAnimations;
+use benilla_time::Duration;
 use bevy::animation::transition::AnimationTransitions;
 use bevy::animation::RepeatAnimation;
 use bevy::prelude::*;
-use std::time::Duration;
 
 use crate::creature_anim::{advance_track, scan_events, AnimSoundEvent};
 use crate::net::{GuidIndex, ObjectStore};

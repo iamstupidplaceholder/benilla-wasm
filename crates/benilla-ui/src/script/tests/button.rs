@@ -5,7 +5,7 @@ use crate::script::*;
 
 #[test]
 fn button_methods_exist_only_on_buttons() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         f = CreateFrame("Frame", "PlainF")
@@ -15,16 +15,16 @@ fn button_methods_exist_only_on_buttons() {
     )
     .unwrap();
     // Duck-typing honesty across the class chain (RF-28 method sets).
-    assert!(s.eval::<bool>("return f.SetText == nil").unwrap());
-    assert!(s.eval::<bool>("return f.SetChecked == nil").unwrap());
-    assert!(s.eval::<bool>("return b.SetText ~= nil").unwrap());
-    assert!(s.eval::<bool>("return b.SetChecked == nil").unwrap());
-    assert!(s.eval::<bool>("return b.SetValue == nil").unwrap());
-    assert!(s.eval::<bool>("return cb.SetChecked ~= nil").unwrap());
-    assert!(s.eval::<bool>("return cb.SetNormalTexture ~= nil").unwrap());
+    assert!(s.eval_truthy("return f.SetText == nil").unwrap());
+    assert!(s.eval_truthy("return f.SetChecked == nil").unwrap());
+    assert!(s.eval_truthy("return b.SetText ~= nil").unwrap());
+    assert!(s.eval_truthy("return b.SetChecked == nil").unwrap());
+    assert!(s.eval_truthy("return b.SetValue == nil").unwrap());
+    assert!(s.eval_truthy("return cb.SetChecked ~= nil").unwrap());
+    assert!(s.eval_truthy("return cb.SetNormalTexture ~= nil").unwrap());
     // Buttons are mouse-enabled by construction (the client ctor enables input).
-    assert!(s.eval::<bool>("return b:IsMouseEnabled()").unwrap());
-    assert!(!s.eval::<bool>("return f:IsMouseEnabled()").unwrap());
+    assert!(s.eval_truthy("return b:IsMouseEnabled()").unwrap());
+    assert!(!s.eval_truthy("return f:IsMouseEnabled()").unwrap());
 }
 
 #[test]
@@ -390,13 +390,13 @@ fn disabled_button_swallows_clicks_checkbutton_toggles_before_onclick() {
     s.mouse_button(50.0, 50.0, "LeftButton", false);
     assert_eq!(s.eval::<i64>("return clicks").unwrap(), 1);
     // `seen_checked` is whatever `GetChecked()` handed the handler — the NUMBER 1 (1830).
-    assert!(s.eval::<bool>("return seen_checked == 1").unwrap());
-    assert!(s.eval::<bool>("return Toggler:GetChecked()").unwrap());
+    assert!(s.eval_truthy("return seen_checked == 1").unwrap());
+    assert!(s.eval_truthy("return Toggler:GetChecked()").unwrap());
 
     // Programmatic Click() rides the same path: toggles back off.
     s.run("Toggler:Click()").unwrap();
     assert_eq!(s.eval::<i64>("return clicks").unwrap(), 2);
-    assert!(!s.eval::<bool>("return Toggler:GetChecked()").unwrap());
+    assert!(!s.eval_truthy("return Toggler:GetChecked()").unwrap());
 
     // Disabled: the click is swallowed — no OnClick, no toggle.
     s.run("Toggler:Disable()").unwrap();
@@ -404,13 +404,13 @@ fn disabled_button_swallows_clicks_checkbutton_toggles_before_onclick() {
     s.mouse_button(50.0, 50.0, "LeftButton", false);
     s.run("Toggler:Click()").unwrap();
     assert_eq!(s.eval::<i64>("return clicks").unwrap(), 2);
-    assert!(!s.eval::<bool>("return Toggler:GetChecked()").unwrap());
+    assert!(!s.eval_truthy("return Toggler:GetChecked()").unwrap());
 
     // SetChecked takes 1/true/nil (1.12 and Era forms).
     s.run("Toggler:SetChecked(1)").unwrap();
-    assert!(s.eval::<bool>("return Toggler:GetChecked()").unwrap());
+    assert!(s.eval_truthy("return Toggler:GetChecked()").unwrap());
     s.run("Toggler:SetChecked(nil)").unwrap();
-    assert!(!s.eval::<bool>("return Toggler:GetChecked()").unwrap());
+    assert!(!s.eval_truthy("return Toggler:GetChecked()").unwrap());
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
 
@@ -492,8 +492,8 @@ fn down_registration_fires_on_press_and_toggles_checked_once() {
     // The press alone fires OnClick (down=true) and toggles Checked exactly once.
     s.mouse_button(50.0, 50.0, "LeftButton", true);
     assert_eq!(s.eval::<i64>("return clicks").unwrap(), 1);
-    assert!(s.eval::<bool>("return seen_down == true").unwrap());
-    assert!(s.eval::<bool>("return QuickSell:GetChecked()").unwrap());
+    assert!(s.eval_truthy("return seen_down == true").unwrap());
+    assert!(s.eval_truthy("return QuickSell:GetChecked()").unwrap());
 
     // The release does not fire again — "LeftButtonUp" is no longer in the registered set
     // (RegisterForClicks replaced it, it did not add to it).
@@ -938,8 +938,9 @@ fn set_font_string_anchors_only_an_unanchored_label() {
     assert_eq!(s.eval::<i64>("return bare:GetNumPoints()").unwrap(), 0);
 
     s.run("b:SetFontString(placed)").unwrap();
-    let (p, _rel, rp, x, y): (String, mlua::Value, String, f64, f64) =
-        s.eval("return placed:GetPoint(1)").unwrap();
+    let (p, rp, x, y): (String, String, f64, f64) = s
+        .eval("local p, _, rp, x, y = placed:GetPoint(1) return p, rp, x, y")
+        .unwrap();
     assert_eq!(
         (p.as_str(), rp.as_str(), x, y),
         ("TOPLEFT", "TOPLEFT", 7.0, -3.0),
@@ -950,8 +951,9 @@ fn set_font_string_anchors_only_an_unanchored_label() {
     // The unanchored one gets the justify-derived point, to the matching point on the button.
     s.run("b:SetFontString(bare)").unwrap();
     assert_eq!(s.eval::<i64>("return bare:GetNumPoints()").unwrap(), 1);
-    let (p, _rel, rp, x, y): (String, mlua::Value, String, f64, f64) =
-        s.eval("return bare:GetPoint(1)").unwrap();
+    let (p, rp, x, y): (String, String, f64, f64) = s
+        .eval("local p, _, rp, x, y = bare:GetPoint(1) return p, rp, x, y")
+        .unwrap();
     assert_eq!(
         (p.as_str(), rp.as_str(), x, y),
         ("CENTER", "CENTER", 0.0, 0.0)
@@ -993,7 +995,7 @@ fn a_lazily_made_label_is_anchored_by_the_normal_fonts_justify() {
            </Ui>"#,
     )
     .expect("valid FrameXML");
-    let report = crate::loader::load(&s, &doc, &|_| None);
+    let report = crate::loader::load(&mut s, &doc, &|_| None);
     assert!(report.errors.is_empty(), "{:?}", report.errors);
 
     s.run(
@@ -1015,24 +1017,26 @@ fn a_lazily_made_label_is_anchored_by_the_normal_fonts_justify() {
 
     s.run(r#"left:SetText("Say") right:SetText("12") plain:SetText("Okay")"#)
         .unwrap();
-    let point = |s: &UiScript, who: &str| -> (String, String, f64, f64) {
-        let (p, _rel, rp, x, y): (String, mlua::Value, String, f64, f64) = s
-            .eval(&format!("return {who}:GetFontString():GetPoint(1)"))
+    let point = |s: &mut UiScript, who: &str| -> (String, String, f64, f64) {
+        let (p, rp, x, y): (String, String, f64, f64) = s
+            .eval(&format!(
+                "local p, _, rp, x, y = {who}:GetFontString():GetPoint(1) return p, rp, x, y"
+            ))
             .unwrap();
         (p, rp, x, y)
     };
     assert_eq!(
-        point(&s, "left"),
+        point(&mut s, "left"),
         ("LEFT".into(), "LEFT".into(), 0.0, 0.0),
         "the element-level justifyH on <NormalFont> anchors the lazy label LEFT"
     );
     assert_eq!(
-        point(&s, "right"),
+        point(&mut s, "right"),
         ("RIGHT".into(), "RIGHT".into(), 0.0, 0.0),
         "a justify the normal font INHERITS from its object counts the same"
     );
     assert_eq!(
-        point(&s, "plain"),
+        point(&mut s, "plain"),
         ("CENTER".into(), "CENTER".into(), 0.0, 0.0),
         "no justify anywhere → the else leg, CENTER"
     );
@@ -1063,7 +1067,7 @@ fn a_lazily_made_label_is_anchored_by_the_normal_fonts_justify() {
     )
     .unwrap();
     assert_eq!(
-        point(&s, "left"),
+        point(&mut s, "left"),
         ("LEFT".into(), "LEFT".into(), 0.0, 0.0),
         "SetFontString anchors by the normal font's justify too"
     );
@@ -1071,7 +1075,7 @@ fn a_lazily_made_label_is_anchored_by_the_normal_fonts_justify() {
     // A later `SetTextFontObject` re-links the normal font but does NOT re-anchor — the anchor
     // was decided at adoption and is an ordinary anchor from then on.
     s.run("left:SetTextFontObject(ProbeFontRight)").unwrap();
-    assert_eq!(point(&s, "left"), ("LEFT".into(), "LEFT".into(), 0.0, 0.0));
+    assert_eq!(point(&mut s, "left"), ("LEFT".into(), "LEFT".into(), 0.0, 0.0));
 }
 
 /// **A label that set its own face keeps it — the severance mask covers every axis, not three of
@@ -1449,7 +1453,7 @@ fn hiding_a_held_button_un_presses_it() {
 /// registers it, so the widget shape gate can cover it from now on.
 #[test]
 fn button_get_text_color_answers_four_values_through_the_state_font() {
-    let s = script();
+    let mut s = script();
     s.register_font_object(
         "BtnGold",
         FontObject {

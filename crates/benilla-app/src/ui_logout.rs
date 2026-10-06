@@ -44,6 +44,7 @@
 use benilla_ui::script::{SessionRequest, UiScript};
 use bevy::prelude::*;
 
+use crate::net::handlers::NetHandlerApp;
 use crate::net::{ClientCommand, LoggedOutMessage, NetCommands, SelfGuid};
 use crate::ui_script::{UiFeed, UiInput};
 
@@ -149,7 +150,7 @@ fn feed_logout(
             LogoutSignal::Quiting => script.fire_event("PLAYER_QUITING", Vec::new()),
             LogoutSignal::Cancelled => script.fire_event("LOGOUT_CANCEL", Vec::new()),
             LogoutSignal::Refused => {
-                let line = crate::ui_action::keyed_line(&script, LOGOUT_FAILED_KEY);
+                let line = crate::ui_action::keyed_line(&mut script, LOGOUT_FAILED_KEY);
                 crate::ui_action::show_messages(&mut script, &mut sink, "ui_logout", line);
             }
         }
@@ -164,12 +165,18 @@ fn drain_logout(
     commands: Res<NetCommands>,
     mut exit: MessageWriter<AppExit>,
     mut reload: ResMut<crate::ui_script::ReloadUiPending>,
-    mut cinematic: ResMut<crate::cinematic::Cinematic>,
+    mut cinematic: Option<ResMut<crate::cinematic::Cinematic>>,
 ) {
     let Some(mut script) = script else {
         return;
     };
     for request in script.take_session_requests() {
+        #[cfg(target_arch = "wasm32")]
+        let request = match request {
+            SessionRequest::Quit => SessionRequest::Logout,
+            SessionRequest::ForceQuit => SessionRequest::ForceLogout,
+            other => other,
+        };
         match request {
             SessionRequest::Logout | SessionRequest::Quit => {
                 // `0x5ab000`'s pending-logout bail, and it is **silent** — no error line, no
@@ -231,7 +238,11 @@ fn drain_logout(
             // that is where the reference puts it: `StopCinematic` has no native callers and no
             // `Bindings.xml` row — `CinematicFrame`'s own `OnKeyDown` is the whole skip path.
             SessionRequest::StopCinematic => {
-                crate::cinematic::stop(&mut cinematic, Some(&commands));
+                // A composition without cinematic playback has no shot to stop.
+                // When installed, the production player owns the same stop/ACK path.
+                if let Some(cinematic) = cinematic.as_deref_mut() {
+                    crate::cinematic::stop(cinematic, Some(&commands));
+                }
             }
         }
     }
@@ -259,16 +270,62 @@ fn exit_on_logout_complete(
 
 pub struct UiLogoutPlugin;
 
+#[cfg(target_arch = "wasm32")]
+fn hide_browser_exit(script: Option<NonSendMut<UiScript>>) {
+    if let Some(mut script) = script {
+        if let Err(error) = script.run("if AccountLoginExitButton then AccountLoginExitButton:Hide() end; if GameMenuButtonQuit then GameMenuButtonQuit:Hide() end") {
+            bevy::log::debug!("browser exit controls: {error}");
+        }
+    }
+}
+
+fn on_logout_response(
+    In(event): In<benilla_protocol::SessionEvent>,
+    mut logout: ResMut<LogoutState>,
+) {
+    if let benilla_protocol::SessionEvent::LogoutResponse { reason, instant } = event {
+        logout.apply_response(reason, instant);
+    }
+}
+
+fn on_logout_cancelled(
+    In(event): In<benilla_protocol::SessionEvent>,
+    mut logout: ResMut<LogoutState>,
+) {
+    if let benilla_protocol::SessionEvent::LogoutCancelled = event {
+        logout.apply_cancelled();
+    }
+}
+
 impl Plugin for UiLogoutPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LogoutState>().add_systems(
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(
             Update,
-            (
-                feed_logout.in_set(UiFeed),
-                drain_logout.after(UiInput),
-                exit_on_logout_complete.after(UiInput),
-            ),
+            hide_browser_exit
+                .after(UiInput)
+                .before(crate::ui_script::UiPaint),
         );
+        app.net_handler(
+            benilla_protocol::SessionEventKind::LogoutResponse,
+            on_logout_response,
+        )
+        .net_handler(
+            benilla_protocol::SessionEventKind::LogoutCancelled,
+            on_logout_cancelled,
+        );
+        // feed_logout writes the shared message sink even without the full chat
+        // consumer installed. Keep queued lines for that consumer, not a local sink.
+        app.init_resource::<crate::ui_chat::ChatLog>()
+            .init_resource::<LogoutState>()
+            .add_systems(
+                Update,
+                (
+                    feed_logout.in_set(UiFeed),
+                    drain_logout.after(UiInput),
+                    exit_on_logout_complete.after(UiInput),
+                ),
+            );
     }
 }
 

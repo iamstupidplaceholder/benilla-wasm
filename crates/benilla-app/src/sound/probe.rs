@@ -68,11 +68,11 @@ use super::SoundOutput;
 /// How often a tick row is written. 50 ms is fine enough to see a burst rise and fall inside one
 /// spell cast, and coarse enough that a ten-minute session is ~12 000 rows rather than a file
 /// nobody opens.
-const TICK: std::time::Duration = std::time::Duration::from_millis(50);
+const TICK: benilla_time::Duration = benilla_time::Duration::from_millis(50);
 
 /// How often the run prints a spoken summary to the console, so the director gets live feedback
 /// during the session and not only a file afterwards. Matches the normal health cadence.
-const SPEAK: std::time::Duration = std::time::Duration::from_secs(5);
+const SPEAK: benilla_time::Duration = benilla_time::Duration::from_secs(5);
 
 /// The marker key. Bound only while probing (see the module docs), so it needs no dev chord and
 /// cannot collide with a game binding.
@@ -129,10 +129,10 @@ pub(crate) struct Probe {
     tx: crossbeam_channel::Sender<String>,
     /// The pre-tap's frame clock — the shared time axis (see the module docs).
     audio_pos: Option<Arc<AtomicU64>>,
-    started: std::time::Instant,
+    started: benilla_time::Instant,
     marks: u32,
-    since_tick: std::time::Duration,
-    since_speak: std::time::Duration,
+    since_tick: benilla_time::Duration,
+    since_speak: benilla_time::Duration,
     /// Maxima since the last spoken summary, so the console line covers its whole window even
     /// though the meters are drained twenty times a second.
     window: Window,
@@ -180,10 +180,10 @@ impl Probe {
             rate,
             tx,
             audio_pos,
-            started: std::time::Instant::now(),
+            started: benilla_time::Instant::now(),
             marks: 0,
-            since_tick: std::time::Duration::ZERO,
-            since_speak: std::time::Duration::ZERO,
+            since_tick: benilla_time::Duration::ZERO,
+            since_speak: benilla_time::Duration::ZERO,
             window: Window {
                 gain: 1.0,
                 ..Default::default()
@@ -303,7 +303,7 @@ pub(super) fn tick(
     if probe.since_tick < TICK && !exiting {
         return;
     }
-    probe.since_tick = std::time::Duration::ZERO;
+    probe.since_tick = benilla_time::Duration::ZERO;
 
     let health = mixer.poll_health();
     let level = mixer.take_level();
@@ -349,7 +349,7 @@ pub(super) fn tick(
     }
 
     if probe.since_speak >= SPEAK || exiting {
-        probe.since_speak = std::time::Duration::ZERO;
+        probe.since_speak = benilla_time::Duration::ZERO;
         let w = std::mem::replace(
             &mut probe.window,
             Window {

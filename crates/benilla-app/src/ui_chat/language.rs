@@ -121,7 +121,7 @@ pub(super) fn load_language_words(
     let loaded = {
         use benilla_assets::LockRecover;
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_language_words(&mut chain)
+        benilla_formats::load_language_words(&mut *chain)
     };
     match loaded {
         Ok(words) => {
@@ -130,6 +130,16 @@ pub(super) fn load_language_words(
         }
         // Not fatal: with no pool every line renders plain, which is what benilla did before B262.
         Err(e) => warn!("ui_chat: language word pools unavailable — {e:#}"),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ChatLanguages {
+    pub(crate) fn publish_words(&mut self, source: &mut impl benilla_formats::FileSource) {
+        match benilla_formats::load_language_words(source) {
+            Ok(words) => self.words = Some(words),
+            Err(error) => warn!("ui_chat: language word pools unavailable — {error:#}"),
+        }
     }
 }
 

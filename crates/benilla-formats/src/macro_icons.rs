@@ -44,7 +44,7 @@ const ICON_DIR: &str = "Interface\\Icons\\";
 /// the archive cannot produce a name with no file behind it: the defect class is gone by
 /// construction, not by an allow-list. On a stock 5875 install this yields **517** icons (the RE
 /// counts the same 517 off `patch.MPQ` 77 + `interface.MPQ` 443 = 520 raw, less 3 duplicate names).
-pub fn load_macro_icons(chain: &mut Chain) -> Result<Vec<String>> {
+pub fn load_macro_icons(chain: &Chain) -> Result<Vec<String>> {
     let mut names: Vec<String> = Vec::new();
     for entry in chain.list()? {
         let path = entry.name.replace('/', "\\");

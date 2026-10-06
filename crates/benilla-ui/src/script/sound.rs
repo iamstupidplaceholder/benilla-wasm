@@ -41,7 +41,7 @@
 //! the §5 round dispatched for this report; it corrected wow-re's own table, which had recorded
 //! `StopMusic`'s callee as "—").
 
-use mlua::{Lua, Value};
+use benilla_lua::{Error, FromLua, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -92,83 +92,79 @@ impl super::UiScript {
 }
 
 /// Register the `PlaySound` and `PlaySoundFile` globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "PlaySoundFile",
-        lua.create_function(|lua, args: mlua::MultiValue| {
-            let Some(Value::String(s)) = args.front() else {
-                return Err(mlua::Error::runtime("Usage: PlaySoundFile(\"filePath\")"));
-            };
-            let path = s.to_str()?.to_owned();
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.sound_queue.push(SoundRequest::File(path));
-            drop(model);
-            Ok((true, Value::Nil))
-        })?,
-    )?;
-    lua.globals().set(
-        "PlaySound",
-        lua.create_function(|lua, args: mlua::MultiValue| {
-            let req = match args.front() {
-                Some(Value::Integer(i)) if *i >= 0 => Some(SoundRequest::KitId(*i as u32)),
-                Some(Value::Number(n)) if *n >= 0.0 => Some(SoundRequest::KitId(*n as u32)),
-                Some(Value::String(s)) => Some(SoundRequest::KitName(s.to_str()?.to_owned())),
-                _ => None,
-            };
-            let Some(req) = req else {
-                // The client raises a usage error on a bad argument; in a handler this lands in
-                // the host's collected script errors, never a panic.
-                return Err(mlua::Error::runtime(
-                    "Usage: PlaySound(soundKitID or \"KitName\")",
-                ));
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // `PlaySoundByName 0x458030`'s first act: read the UI-load suppression depth
-            // (`0x458046`) and bail at `0x45804d` if it is non-zero — BEFORE the
-            // `MasterSoundEffects` CVar and before the kit-hash lookup. So the call is dropped
-            // rather than muted or queued, and the binding still answers as if it had played.
-            // NAME-keyed only: the id-keyed entry (`0x457fb0`) has no such gate, which is why the
-            // arm above pushes unconditionally.
-            let suppressed = matches!(req, SoundRequest::KitName(_)) && model.sound_suppression > 0;
-            if !suppressed {
-                model.sound_queue.push(req);
-            }
-            drop(model);
-            // willPlay (queued), soundHandle (nil — module docs).
-            Ok((true, Value::Nil))
-        })?,
-    )?;
-    lua.globals().set(
-        "PlayMusic",
-        lua.create_function(|lua, args: mlua::MultiValue| {
-            // `0x458720`'s own argument shape, byte for byte: `lua_isstring 0x6f3510` then
-            // `lua_tostring 0x6f3690` — so a **number is accepted and stringified**
-            // (`PlayMusic(42)` asks for the file `"42"`), and everything else, *absent included*,
-            // raises this exact literal (`0x835f7c`) through `lua_error 0x458758`. No
-            // normalisation, no extension appended: the pointer goes verbatim to the file layer.
-            let path = super::binding_abi::string_arg(
-                lua,
-                args.front().cloned().unwrap_or(Value::Nil),
-                "Usage: PlayMusic(\"music\")",
-            )?;
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .music_queue
-                .push(MusicRequest::Play(path));
-            Ok(())
-        })?,
-    )?;
-    lua.globals().set(
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("PlaySoundFile", |lua, args: MultiValue| {
+        let Some(Value::String(path)) = args.first() else {
+            return Err(Error::runtime("Usage: PlaySoundFile(\"filePath\")"));
+        };
+        let path = path
+            .as_str()
+            .map(str::to_owned)
+            .map_err(|error| Error::runtime(error.to_string()))?;
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .sound_queue
+            .push(SoundRequest::File(path));
+        Ok((true, Value::Nil))
+    })?;
+    lua.register_function("PlaySound", |lua, args: MultiValue| {
+        let req = match args.first() {
+            Some(Value::Integer(i)) if *i >= 0 => Some(SoundRequest::KitId(*i as u32)),
+            Some(Value::Number(n)) if *n >= 0.0 => Some(SoundRequest::KitId(*n as u32)),
+            Some(Value::String(name)) => Some(SoundRequest::KitName(
+                name.as_str()
+                    .map(str::to_owned)
+                    .map_err(|error| Error::runtime(error.to_string()))?,
+            )),
+            _ => None,
+        };
+        let Some(req) = req else {
+            // The client raises a usage error on a bad argument; in a handler this lands in
+            // the host's collected script errors, never a panic.
+            return Err(Error::runtime(
+                "Usage: PlaySound(soundKitID or \"KitName\")",
+            ));
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // `PlaySoundByName 0x458030`'s first act: read the UI-load suppression depth
+        // (`0x458046`) and bail at `0x45804d` if it is non-zero — BEFORE the
+        // `MasterSoundEffects` CVar and before the kit-hash lookup. So the call is dropped
+        // rather than muted or queued, and the binding still answers as if it had played.
+        // NAME-keyed only: the id-keyed entry (`0x457fb0`) has no such gate, which is why the
+        // arm above pushes unconditionally.
+        let suppressed = matches!(req, SoundRequest::KitName(_)) && model.sound_suppression > 0;
+        if !suppressed {
+            model.sound_queue.push(req);
+        }
+        drop(model);
+        // willPlay (queued), soundHandle (nil — module docs).
+        Ok((true, Value::Nil))
+    })?;
+    lua.register_function("PlayMusic", |lua, args: MultiValue| {
+        // `0x458720`'s own argument shape, byte for byte: `lua_isstring 0x6f3510` then
+        // `lua_tostring 0x6f3690` — so a **number is accepted and stringified**
+        // (`PlayMusic(42)` asks for the file `"42"`), and everything else, *absent included*,
+        // raises this exact literal (`0x835f7c`) through `lua_error 0x458758`. No
+        // normalisation, no extension appended: the pointer goes verbatim to the file layer.
+        let path = String::from_lua(args.first().cloned().unwrap_or(Value::Nil))
+            .map_err(|_| Error::runtime("Usage: PlayMusic(\"music\")"))?;
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .music_queue
+            .push(MusicRequest::Play(path));
+        Ok(())
+    })?;
+    lua.register_function(
         "StopMusic",
         // Takes no argument at all (`0x458770`, arity and argc both 0), so an extra one is
         // ignored rather than refused — `()` reads a bare call and any call alike.
-        lua.create_function(|lua, ()| {
+        |lua, ()| {
             lua.app_data_mut::<Model>()
                 .expect("model app_data")
                 .music_queue
                 .push(MusicRequest::Stop);
             Ok(())
-        })?,
+        },
     )
 }
 

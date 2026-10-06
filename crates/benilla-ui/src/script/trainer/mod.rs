@@ -73,7 +73,7 @@
 //! is an open question with wow-re; the build-time case above cannot arise, because benilla builds
 //! a group only from services that exist.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -226,6 +226,9 @@ pub struct TrainerService {
     /// The group's localized display name — the header row's text. `SkillLine.dbc`'s name at types
     /// 0/1/3; the `TRADESKILL_SERVICE_STEP`/`_LEARN` global strings at type 2.
     pub group_name: String,
+    /// Localized name of the taught spell's actual skill line, independently of
+    /// the generic tradeskill tree header. None while catalogs are unresolved.
+    pub skill_line_name: Option<String>,
     /// What the detail-icon hover describes ([`TrainerTooltip`]) — resolved app-side, because the
     /// law reads `Spell.dbc` fields the engine cannot see. Independent of [`Self::texture`].
     pub tooltip: TrainerTooltip,
@@ -663,11 +666,8 @@ fn set_collapsed(model: &mut Model, id: usize, collapse: bool) {
 }
 
 /// An optional string as a Lua value (`nil` when absent).
-fn opt_str(lua: &Lua, s: Option<&String>) -> mlua::Result<Value> {
-    Ok(match s {
-        Some(s) => Value::String(lua.create_string(s)?),
-        None => Value::Nil,
-    })
+fn opt_str(s: Option<&String>) -> Value {
+    s.cloned().map(Value::from).unwrap_or(Value::Nil)
 }
 
 /// A `bool` as the Era `1`/`nil` shape.
@@ -680,290 +680,238 @@ fn era_bool(b: bool) -> Value {
 }
 
 /// Register the trainer globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // → the number of services the open trainer offers under the current filter (0 when closed).
-    g.set(
-        "GetNumTrainerServices",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(num_services(&model) as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumTrainerServices", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(num_services(&model) as i64)
+    })?;
 
     // GetTrainerServiceInfo(index) → name, subText, serviceType, isExpanded. `index` 1-based into the
     // visible tree; out of range → a single nil. A HEADER row returns (skillLineName, nil, "header",
     // isExpanded); a SERVICE row returns (name, subText, stateString, nil) (decision 0247).
-    g.set(
-        "GetTrainerServiceInfo",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(n) = index.checked_sub(1) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let Some(row) = rows(&model).0.get(n).copied() else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let t = model
-                .trainer
-                .as_ref()
-                .expect("a resolved row ⇒ an open trainer");
-            match row {
-                Row::Header(gi) => {
-                    let g = &t.groups[gi];
-                    let expanded = !model.trainer_collapsed.contains(&g.key);
-                    Ok(MultiValue::from_vec(vec![
-                        Value::String(lua.create_string(&g.name)?),
-                        Value::Nil,
-                        Value::String(lua.create_string("header")?),
-                        era_bool(expanded),
-                    ]))
-                }
-                Row::Service(si) => {
-                    let s = &t.services[si];
-                    Ok(MultiValue::from_vec(vec![
-                        opt_str(lua, s.name.as_ref())?,
-                        opt_str(lua, s.subtext.as_ref())?,
-                        Value::String(lua.create_string(s.category.era_str())?),
-                        Value::Nil,
-                    ]))
-                }
+    lua.register_function("GetTrainerServiceInfo", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(n) = index.checked_sub(1) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let Some(row) = rows(&model).0.get(n).copied() else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let t = model
+            .trainer
+            .as_ref()
+            .expect("a resolved row ⇒ an open trainer");
+        match row {
+            Row::Header(gi) => {
+                let g = &t.groups[gi];
+                let expanded = !model.trainer_collapsed.contains(&g.key);
+                Ok(MultiValue::from(vec![
+                    Value::from(g.name.as_str()),
+                    Value::Nil,
+                    Value::from("header"),
+                    era_bool(expanded),
+                ]))
             }
-        })?,
-    )?;
+            Row::Service(si) => {
+                let s = &t.services[si];
+                Ok(MultiValue::from(vec![
+                    opt_str(s.name.as_ref()),
+                    opt_str(s.subtext.as_ref()),
+                    Value::from(s.category.era_str()),
+                    Value::Nil,
+                ]))
+            }
+        }
+    })?;
 
-    // GetTrainerServiceSkillLine(index) → the skill line the service teaches into, by name — the
-    // group the tree files it under (`TrainerService::group_name`: `SkillLine.dbc`'s name at
-    // trainer types 0/1/3, 1124's builder law). The stock window's one caller is the
+    // GetTrainerServiceSkillLine(index) → the actual skill line the service teaches into,
+    // not the tree header (type 2 headers are generic STEP/LEARN labels).
+    // The stock window's one caller is the
     // CONFIRM_PROFESSION dialog, which formats "learn <profession>?" with it
     // (Blizzard_TrainerUI.lua l.19-24). A header row or an out-of-range index answers nil. The
     // binding is registered (`0x4d9160`, 399 bytes) but its return law is not carved beyond
     // "delegates"; this is the call site's reading (1957).
-    g.set(
-        "GetTrainerServiceSkillLine",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(n) = index.checked_sub(1) else {
-                return Ok(Value::Nil);
-            };
-            let Some(Row::Service(si)) = rows(&model).0.get(n).copied() else {
-                return Ok(Value::Nil);
-            };
-            let t = model
-                .trainer
-                .as_ref()
-                .expect("a resolved row ⇒ an open trainer");
-            Ok(Value::String(
-                lua.create_string(&t.services[si].group_name)?,
-            ))
-        })?,
-    )?;
+    lua.register_function("GetTrainerServiceSkillLine", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(n) = index.checked_sub(1) else {
+            return Ok(Value::Nil);
+        };
+        let Some(Row::Service(si)) = rows(&model).0.get(n).copied() else {
+            return Ok(Value::Nil);
+        };
+        let t = model
+            .trainer
+            .as_ref()
+            .expect("a resolved row ⇒ an open trainer");
+        Ok(opt_str(t.services[si].skill_line_name.as_ref()))
+    })?;
 
     // GetTrainerServiceIcon(index) → texture path (nil while in flight / OOB).
-    g.set(
-        "GetTrainerServiceIcon",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            opt_str(lua, service(&model, index).and_then(|s| s.texture.as_ref()))
-        })?,
-    )?;
+    lua.register_function("GetTrainerServiceIcon", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(opt_str(
+            service(&model, index).and_then(|s| s.texture.as_ref()),
+        ))
+    })?;
 
     // GetTrainerServiceDescription(index) → the spell description ("" when the app has none / OOB).
-    g.set(
-        "GetTrainerServiceDescription",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let text = service(&model, index)
-                .map(|s| s.description.clone())
-                .unwrap_or_default();
-            lua.create_string(&text)
-        })?,
-    )?;
+    lua.register_function("GetTrainerServiceDescription", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let text = service(&model, index)
+            .map(|s| s.description.clone())
+            .unwrap_or_default();
+        Ok(Value::from(text))
+    })?;
 
     // GetTrainerServiceCost(index) → money, talentPointCost, professionPointCost. Talent cost is
     // always 0 (no talent trainer); profession cost is 1 for a primary-profession first rank.
-    g.set(
-        "GetTrainerServiceCost",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let (money, prof) = service(&model, index)
-                .map(|s| (s.cost, u32::from(s.prof_first_rank)))
-                .unwrap_or((0, 0));
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(i64::from(money)),
-                Value::Integer(0),
-                Value::Integer(i64::from(prof)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetTrainerServiceCost", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let (money, prof) = service(&model, index)
+            .map(|s| (s.cost, u32::from(s.prof_first_rank)))
+            .unwrap_or((0, 0));
+        Ok(MultiValue::from(vec![
+            Value::Integer(i64::from(money)),
+            Value::Integer(0),
+            Value::Integer(i64::from(prof)),
+        ]))
+    })?;
 
     // GetTrainerServiceLevelReq(index) → required character level (0 = none).
-    g.set(
-        "GetTrainerServiceLevelReq",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(service(&model, index).map_or(0, |s| s.level_req) as i64)
-        })?,
-    )?;
+    lua.register_function("GetTrainerServiceLevelReq", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(service(&model, index).map_or(0, |s| s.level_req) as i64)
+    })?;
 
     // GetTrainerServiceSkillReq(index) → skillName, skillRank, hasReq (nil when no skill gate / OOB).
-    g.set(
-        "GetTrainerServiceSkillReq",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(req) = service(&model, index).and_then(|s| s.skill_req.as_ref()) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&req.name)?),
-                Value::Integer(i64::from(req.rank)),
-                era_bool(req.met),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetTrainerServiceSkillReq", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(req) = service(&model, index).and_then(|s| s.skill_req.as_ref()) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(req.name.as_str()),
+            Value::Integer(i64::from(req.rank)),
+            era_bool(req.met),
+        ]))
+    })?;
 
     // GetTrainerServiceNumAbilityReq(index) → how many prerequisite abilities the service lists.
-    g.set(
-        "GetTrainerServiceNumAbilityReq",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(service(&model, index).map_or(0, |s| s.ability_reqs.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("GetTrainerServiceNumAbilityReq", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(service(&model, index).map_or(0, |s| s.ability_reqs.len()) as i64)
+    })?;
 
     // GetTrainerServiceAbilityReq(index, i) → abilityName, hasReq (nil OOB).
-    g.set(
+    lua.register_function(
         "GetTrainerServiceAbilityReq",
-        lua.create_function(|lua, (index, i): (usize, usize)| {
+        |lua, (index, i): (usize, usize)| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let Some(req) = service(&model, index)
                 .and_then(|s| i.checked_sub(1).and_then(|n| s.ability_reqs.get(n)))
             else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
+                return Ok(MultiValue::from(vec![Value::Nil]));
             };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&req.name)?),
+            Ok(MultiValue::from(vec![
+                Value::from(req.name.as_str()),
                 era_bool(req.met),
             ]))
-        })?,
+        },
     )?;
 
     // GetTrainerServiceStepReq(index) → step, met — always nil (no tradeskill-step data on the wire).
-    g.set(
-        "GetTrainerServiceStepReq",
-        lua.create_function(|_, _index: usize| Ok(Value::Nil))?,
-    )?;
+    lua.register_function("GetTrainerServiceStepReq", |_, _index: usize| {
+        Ok(Value::Nil)
+    })?;
 
     // IsTrainerServiceTradeSkill(index) → 1/nil (a tradeskill step vs. a learn-spell).
-    g.set(
-        "IsTrainerServiceTradeSkill",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(era_bool(
-                service(&model, index).is_some_and(|s| s.is_trade_skill),
-            ))
-        })?,
-    )?;
+    lua.register_function("IsTrainerServiceTradeSkill", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(era_bool(
+            service(&model, index).is_some_and(|s| s.is_trade_skill),
+        ))
+    })?;
 
     // IsTrainerServiceLearnSpell(index) → isLearnSpell, isPetLearnSpell. Pet-learn is always nil
     // (benilla drives no pet trainer); a non-tradeskill service is a learn-spell.
-    g.set(
-        "IsTrainerServiceLearnSpell",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let learn = service(&model, index).is_some_and(|s| !s.is_trade_skill);
-            Ok(MultiValue::from_vec(vec![era_bool(learn), Value::Nil]))
-        })?,
-    )?;
+    lua.register_function("IsTrainerServiceLearnSpell", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let learn = service(&model, index).is_some_and(|s| !s.is_trade_skill);
+        Ok(MultiValue::from(vec![era_bool(learn), Value::Nil]))
+    })?;
 
     // IsTradeskillTrainer() → 1/nil for the whole trainer (drives the tradeskill-vs-class layout):
     // `0x4d8ea0` tests trainerType == 2.
-    g.set(
-        "IsTradeskillTrainer",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(era_bool(model.trainer.as_ref().is_some_and(|t| {
-                t.trainer_type == TRAINER_TYPE_TRADESKILL
-            })))
-        })?,
-    )?;
+    lua.register_function("IsTradeskillTrainer", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(era_bool(model.trainer.as_ref().is_some_and(|t| {
+            t.trainer_type == TRAINER_TYPE_TRADESKILL
+        })))
+    })?;
 
     // IsTalentTrainer() → 1/nil: `0x4d8ed0` tests trainerType == 1 — vmangos's MOUNT trainers, which
     // the client's own vocabulary calls "talent" (decision 1124). It used to return a hardcoded nil
     // on the belief that benilla drives no such trainer; the shipped world has 23 of them.
-    g.set(
-        "IsTalentTrainer",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(era_bool(
-                model.trainer.as_ref().is_some_and(|t| t.trainer_type == 1),
-            ))
-        })?,
-    )?;
+    lua.register_function("IsTalentTrainer", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(era_bool(
+            model.trainer.as_ref().is_some_and(|t| t.trainer_type == 1),
+        ))
+    })?;
 
     // GetTrainerGreetingText() → the trainer's greeting line ("" when no trainer is open).
-    g.set(
-        "GetTrainerGreetingText",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let text = model
-                .trainer
-                .as_ref()
-                .map(|t| t.greeting.clone())
-                .unwrap_or_default();
-            lua.create_string(&text)
-        })?,
-    )?;
+    lua.register_function("GetTrainerGreetingText", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let text = model
+            .trainer
+            .as_ref()
+            .map(|t| t.greeting.clone())
+            .unwrap_or_default();
+        Ok(Value::from(text))
+    })?;
 
     // GetTrainerServiceTypeFilter(type) → 1/nil (whether that category is shown). SetTrainerService-
     // TypeFilter(type, on) toggles it — the sort checkboxes' real client-side filtering.
-    g.set(
-        "GetTrainerServiceTypeFilter",
-        lua.create_function(|lua, kind: String| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match TrainerServiceCategory::from_filter_str(&kind) {
-                Some(c) => era_bool(model.trainer_filter[c.filter_slot()]),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
-    g.set(
+    lua.register_function("GetTrainerServiceTypeFilter", |lua, kind: String| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match TrainerServiceCategory::from_filter_str(&kind) {
+            Some(c) => era_bool(model.trainer_filter[c.filter_slot()]),
+            None => Value::Nil,
+        })
+    })?;
+    lua.register_function(
         "SetTrainerServiceTypeFilter",
-        lua.create_function(|lua, (kind, on): (String, Value)| {
+        |lua, (kind, on): (String, Value)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             if let Some(c) = TrainerServiceCategory::from_filter_str(&kind) {
                 // Era passes 1 / 0 (or true/nil); anything truthy-but-not-0 enables.
-                let enable = !matches!(on, Value::Nil | Value::Integer(0) | Value::Boolean(false));
+                // Both zero spellings: the backends report a whole 0 differently.
+                let enable = !matches!(on, Value::Nil | Value::Integer(0) | Value::Boolean(false))
+                    && !matches!(on, Value::Number(n) if n == 0.0);
                 model.trainer_filter[c.filter_slot()] = enable;
                 // …and the repaint, from here rather than from Lua ([`queue_trainer_update`]).
                 // Unconditional, like the thunk: it fires whether or not the bit moved.
                 queue_trainer_update(&mut model);
             }
             Ok(())
-        })?,
+        },
     )?;
 
     // Collapse/ExpandTrainerSkillLine(id) — fold a skill line by the display index of its header row
     // (id 0 = all groups, the collapse-all button); a non-header index no-ops (decision 0247).
-    g.set(
-        "CollapseTrainerSkillLine",
-        lua.create_function(|lua, id: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            set_collapsed(&mut model, id, true);
-            queue_trainer_update(&mut model);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "ExpandTrainerSkillLine",
-        lua.create_function(|lua, id: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            set_collapsed(&mut model, id, false);
-            queue_trainer_update(&mut model);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CollapseTrainerSkillLine", |lua, id: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        set_collapsed(&mut model, id, true);
+        queue_trainer_update(&mut model);
+        Ok(())
+    })?;
+    lua.register_function("ExpandTrainerSkillLine", |lua, id: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        set_collapsed(&mut model, id, false);
+        queue_trainer_update(&mut model);
+        Ok(())
+    })?;
 
     // SelectTrainerService(index) — select the SERVICE at that row, by its spell id. An index out
     // of range clears the selection (`0x4d74f0`'s `cmp ecx, ds:0xb73a10` / `mov [0xb73a0c], 0` —
@@ -973,25 +921,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `0xffffffff` (`0x4d7b05`), and find the FIRST header again on the way back out — answering 1
     // rather than 0. The two are the same answer to the only question the stock window asks of this
     // number (`GetTrainerSelectionIndex() > 1`), and nothing else reads it.
-    g.set(
-        "SelectTrainerService",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.trainer_selection = service(&model, index).map(|s| s.spell_id);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SelectTrainerService", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.trainer_selection = service(&model, index).map(|s| s.spell_id);
+        Ok(())
+    })?;
 
     // GetTrainerSelectionIndex() → the selected service's current 1-based row — **past
     // `GetNumTrainerServices()` while that service is hidden**, and 0 only when nothing is selected
     // or the service has left the list entirely ([`selected_row`] has the law and what rides on it).
-    g.set(
-        "GetTrainerSelectionIndex",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(selected_row(&model).map_or(0i64, |r| r as i64))
-        })?,
-    )?;
+    lua.register_function("GetTrainerSelectionIndex", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(selected_row(&model).map_or(0i64, |r| r as i64))
+    })?;
 
     // BuyTrainerService(index) — queue that row's SPELL ID for purchase (the app sends
     // CMSG_TRAINER_BUY_SPELL). A header row, an out-of-range index, or an ALREADY-KNOWN row is
@@ -1006,29 +948,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // lands there — `BuyTrainerService(0)` buys the player's entire visible list in one call. Here
     // index 0 is a no-op instead. Nothing in the stock window passes a non-positive index, and a
     // verb that spends the whole purse on a typo is not one to reproduce on the strength of that.
-    g.set(
-        "BuyTrainerService",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let buyable = service(&model, index)
-                .filter(|s| s.category == TrainerServiceCategory::Available)
-                .map(|s| s.spell_id);
-            if let Some(spell_id) = buyable {
-                model.trainer_buys.push(spell_id);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("BuyTrainerService", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let buyable = service(&model, index)
+            .filter(|s| s.category == TrainerServiceCategory::Available)
+            .map(|s| s.spell_id);
+        if let Some(spell_id) = buyable {
+            model.trainer_buys.push(spell_id);
+        }
+        Ok(())
+    })?;
 
     // CloseTrainer() — client-side close (no packet, vanilla): flag it so the app clears its state.
-    g.set(
-        "CloseTrainer",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.trainer_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseTrainer", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.trainer_close = true;
+        Ok(())
+    })?;
 
     Ok(())
 }

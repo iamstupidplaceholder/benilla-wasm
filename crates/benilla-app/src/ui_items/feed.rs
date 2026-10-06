@@ -94,7 +94,9 @@ fn spell_desc_text(
     home_area: Option<&str>,
     // The `$d`/`$s` tokens resolve `INT_SPELL_DURATION_*` / `INT_SPELL_POINTS_SPREAD_TEMPLATE`
     // out of the VM (decision 2045); `benilla-formats` names the key, this side renders it.
-    text: &dyn Fn(&str, &[i64]) -> Option<String>,
+    // Takes the lookup, not the filler: the filler borrows it per call, so the borrow
+    // ends on return instead of spanning the caller.
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     let sp = spells?;
     let d = sp.catalog.get(id)?;
@@ -102,14 +104,15 @@ fn spell_desc_text(
         // The $-expander can still yield an empty string from a non-empty template; the builder's
         // test is on the EXPANDED text, so ours is too.
         Some(desc) => {
-            let ctx = benilla_formats::TokenContext {
+            let mut text = crate::ui_script::token_text(&mut *get);
+            let mut ctx = benilla_formats::TokenContext {
                 durations: &sp.durations,
                 radii: &sp.radii,
                 lookup: &|i| sp.catalog.get(i),
                 home_area,
-                text,
+                text: &mut text,
             };
-            Some(benilla_formats::substitute(desc, d, &ctx)).filter(|t| !t.is_empty())
+            Some(benilla_formats::substitute(desc, d, &mut ctx)).filter(|t| !t.is_empty())
         }
         None => None,
     }
@@ -139,7 +142,7 @@ fn charges_count(spells: &[benilla_protocol::messages::ItemSpellEntry]) -> i32 {
 /// twins, which is the spelling the reference itself uses wherever it builds a standing label
 /// (`FACTION_STANDING_LABEL%d` `0x84b5dc`, wow-re `ui/scratch/quest-leaderboard-law.md` §5).
 /// `None` for an install that does not carry the row — the line then names no standing.
-fn standing_label(rank: u32, get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+fn standing_label(rank: u32, get: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     get(&format!("FACTION_STANDING_LABEL{}", rank.min(7) + 1))
 }
 
@@ -158,17 +161,16 @@ fn template_view(
     sub_classes: Option<&benilla_formats::ItemSubClassCatalog>,
     classes: Option<&benilla_formats::ItemClassCatalog>,
     icons: Option<&ItemDisplays>,
-    // The VM's own `GlobalStrings.lua`, for the reputation-requirement line (decision 2045).
-    get: &dyn Fn(&str) -> Option<String>,
-    // The same table, for the `$`-engine's own keyed tokens — see [`spell_desc_text`].
-    text: &dyn Fn(&str, &[i64]) -> Option<String>,
+    // The VM's own `GlobalStrings.lua`, for the reputation-requirement line (decision 2045)
+    // and the `$`-engine's own keyed tokens — see [`spell_desc_text`], which takes it
+    // directly so no filler borrow spans this body.
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> benilla_ui::script::ItemTemplateView {
     let spell_name = |id: u32| -> Option<String> {
         spells
             .and_then(|s| s.catalog.get(id))
             .map(|sd| sd.name.clone())
     };
-    let spell_text = |id: u32| spell_desc_text(spells, id, home_area, text);
     benilla_ui::script::ItemTemplateView {
         name: t.name.clone(),
         quality: t.quality,
@@ -234,9 +236,9 @@ fn template_view(
         required_rep_line: (t.required_rep_faction != 0)
             .then(|| {
                 let faction = factions.and_then(|c| c.faction_name(t.required_rep_faction))?;
-                let standing = standing_label(t.required_rep_rank, get)?;
+                let standing = standing_label(t.required_rep_rank, &mut *get)?;
                 Some(benilla_ui::strings::fill(
-                    &get("ITEM_REQ_REPUTATION")?,
+                    &(&mut *get)("ITEM_REQ_REPUTATION")?,
                     &[
                         benilla_ui::strings::Arg::S(faction),
                         benilla_ui::strings::Arg::S(&standing),
@@ -251,7 +253,10 @@ fn template_view(
             .spells
             .iter()
             .filter(|s| s.spell_id != 0)
-            .filter_map(|s| spell_text(s.spell_id).map(|n| (s.trigger, s.spell_id, n)))
+            .filter_map(|s| {
+                spell_desc_text(spells, s.spell_id, home_area, &mut *get)
+                    .map(|n| (s.trigger, s.spell_id, n))
+            })
             .collect(),
         charges: charges_count(&t.spells),
         description: t.description.clone(),
@@ -299,7 +304,7 @@ pub(super) fn feed_item_sets(
     let mut push: Vec<(u32, benilla_ui::script::ItemSetView)> = Vec::new();
     // Scoped, so the push below can take the VM mutably: the build reads the string table, the
     // push writes the store, and the two cannot hold it at once.
-    let token_text = crate::ui_script::token_text(&script);
+    let mut get = |key: &str| script.global_string(key);
     for (&set_id, last) in pending.iter_mut() {
         let Some(row) = sets.0.set(set_id) else {
             done.push(set_id); // no such row — drop the ask for good
@@ -316,7 +321,7 @@ pub(super) fn feed_item_sets(
                 .bonuses
                 .iter()
                 .filter_map(|&(n, spell)| {
-                    spell_desc_text(spell_res, spell, None, &token_text).map(|desc| (n, desc))
+                    spell_desc_text(spell_res, spell, None, &mut get).map(|desc| (n, desc))
                 })
                 .collect(),
             required_skill: row.required_skill,
@@ -338,7 +343,7 @@ pub(super) fn feed_item_sets(
             push.push((set_id, view));
         }
     }
-    drop(token_text);
+    drop(get);
     for (id, view) in push {
         script.set_item_set(id, view);
     }
@@ -405,12 +410,16 @@ pub(super) fn feed_item_stats(
     icons: Option<Res<ItemDisplays>>,
     mut pending: Local<crate::ui_script::VmMemo<std::collections::HashSet<u32>>>,
     mut last_home: Local<crate::ui_script::VmMemo<Option<String>>>,
+    repair_tables: Option<Res<crate::ui_merchant::RepairTables>>,
 ) {
     let Some(mut script) = script else {
         return;
     };
     let pending = pending.get(&script);
     let last_home = last_home.get(&script);
+    if let Some(tables) = repair_tables.as_deref() {
+        script.set_repair_tables(tables.0.clone());
+    }
     // **`GetBindLocation()`'s push, and it happens BEFORE the early return below.**
     //
     // The name resolution lives here because this system already owns it for the hearthstone's
@@ -451,14 +460,7 @@ pub(super) fn feed_item_stats(
     // Built first, pushed after: the reference-string lookup borrows the VM and `set_item_template`
     // needs it mutably, so the resolve and the push cannot interleave.
     let views: Vec<(u32, benilla_ui::script::ItemTemplateView)> = {
-        let get = |key: &str| {
-            script
-                .lua()
-                .globals()
-                .get::<String>(key)
-                .ok()
-                .filter(|t| !t.is_empty())
-        };
+        let mut get = |key: &str| script.global_string(key).filter(|t| !t.is_empty());
         ready
             .into_iter()
             .filter_map(|id| {
@@ -475,14 +477,16 @@ pub(super) fn feed_item_stats(
                         sub_classes.as_deref().map(|s| &s.0),
                         classes.as_deref().map(|c| &c.0),
                         icons.as_deref(),
-                        &get,
-                        &crate::ui_script::token_text(&script),
+                        &mut get,
                     ),
                 ))
             })
             .collect()
     };
     for (id, view) in views {
+        if let Some(template) = items.template(id, 0, &commands) {
+            script.set_item_repair_level(id, template.item_level);
+        }
         script.set_item_template(id, view);
     }
 }
@@ -616,7 +620,7 @@ fn resolve_slot(
     // The petition record cache, for a charter slot's tooltip lines — a LAZY fill, so it is taken
     // mutably for the same reason `names` is: the read is what issues the query.
     petitions: &mut crate::ui_petition::PetitionState,
-    now: std::time::Instant,
+    now: benilla_time::Instant,
     ui_now: f64,
     // The player's own `ChrClasses.dbc` relic flag — `find_equip_slot`'s second half. It decides
     // ONE slot (INVSLOT 17) and it decides it both ways, so it has to reach every fit-rule read
@@ -964,7 +968,7 @@ pub(crate) fn feed_containers(
     // a parked gated run prints (almost) nothing where the ungated binary printed once a second.
     let cost_t0 = std::env::var_os("WOW_FEED_COST")
         .is_some()
-        .then(std::time::Instant::now);
+        .then(benilla_time::Instant::now);
     // The frame's atomic clock pair (`crate::ui_script::UiClock`): the slot resolves read the
     // cooldown store and convert triples through ONE coherent instant, so a running cooldown's
     // pushed start is frame-stable (the resource's own doc).
@@ -1010,11 +1014,7 @@ pub(crate) fn feed_containers(
             Some(_) => "ERR_WRONG_BAG_TYPE_SUBCLASS",
             None => equip_error_key(e.reason),
         };
-        let text = script
-            .lua()
-            .globals()
-            .get::<String>(key)
-            .unwrap_or_default();
+        let text = script.global_string(key).unwrap_or_default();
         if text.is_empty() {
             continue;
         }
@@ -1083,7 +1083,7 @@ pub(crate) fn feed_containers(
         fresh.insert(
             0,
             ContainerState {
-                name: Some("Backpack".into()),
+                name: script.global_string("BACKPACK_TOOLTIP"),
                 num_slots: u32::from(PACK_SLOTS),
                 slots,
             },
@@ -1263,7 +1263,7 @@ pub(crate) fn feed_containers(
         fresh.insert(
             KEYRING_CONTAINER,
             ContainerState {
-                name: Some("Keyring".into()),
+                name: script.global_string("KEYRING"),
                 num_slots: size,
                 slots,
             },
@@ -1603,7 +1603,7 @@ mod tests {
         )
         .unwrap();
         let seen = |s: &mut UiScript| {
-            let out = s.eval::<Vec<String>>("return SEEN").unwrap();
+            let out = s.eval_sequence::<String>("return SEEN").unwrap();
             s.run("SEEN = {}").unwrap();
             out
         };
@@ -1715,7 +1715,7 @@ mod tests {
         )
         .unwrap();
         let seen = |s: &mut UiScript| {
-            let out = s.eval::<Vec<String>>("return SEEN").unwrap();
+            let out = s.eval_sequence::<String>("return SEEN").unwrap();
             s.run("SEEN = {}").unwrap();
             out
         };
@@ -2010,7 +2010,7 @@ mod tests {
         // Fireball's description reaches no keyed token — a `$s1` spread renders from the spell's
         // own columns. A fixture that pretended to hold GlobalStrings would be claiming coverage
         // this assertion does not have.
-        let no_strings = |_: &str, _: &[i64]| None;
+        let mut no_strings = |_: &str| None;
 
         // Every "Opening"/"Closing" the lock chain can reach — the key spells (3365/3366/6247/6477
         // are all literally named "Opening") carry no description, so NO Use: line may be built.
@@ -2021,7 +2021,7 @@ mod tests {
                 "spell {id} has a name — which is exactly what must NOT leak into the tooltip"
             );
             assert_eq!(
-                super::spell_desc_text(Some(&spells), id, None, &no_strings),
+                super::spell_desc_text(Some(&spells), id, None, &mut no_strings),
                 None,
                 "spell {id} ({:?}) has no description, so the reference prints no trigger line",
                 d.name
@@ -2030,7 +2030,7 @@ mod tests {
 
         // The control: a described spell still produces its line, so this is a law about EMPTY
         // descriptions and not a blanket mute. Fireball (133) is the tooltip suite's own anchor.
-        let fireball = super::spell_desc_text(Some(&spells), 133, None, &no_strings)
+        let fireball = super::spell_desc_text(Some(&spells), 133, None, &mut no_strings)
             .expect("a described spell still yields its line");
         assert!(
             fireball.contains("damage"),

@@ -8,7 +8,7 @@
 //! client's `1`/nil — truthy either way, the branch shape callers use is identical (the
 //! [`super::unit`] convention).
 
-use mlua::{Lua, Value};
+use benilla_lua::Vm;
 
 use super::Model;
 
@@ -87,18 +87,13 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    fn install_action(lua: &Lua, name: &str, action: DeathAction) -> mlua::Result<()> {
-        lua.globals().set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.death_actions.push(action);
-                Ok(())
-            })?,
-        )
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    fn install_action(lua: &mut Vm, name: &str, action: DeathAction) -> benilla_lua::Result<()> {
+        lua.register_function(name, move |lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.death_actions.push(action);
+            Ok(())
+        })
     }
     install_action(lua, "RepopMe", DeathAction::Repop)?;
     install_action(lua, "RetrieveCorpse", DeathAction::RetrieveCorpse)?;
@@ -109,60 +104,39 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     // GetReleaseTimeRemaining() → seconds until the forced release, or −1 = no timer (the DEATH
     // dialog's no-timer text pick, ref StaticPopup.lua:380-387).
-    g.set(
-        "GetReleaseTimeRemaining",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .death
-                .release_remaining
-                .map_or(-1.0, |s| f64::from(s.max(0.0))))
-        })?,
-    )?;
+    lua.register_function("GetReleaseTimeRemaining", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .death
+            .release_remaining
+            .map_or(-1.0, |s| f64::from(s.max(0.0))))
+    })?;
 
     // GetCorpseRecoveryDelay() → whole seconds until reclaimable (0 = now) — the StartDelay gate.
-    g.set(
-        "GetCorpseRecoveryDelay",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(f64::from(model.death.recovery_delay.max(0.0).ceil()))
-        })?,
-    )?;
+    lua.register_function("GetCorpseRecoveryDelay", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(f64::from(model.death.recovery_delay.max(0.0).ceil()))
+    })?;
 
-    g.set(
-        "ResurrectHasSickness",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.death.resurrect_sickness)
-        })?,
-    )?;
-    g.set(
-        "ResurrectHasTimer",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.death.resurrect_has_timer)
-        })?,
-    )?;
-    g.set(
-        "CheckSpiritHealerDist",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.death.spirit_healer_in_range)
-        })?,
-    )?;
+    lua.register_function("ResurrectHasSickness", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.death.resurrect_sickness)
+    })?;
+    lua.register_function("ResurrectHasTimer", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.death.resurrect_has_timer)
+    })?;
+    lua.register_function("CheckSpiritHealerDist", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.death.spirit_healer_in_range)
+    })?;
 
     // GetResSicknessDuration() → the duration string, or nil below the sickness level (the
     // CONFIRM_XP_LOSS variant pick, ref UIParent.lua:399-408).
-    g.set(
-        "GetResSicknessDuration",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match &model.death.sickness_duration {
-                Some(s) => Value::String(lua.create_string(s)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("GetResSicknessDuration", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.death.sickness_duration.clone())
+    })?;
 
     // HasSoulstone() → the self-resurrect's label, or nil (decision 1746). The DEATH dialog
     // uses the one call three ways — `DisplayButton2` (show the button at all), `OnShow`
@@ -170,16 +144,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // falsey return has to be **nil** and not `0`: Lua's `0` is truthy, and a `0` here would both
     // show the button forever and stamp "0" on it. The whole answer is computed app-side; this is
     // a pure read of the pushed snapshot.
-    g.set(
-        "HasSoulstone",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match &model.death.self_res_label {
-                Some(s) => Value::String(lua.create_string(s)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("HasSoulstone", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.death.self_res_label.clone())
+    })?;
 
     Ok(())
 }

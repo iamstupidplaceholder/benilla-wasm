@@ -58,22 +58,22 @@ fn one_item_backpack(item_id: u32, name: &str, quality: u32) -> ContainerState {
 fn setup() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
     // The stock DELETE_GOOD_ITEM's OnHide hands focus back to `ChatFrameEditBox` (1960).
-    load_xml(&s, r"Interface\FrameXML\UIMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\ChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml"); // TOOLTIP_DEFAULT_COLOR, read by the dropdown backdrop
-    load_xml(&s, r"Interface\FrameXML\UIDropDownMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, r"Interface\FrameXML\FloatingChatFrame.xml"); // declares ChatFrameEditBox
+    load_xml(&mut s, r"Interface\FrameXML\UIMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\ChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml"); // TOOLTIP_DEFAULT_COLOR, read by the dropdown backdrop
+    load_xml(&mut s, r"Interface\FrameXML\UIDropDownMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, r"Interface\FrameXML\FloatingChatFrame.xml"); // declares ChatFrameEditBox
 
     // **The world frame, because the world drop is what raises this popup** (B380, decision
     // 2089). Every test here used to click at `(-50, -50)` — off-screen, over nothing — which is
@@ -93,14 +93,14 @@ fn bag_setup() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     // `ContainerFrame_Update` reads `MerchantFrame:IsShown()` on any slot the tooltip owns.
     // `BankFrame`'s purse is an ordinary `SmallMoneyFrameTemplate` off the chain's own
     // `MoneyFrame.xml` (1937/1962), so it is not a merchant dependency.
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     load_world_frame(&s); // [`setup`]'s reason, same fixture
 
     // …and the paper doll goes back where the reference keeps it. [`BAG_UI`] leaves
@@ -194,7 +194,7 @@ fn delete_item_confirm_no_clears_without_destroying() {
     assert!(bag_open(&s, 0), "the backpack window is up");
     // Asked of the buttons' own GetID: `ContainerFrame_GenerateFrame` numbers a window's buttons
     // BACKWARDS, so slot 1 is the LAST `…Item<j>`, and index arithmetic would pin a coincidence.
-    let slot1 = bag_slot_button(&s, 0, 1);
+    let slot1 = bag_slot_button(&mut s, 0, 1);
 
     pick_up_and_drop_in_world(&mut s);
     assert!(
@@ -535,7 +535,7 @@ fn the_world_drop_survives_the_whole_shipped_interface() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.set_money(0);
     s.set_container(0, Some(one_item_backpack(117, "Tough Jerky", 1)));

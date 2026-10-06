@@ -32,6 +32,7 @@
 
 use std::ops::Range;
 
+use benilla_assets::gpu_table::{gpu_table_id, GpuTable, GpuTableId};
 use bevy::asset::{AssetEvent, AssetId};
 use bevy::core_pipeline::core_3d::{Transparent3d, CORE_3D_DEPTH_FORMAT};
 use bevy::ecs::system::lifetimeless::{Read, SRes};
@@ -50,9 +51,9 @@ use bevy::render::render_resource::binding_types::{
 };
 use bevy::render::render_resource::{
     BindGroup, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BlendComponent,
-    BlendFactor, BlendOperation, BlendState, Buffer, BufferId, BufferUsages, ColorTargetState,
-    ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, DynamicUniformBuffer,
-    FragmentState, IndexFormat, MultisampleState, PipelineCache, PrimitiveState, RawBufferVec,
+    BlendFactor, BlendOperation, BlendState, BufferId, BufferUsages, ColorTargetState, ColorWrites,
+    CompareFunction, DepthBiasState, DepthStencilState, DynamicUniformBuffer, FragmentState,
+    IndexFormat, MultisampleState, PipelineCache, PrimitiveState, RawBufferVec,
     RenderPipelineDescriptor, SamplerBindingType, ShaderStages, SpecializedRenderPipeline,
     SpecializedRenderPipelines, StencilState, TextureFormat, TextureSampleType, VertexFormat,
     VertexState, VertexStepMode,
@@ -94,7 +95,7 @@ struct ExtractedDraw {
     /// Vertex range in the shared stream.
     range: Range<u32>,
     /// A booth's scene-light override (0539 §5); `None` = the world's shared light buffer.
-    light: Option<Buffer>,
+    light: Option<GpuTable>,
     /// The target-pixel clip rect — see [`super::buffer::EffectDrawSpec::clip`].
     clip: Option<Vec4>,
 }
@@ -104,7 +105,7 @@ struct ExtractedDraw {
 struct MergedDraw {
     index_range: Range<u32>,
     texture: AssetId<Image>,
-    light: Option<Buffer>,
+    light: Option<GpuTable>,
     /// The dynamic offset of this draw's row in [`EffectMeta::params`] — its fog policy and its
     /// clip rect together, resolved by [`EffectMeta::build_params`].
     params_offset: u32,
@@ -221,7 +222,7 @@ impl EffectMeta {
 /// re-created, so it cannot stale a cached group) or a booth scene blob's id (0539 §5).
 #[derive(Resource, Default)]
 pub struct EffectBindGroups {
-    images: HashMap<(AssetId<Image>, Option<BufferId>), BindGroup>,
+    images: HashMap<(AssetId<Image>, Option<GpuTableId>), BindGroup>,
     /// The params buffer the cached groups were built against — see
     /// [`prepare_effect_bind_groups`].
     params_buffer: Option<BufferId>,
@@ -243,6 +244,10 @@ pub fn init_effect_pipeline(mut commands: Commands, asset_server: Res<AssetServe
             uniform_buffer::<ViewUniform>(true),
         ),
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    let light_binding = storage_buffer_read_only_sized(false, None);
+    #[cfg(target_arch = "wasm32")]
+    let light_binding = texture_2d(TextureSampleType::Uint);
     let image_layout = BindGroupLayoutDescriptor::new(
         "effect_image_layout",
         &BindGroupLayoutEntries::sequential(
@@ -252,7 +257,7 @@ pub fn init_effect_pipeline(mut commands: Commands, asset_server: Res<AssetServe
                 sampler(SamplerBindingType::Filtering),
                 // The shared global light/fog blob (`lighting::global_light`) — sized at bind
                 // time; the WGSL struct pins the layout.
-                storage_buffer_read_only_sized(false, None),
+                light_binding,
                 // The per-draw fog-params `vec4`, dynamic-offset into the canonical rows.
                 uniform_buffer::<EffectParams>(true),
             ),
@@ -351,6 +356,8 @@ impl SpecializedRenderPipeline for EffectPipeline {
             ),
         };
         let mut shader_defs = vec![blend_def.into()];
+        #[cfg(target_arch = "wasm32")]
+        shader_defs.push("WOW_LIGHT_TEXTURE".into());
         // The decal family (nonzero raster bias ⇔ ground-coplanar): absolute verts through
         // `clip_from_world` — the same matrix, hence the same rounding, as the world-mesh
         // shaders whose depth the bias must settle against. `prepare_effects` skips these
@@ -543,7 +550,7 @@ fn queue_effects(
 type RunKey = (
     bevy::render::render_resource::CachedRenderPipelineId,
     AssetId<Image>,
-    Option<BufferId>,
+    Option<GpuTableId>,
     u32,
 );
 
@@ -714,7 +721,7 @@ fn prepare_effects(
             let key: RunKey = (
                 pipeline,
                 draw.texture,
-                draw.light.as_ref().map(|b| b.id()),
+                draw.light.as_ref().map(gpu_table_id),
                 params_offset,
             );
             match &mut open {
@@ -778,7 +785,6 @@ fn prepare_effect_bind_groups(
         &pipeline_cache.get_bind_group_layout(&pipeline.view_layout),
         &BindGroupEntries::single(view_binding),
     ));
-    let Some(light) = light else { return };
     let Some(params_binding) = meta.params.binding() else {
         return;
     };
@@ -790,7 +796,7 @@ fn prepare_effect_bind_groups(
         bind_groups.params_buffer = meta.params_buffer;
     }
     for draw in &meta.draws {
-        let key = (draw.texture, draw.light.as_ref().map(|b| b.id()));
+        let key = (draw.texture, draw.light.as_ref().map(gpu_table_id));
         if bind_groups.images.contains_key(&key) {
             continue;
         }
@@ -805,18 +811,42 @@ fn prepare_effect_bind_groups(
                 draw.texture, image.size.width, image.size.height
             );
         }
-        let light_buf = draw.light.as_ref().unwrap_or(&light.0);
+        #[cfg(not(target_arch = "wasm32"))]
+        let Some(light_buf) = draw
+            .light
+            .as_ref()
+            .or_else(|| light.as_deref().map(|shared| &shared.0))
+        else {
+            continue;
+        };
+        #[cfg(target_arch = "wasm32")]
+        let Some(light_buf) = draw
+            .light
+            .as_ref()
+            .or_else(|| light.as_deref().map(|shared| &shared.0))
+        else {
+            continue;
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let entries = BindGroupEntries::sequential((
+            &image.texture_view,
+            &image.sampler,
+            light_buf.as_entire_binding(),
+            params_binding.clone(),
+        ));
+        #[cfg(target_arch = "wasm32")]
+        let entries = BindGroupEntries::sequential((
+            &image.texture_view,
+            &image.sampler,
+            light_buf.view(),
+            params_binding.clone(),
+        ));
         bind_groups.images.insert(
             key,
             device.create_bind_group(
                 "effect_image_bind_group",
                 &pipeline_cache.get_bind_group_layout(&pipeline.image_layout),
-                &BindGroupEntries::sequential((
-                    &image.texture_view,
-                    &image.sampler,
-                    light_buf.as_entire_binding(),
-                    params_binding.clone(),
-                )),
+                &entries,
             ),
         );
     }
@@ -866,7 +896,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawEffectBatch {
             return RenderCommandResult::Skip;
         };
         // GPU image not prepared yet: withheld, exactly like the main-world residency gate.
-        let key = (draw.texture, draw.light.as_ref().map(|b| b.id()));
+        let key = (draw.texture, draw.light.as_ref().map(gpu_table_id));
         let Some(image_bind_group) = bind_groups.into_inner().images.get(&key) else {
             return RenderCommandResult::Skip;
         };

@@ -7,7 +7,7 @@
 //! `SMSG_PET_SPELLS`. So the feed does no admission and no ordering: it *renders* the ten words
 //! the last packet delivered. The slot law it renders them by is [`super`]'s.
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use bevy::prelude::*;
 

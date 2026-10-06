@@ -30,7 +30,7 @@ fn who(name: &str, level: u32, class: &str, zone: &str) -> WhoInfo {
 }
 
 /// The name painted into who row `row`.
-fn who_name(s: &UiScript, row: u32) -> String {
+fn who_name(s: &mut UiScript, row: u32) -> String {
     s.eval::<String>(&format!("return WhoFrameButton{row}Name:GetText()"))
         .unwrap()
 }
@@ -66,7 +66,7 @@ fn push(s: &mut UiScript, state: SocialState, event: &str) {
 #[test]
 fn the_window_opens_on_friends_with_the_guild_tab_disabled() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
+    let mut s = setup();
     s.run("ToggleFriendsFrame(1)").unwrap();
     assert!(s.eval::<bool>("return FriendsFrame:IsVisible()").unwrap());
     assert!(s
@@ -482,11 +482,11 @@ fn the_who_headers_sort_and_a_repeated_click_reverses() {
         "WHO_LIST_UPDATE",
     );
     let _ = s.take_social_requests();
-    assert_eq!(who_name(&s, 1), "Galas", "the server's order, unsorted");
+    assert_eq!(who_name(&mut s, 1), "Galas", "the server's order, unsorted");
 
     // Header 1 is Name (`FriendsFrame.xml:1313`).
     s.run("WhoFrameColumnHeader1:Click()").unwrap();
-    assert_eq!(who_name(&s, 1), "Erdrin", "Name, ascending");
+    assert_eq!(who_name(&mut s, 1), "Erdrin", "Name, ascending");
     assert_eq!(
         s.take_social_requests(),
         vec![SocialRequest::SortWho("name".to_string())],
@@ -494,18 +494,18 @@ fn the_who_headers_sort_and_a_repeated_click_reverses() {
     );
 
     s.run("WhoFrameColumnHeader1:Click()").unwrap();
-    assert_eq!(who_name(&s, 1), "Galas", "the same header again reverses");
+    assert_eq!(who_name(&mut s, 1), "Galas", "the same header again reverses");
 
     // Header 3 is Level (`:1394`) — ascending puts the level 12 first.
     s.run("WhoFrameColumnHeader3:Click()").unwrap();
-    assert_eq!(who_name(&s, 1), "Erdrin", "Level, ascending");
+    assert_eq!(who_name(&mut s, 1), "Erdrin", "Level, ascending");
     s.run("WhoFrameColumnHeader3:Click()").unwrap();
-    assert_eq!(who_name(&s, 1), "Galas", "and Level reverses too");
+    assert_eq!(who_name(&mut s, 1), "Galas", "and Level reverses too");
 
     // Back to Name: promoted from behind, it keeps the descending direction it was left in
     // rather than flipping — the chain's memory, not a per-click toggle.
     s.run("WhoFrameColumnHeader1:Click()").unwrap();
-    assert_eq!(who_name(&s, 1), "Galas", "Name, still descending");
+    assert_eq!(who_name(&mut s, 1), "Galas", "Name, still descending");
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
 
@@ -654,7 +654,7 @@ fn add_friend_without_a_target_opens_the_name_dialog() {
 #[test]
 fn the_name_dialog_reopens_empty() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
+    let mut s = setup();
     s.run("ToggleFriendsFrame(1)").unwrap();
     s.run("StaticPopup_Show(\"ADD_FRIEND\")").unwrap();
     s.run("StaticPopup1EditBox:SetText(\"Onerogue\")").unwrap();

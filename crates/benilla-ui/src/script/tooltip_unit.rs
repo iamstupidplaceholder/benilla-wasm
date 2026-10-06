@@ -28,14 +28,14 @@
 //! (the byte law ARMS a fade on hover loss, not an instant hide). Unit-frame hovers call the
 //! same `SetUnit` from Lua.
 
-use mlua::{Lua, Table};
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::object::frame_handle_of;
+use super::object::frame_handle_of_context;
 use super::tooltip::{append_line, clear_content, fire_cleared, show_or_hide_empty, tip_mut};
 // The grey band + trivial/GREY check (`0x5f0700`, the CIVILIAN line's last gate: a green-or-
 // better con never warns of a dishonorable kill) and the "??" gate live in one shared home
 // (`unit.rs`), alongside `UnitLevel`'s −1 return and the `GetQuestGreenRange` binding.
-use super::unit::{is_civilian_kill, level_reads_unknown, unknownobject};
+use super::unit::{is_civilian_kill, level_reads_unknown};
 use super::{KindState, Model, UnitState};
 use crate::layout::{Anchor, Point};
 use crate::strings::{fill, Arg};
@@ -91,8 +91,8 @@ fn rank_key(rank: u32) -> Option<&'static str> {
 ///
 /// `None` = the install's string table carries no template for the slot combination in hand, and
 /// the plate shows no level row rather than a composed one.
-fn level_line(lua: &Lua, u: &UnitState, player_level: u32) -> Option<String> {
-    let get = |key: &str| crate::strings::global(lua, key);
+fn level_line(lua: &mut impl LuaContext, u: &UnitState, player_level: u32) -> Option<String> {
+    let mut get = |key: &str| crate::strings::global_context(lua, key);
     // The "??" gate, byte-pinned (0x529fe0 §2-LEVEL): much-higher HOSTILE — internal reaction
     // ≤ 1 = hated/hostile = UnitReaction ≤ 2 on our 1..8 API scale (the UnitIsEnemy mapping) —
     // with playerLevel ≤ targetLevel−10; OR WorldBoss; OR level ≤ 0. Players NEVER read "??".
@@ -124,7 +124,7 @@ fn level_line(lua: &Lua, u: &UnitState, player_level: u32) -> Option<String> {
     let type_slot = if u.is_player {
         get("PLAYER")
     } else {
-        rank_key(u.rank).and_then(&get)
+        rank_key(u.rank).and_then(&mut get)
     };
     let (key, args): (&str, Vec<Arg<'_>>) = match (&class_slot, &type_slot) {
         (Some(c), Some(t)) => (
@@ -145,8 +145,12 @@ fn level_line(lua: &Lua, u: &UnitState, player_level: u32) -> Option<String> {
 }
 
 /// Render the unit tooltip for `token`'s current snapshot; returns whether the unit existed.
-fn render_unit(lua: &Lua, this: &Table, token: &str) -> mlua::Result<bool> {
-    let h = frame_handle_of(lua, this)?;
+fn render_unit(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    token: &str,
+) -> benilla_lua::Result<bool> {
+    let h = frame_handle_of_context(lua, this)?;
     let (unit, player_level) = {
         let model = lua.app_data_mut::<Model>().expect("model app_data");
         (
@@ -179,7 +183,10 @@ fn render_unit(lua: &Lua, this: &Table, token: &str) -> mlua::Result<bool> {
     // answers nil and no plate is drawn (the `unit` early-return above).
     let title = match &u.name {
         Some(n) => n.clone(),
-        None => unknownobject(lua)?.to_str()?.to_string(),
+        // One resolver, still ([`super::unit::unknownobject`]): the narrow native bridge below
+        // goes away with this module's own tooltip-batch port. Lossy here costs a glyph where
+        // the old native read raised — the 1193 direction, and UNKNOWNOBJECT is ASCII anyway.
+        None => super::unit::unknownobject(lua).map(|s| s.to_string_lossy().into_owned())?,
     };
     append_line(lua, this, (title, GOLD), None, false)?;
     if let Some(sub) = &u.subtitle {
@@ -193,23 +200,27 @@ fn render_unit(lua: &Lua, this: &Table, token: &str) -> mlua::Result<bool> {
     if let Some(faction) = &u.faction_name {
         append_line(lua, this, (faction.clone(), WHITE), None, false)?;
     }
-    if u.pvp {
-        append_line(lua, this, ("PvP".into(), WHITE), None, false)?;
-    }
-    if u.skinnable {
-        append_line(lua, this, ("Skinnable".into(), RED), None, false)?;
-    }
     // CIVILIAN (green) — `0x612550`, whole: the unit's PvP bit + the query civilian flag + the
     // unit is HOSTILE to the player (UnitReaction ≤ 2 — internal reaction < 2) + the kill would
     // be GREY/trivial. PVP_RANK_CIVILIAN = "Civilian" (extracted GlobalStrings). The predicate
     // itself lives in `unit` because `UnitPVPName` gates its own civilian arm on the same call.
-    if is_civilian_kill(&u, player_level) {
-        append_line(lua, this, ("Civilian".into(), GREEN), None, false)?;
-    }
     // LEADER (white) — `0x6125c0`: the PvP bit + the query racial_leader flag, no other gate.
     // PVP_RANK_LEADER = "Leader" (extracted GlobalStrings).
-    if u.racial_leader && u.pvp {
-        append_line(lua, this, ("Leader".into(), WHITE), None, false)?;
+    for (shown, key, color) in [
+        (u.pvp, "PVP_ENABLED", WHITE),
+        (u.skinnable, "UNIT_SKINNABLE", RED),
+        (
+            is_civilian_kill(&u, player_level),
+            "PVP_RANK_CIVILIAN",
+            GREEN,
+        ),
+        (u.racial_leader && u.pvp, "PVP_RANK_LEADER", WHITE),
+    ] {
+        if shown {
+            if let Some(text) = crate::strings::global_context(lua, key) {
+                append_line(lua, this, (text, color), None, false)?;
+            }
+        }
     }
     set_live_token(lua, h, Some(token.to_string()));
     update_bar(lua, h, Some(&u));
@@ -218,7 +229,7 @@ fn render_unit(lua: &Lua, this: &Table, token: &str) -> mlua::Result<bool> {
 }
 
 /// Mark the tooltip as world-hover-owned (the fade-on-loss gate).
-fn set_world_owned(lua: &Lua, h: FrameHandle) {
+fn set_world_owned(lua: &mut impl LuaContext, h: FrameHandle) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     if let Some(f) = model.arena.frame_mut(h) {
         if let KindState::Tooltip(t) = &mut f.kind_state {
@@ -228,7 +239,7 @@ fn set_world_owned(lua: &Lua, h: FrameHandle) {
 }
 
 /// Remember (or drop) the tooltip's live unit token — the health watcher's key.
-fn set_live_token(lua: &Lua, h: FrameHandle, token: Option<String>) {
+fn set_live_token(lua: &mut impl LuaContext, h: FrameHandle, token: Option<String>) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     if let Some(f) = model.arena.frame_mut(h) {
         if let KindState::Tooltip(t) = &mut f.kind_state {
@@ -239,7 +250,7 @@ fn set_live_token(lua: &Lua, h: FrameHandle, token: Option<String>) {
 
 /// Drive the `<name>StatusBar` child from a unit snapshot (`None` hides it) — the engine pushes
 /// health, FrameXML's `HealthBar_OnValueChanged` colors the fill.
-fn update_bar(lua: &Lua, h: FrameHandle, unit: Option<&UnitState>) {
+fn update_bar(lua: &mut impl LuaContext, h: FrameHandle, unit: Option<&UnitState>) {
     let bar = {
         let model = lua.app_data_mut::<Model>().expect("model app_data");
         let name = model.arena.frame(h).and_then(|f| f.name.clone());
@@ -276,11 +287,11 @@ fn update_bar(lua: &Lua, h: FrameHandle, unit: Option<&UnitState>) {
             };
             (model.frame_id(bar), v)
         };
-        if let Err(e) = super::event::fire_widget_handler(
+        if let Err(e) = super::event::fire_widget_handler_context(
             lua,
             id,
             "OnValueChanged",
-            vec![mlua::Value::Number(f64::from(value))],
+            vec![LuaValue::Number(f64::from(value))],
         ) {
             lua.app_data_mut::<Model>()
                 .expect("model app_data")
@@ -292,7 +303,7 @@ fn update_bar(lua: &Lua, h: FrameHandle, unit: Option<&UnitState>) {
 
 /// The `set_unit` push hook: a fresh snapshot for the tooltip's LIVE token re-drives the health
 /// bar (the byte law's HEALTH UpdateField watcher — the bar tracks without a line rebuild).
-pub(super) fn on_unit_push(lua: &Lua, token: &str) {
+pub(super) fn on_unit_push(lua: &mut impl LuaContext, token: &str) {
     let hits: Vec<FrameHandle> = {
         let model = lua.app_data_mut::<Model>().expect("model app_data");
         // The arena's tooltip registry (1634), gated by the resolve's roster exactly as the walk
@@ -320,6 +331,31 @@ pub(super) fn on_unit_push(lua: &Lua, token: &str) {
     }
 }
 
+/// The gameobject tooltip's line block: gold name plus the caller's tinted lock lines.
+fn render_gameobject(
+    lua: &mut impl LuaContext,
+    wrapper: &LuaTable,
+    h: FrameHandle,
+    name: &str,
+    lines: &[(String, TooltipTint)],
+) -> benilla_lua::Result<()> {
+    {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        clear_content(&mut model, h);
+    }
+    fire_cleared(lua, h);
+    append_line(lua, wrapper, (name.to_string(), GOLD), None, false)?;
+    for (text, tint) in lines {
+        let colour = match tint {
+            TooltipTint::White => WHITE,
+            TooltipTint::Red => RED,
+            TooltipTint::LockOpen => LOCK_OPEN,
+        };
+        append_line(lua, wrapper, (text.clone(), colour), None, false)?;
+    }
+    Ok(())
+}
+
 impl super::UiScript {
     /// Show the world-mouseover unit tooltip (the engine-driven flow the byte law describes):
     /// fire `OnTooltipSetDefaultAnchor` (FrameXML seats the plate at the default corner), render
@@ -336,19 +372,22 @@ impl super::UiScript {
             (h, id)
         };
         let (h, id) = h;
-        if let Err(e) =
-            super::event::fire_widget_handler(&self.lua, id, "OnTooltipSetDefaultAnchor", vec![])
-        {
-            self.push_error(e);
+        if let Err(e) = super::event::fire_widget_handler_context(
+            &mut self.lua,
+            id,
+            "OnTooltipSetDefaultAnchor",
+            Vec::new(),
+        ) {
+            self.model_mut().record_script_error(e.to_string());
         }
-        let wrapper = match super::object::frame_wrapper(&self.lua, id) {
+        let wrapper = match super::object::frame_wrapper_context(&mut self.lua, id) {
             Ok(w) => w,
             Err(e) => {
                 self.push_error(e);
                 return false;
             }
         };
-        let shown = match render_unit(&self.lua, &wrapper, token) {
+        let shown = match render_unit(&mut self.lua, &wrapper, token) {
             Ok(s) => s,
             Err(e) => {
                 self.push_error(e);
@@ -356,7 +395,7 @@ impl super::UiScript {
             }
         };
         if shown {
-            set_world_owned(&self.lua, h);
+            set_world_owned(&mut self.lua, h);
             // Cancel any running fade at full alpha (a re-hover resurrects).
             let mut model = self.model_mut();
             if let Some(f) = model.arena.frame_mut(h) {
@@ -448,45 +487,28 @@ impl super::UiScript {
             }
             // The corner arm: the same default-anchor handler the unit flow fires.
             None => {
-                if let Err(e) = super::event::fire_widget_handler(
-                    &self.lua,
+                if let Err(e) = super::event::fire_widget_handler_context(
+                    &mut self.lua,
                     id,
                     "OnTooltipSetDefaultAnchor",
-                    vec![],
+                    Vec::new(),
                 ) {
-                    self.push_error(e);
+                    self.model_mut().record_script_error(e.to_string());
                 }
             }
         }
-        let wrapper = match super::object::frame_wrapper(&self.lua, id) {
+        let wrapper = match super::object::frame_wrapper_context(&mut self.lua, id) {
             Ok(w) => w,
             Err(e) => {
                 self.push_error(e);
                 return false;
             }
         };
-        let render = || -> mlua::Result<()> {
-            {
-                let mut model = self.lua.app_data_mut::<Model>().expect("model app_data");
-                clear_content(&mut model, h);
-            }
-            fire_cleared(&self.lua, h);
-            append_line(&self.lua, &wrapper, (name.to_string(), GOLD), None, false)?;
-            for (text, tint) in lines {
-                let colour = match tint {
-                    TooltipTint::White => WHITE,
-                    TooltipTint::Red => RED,
-                    TooltipTint::LockOpen => LOCK_OPEN,
-                };
-                append_line(&self.lua, &wrapper, (text.clone(), colour), None, false)?;
-            }
-            Ok(())
-        };
-        if let Err(e) = render() {
+        if let Err(e) = render_gameobject(&mut self.lua, &wrapper, h, name, lines) {
             self.push_error(e);
             return false;
         }
-        set_world_owned(&self.lua, h);
+        set_world_owned(&mut self.lua, h);
         {
             let mut model = self.model_mut();
             if let Some(f) = model.arena.frame_mut(h) {
@@ -497,7 +519,7 @@ impl super::UiScript {
                 }
             }
         }
-        show_or_hide_empty(&self.lua, h);
+        show_or_hide_empty(&mut self.lua, h);
         true
     }
 
@@ -520,7 +542,7 @@ impl super::UiScript {
             let (id, root_id) = (model.frame_id(h), model.frame_id(root));
             (h, id, root_id)
         };
-        let wrapper = match super::object::frame_wrapper(&self.lua, id) {
+        let wrapper = match super::object::frame_wrapper_context(&mut self.lua, id) {
             Ok(w) => w,
             Err(e) => {
                 self.push_error(e);
@@ -545,7 +567,7 @@ impl super::UiScript {
                 model.touch_layout();
             }
         }
-        fire_cleared(&self.lua, h);
+        fire_cleared(&mut self.lua, h);
         // The blip name renders GOLD like the reference (the engine tooltip's SetText line —
         // the same 0xffffd200 the unit-name line uses); a cross-interior entry renders the
         // byte law's `|cffb0b0b0` wrap MODULATING that gold — faint gold, not flat grey
@@ -556,11 +578,17 @@ impl super::UiScript {
         } else {
             GOLD
         };
-        if let Err(e) = append_line(&self.lua, &wrapper, (text.to_string(), color), None, false) {
+        if let Err(e) = append_line(
+            &mut self.lua,
+            &wrapper,
+            (text.to_string(), color),
+            None,
+            false,
+        ) {
             self.push_error(e);
             return false;
         }
-        set_world_owned(&self.lua, h);
+        set_world_owned(&mut self.lua, h);
         {
             let mut model = self.model_mut();
             if let Some(f) = model.arena.frame_mut(h) {
@@ -571,7 +599,7 @@ impl super::UiScript {
                 }
             }
         }
-        show_or_hide_empty(&self.lua, h);
+        show_or_hide_empty(&mut self.lua, h);
         true
     }
 
@@ -646,24 +674,22 @@ impl super::UiScript {
 }
 
 /// Register the unit content channel into the GameTooltip kind method table.
-pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install_methods(vm: &mut Vm, m: &LuaTable) -> benilla_lua::Result<()> {
     // GameTooltip:SetUnit(token) → 1/nil — the unit-frame hover (ref UnitFrame_OnEnter reads
     // the return to arm its re-poll).
-    m.set(
-        "SetUnit",
-        lua.create_function(|lua, (this, token): (Table, String)| {
-            // Same gate as every `Unit*` verb: `SetUnit` resolves its argument through the client's
-            // one token resolver, so an unrecognised name raises here too rather than drawing an
-            // empty tooltip. NOT inside `render_unit` — the app's own push calls that with a
-            // canonical token and must never be gated against itself.
-            crate::script::unit::check_unit_token(&Some(token.clone()))?;
-            let ok = render_unit(lua, &this, &token)?;
-            Ok(if ok {
-                mlua::Value::Integer(1)
-            } else {
-                mlua::Value::Nil
-            })
-        })?,
-    )?;
+    let set_unit = vm.create_function("SetUnit", |lua, (this, token): (LuaTable, String)| {
+        // Same gate as every `Unit*` verb: `SetUnit` resolves its argument through the client's
+        // one token resolver, so an unrecognised name raises here too rather than drawing an
+        // empty tooltip. NOT inside `render_unit` — the app's own push calls that with a
+        // canonical token and must never be gated against itself.
+        crate::script::unit::check_unit_token(&Some(token.clone()))?;
+        let ok = render_unit(lua, &this, &token)?;
+        Ok(if ok {
+            LuaValue::Integer(1)
+        } else {
+            LuaValue::Nil
+        })
+    })?;
+    vm.table_set_function(m, "SetUnit", &set_unit)?;
     Ok(())
 }

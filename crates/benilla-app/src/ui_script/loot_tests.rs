@@ -93,10 +93,10 @@ fn shipped_loot_frame_drives_end_to_end() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     assert_eq!(
-        load_xml(&s, "Interface\\FrameXML\\LootFrame.xml"),
+        load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml"),
         34,
         "the STOCK file's own shape (1751): the window, its portrait overlay and Next/Prev art, \
          four LootButton rows each carrying ItemButtonTemplate's sub-frames, the two pagers, the \
@@ -286,9 +286,9 @@ fn loot_empty_roll_plays_the_empty_open_kit() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
 
     // A normal, non-empty loot open queues no sound (the normal open kit is C-side).
     s.set_loot(Some(coin_and_two_items()));
@@ -327,9 +327,9 @@ fn fishing_loot_open_plays_the_reel_and_swaps_the_portrait() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
     let has_icon = |quads: &[ExtractedQuad], needle: &str| {
         quads.iter().any(|q| {
             matches!(&q.content, QuadContent::Texture { path: Some(p), .. } if p.contains(needle))
@@ -378,9 +378,9 @@ fn shipped_loot_frame_pages_five_items() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
 
     let rows: Vec<Option<LootRow>> = (0..5)
         .map(|i| {
@@ -475,12 +475,12 @@ fn shipped_loot_pushed_to_center_by_merchant() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
 
     // Loot opens onto the empty left slot.
     s.set_loot(Some(coin_and_two_items()));
@@ -552,9 +552,9 @@ fn the_loot_window_draws_over_the_party_frames() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
 
     // The party frame up FIRST, the window second — the order that cannot be what saves it.
     s.eval::<()>("PartyMemberFrame1:Show()").unwrap();
@@ -606,7 +606,7 @@ fn ctrl_and_shift_on_a_loot_row_preview_and_post_without_looting() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     for file in [
         r"Interface\FrameXML\UIParent.xml", // UIParent + UIParent.lua, the reference's own (1988)
@@ -622,7 +622,7 @@ fn ctrl_and_shift_on_a_loot_row_preview_and_post_without_looting() {
         "Interface\\FrameXML\\LocaleProperties.lua",
         "Interface\\FrameXML\\FloatingChatFrame.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
 
     // A coin row + one resolved item: the item's link is fed exactly as `ui_loot.rs` builds it.
@@ -753,9 +753,9 @@ fn shipped_loot_frame_hands_a_master_row_to_a_candidate() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
 
     let row = |name: &str, quality: u32| {
         Some(LootRow {
@@ -895,9 +895,9 @@ fn the_master_loot_menu_groups_raid_candidates_by_subgroup() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
 
     // A raid, so the dropdown takes its nested arm (GetNumRaidMembers() > 0 is the whole gate).
     s.set_party(PartyState {
@@ -976,9 +976,9 @@ fn the_loot_bind_confirm_raises_the_dialog_and_okay_calls_loot_slot() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
     s.set_loot(Some(coin_and_two_items()));
     s.fire_event("LOOT_OPENED", vec![]);
     let _ = s.take_loot_picks();
@@ -1063,9 +1063,9 @@ fn a_row_click_takes_rather_than_continues() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
     s.set_loot(Some(coin_and_two_items()));
     s.fire_event("LOOT_OPENED", vec![]);
     let quads = s.extract();
@@ -1101,9 +1101,9 @@ fn loot_row_awaiting_its_template_opens_clean() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
 
     // One row, in flight: the wire gave us the icon (it rides the display id) and the stack size,
     // and nothing else yet.
@@ -1219,9 +1219,9 @@ fn stock_loot_rows_wear_the_item_button_art_and_light_under_the_cursor() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for f in super::test_ui::LOOT_UI {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
     s.set_loot(Some(coin_and_two_items()));
     s.fire_event("LOOT_OPENED", vec![]);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());

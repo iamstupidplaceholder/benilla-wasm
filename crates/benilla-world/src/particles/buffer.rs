@@ -30,10 +30,10 @@
 
 use std::ops::Range;
 
+use benilla_assets::gpu_table::GpuTable;
 use benilla_formats::{ModelBlend, ParticleBlend};
 use bevy::asset::AssetId;
 use bevy::prelude::*;
-use bevy::render::render_resource::Buffer;
 
 /// One vertex of the shared lane. **World-space** position in the stream; the render-world
 /// prepare pass rebases it camera-relative before upload (0733 §2), so instruments reading the
@@ -228,7 +228,7 @@ pub enum EffectLighting {
 /// §5 — their braziers are fogged by the SCENE's own light buffer, the ModelFFX fog that
 /// covers the whole backdrop model); the call site inserts it on the spawned emitter entity.
 #[derive(Component, Clone)]
-pub struct EffectLightOverride(pub Buffer);
+pub struct EffectLightOverride(pub GpuTable);
 
 /// One draw of the shared lane: a contiguous vertex range, its texture/blend/fog identity, and
 /// the sort point the render-world queue keys it by.
@@ -274,7 +274,7 @@ pub struct EffectDraw {
     pub main_entity: Entity,
     /// [`EffectLightOverride`]'s buffer, when the producer carries one (`None` = the world's
     /// shared light buffer).
-    pub(crate) light: Option<Buffer>,
+    pub(crate) light: Option<GpuTable>,
     /// The target-pixel rectangle this draw is clipped to — see [`EffectDrawSpec::clip`].
     pub(crate) clip: Option<Vec4>,
 }
@@ -371,7 +371,7 @@ pub struct EffectDrawSpec {
     /// shoulder (wow-re `charproc8-trail-draw-state.md` §1; decision 2076).
     pub no_depth_test: bool,
     pub main_entity: Entity,
-    pub light: Option<Buffer>,
+    pub light: Option<GpuTable>,
     /// **Clip this draw to a rectangle of its RENDER TARGET, in target pixels** — `(min.x,
     /// min.y, max.x, max.y)`, `None` for the whole target, which is every world family.
     ///

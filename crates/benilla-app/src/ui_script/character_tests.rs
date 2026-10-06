@@ -1300,22 +1300,22 @@ fn an_addons_tab_click_selects_through_the_generic_entry_point() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
     // The reference's `PanelTemplates_SelectTab` ends with `if GameTooltip:IsOwned(tab)` —
     // an arm our deleted copy omitted ("our tabs set no tooltip"), so selecting a tab now needs
     // the tooltip to exist (1860).
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\CharacterFrameTemplates.xml"); // the window tab (1993)
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\CharacterFrameTemplates.xml"); // the window tab (1993)
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
 
     // A conforming row: tabs named `<frame>Tab1..N` (what `PanelTemplates_UpdateTabs` getglobals)
     // and each carrying its own id, exactly as an addon's XML declares them.

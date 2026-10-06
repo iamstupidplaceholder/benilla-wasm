@@ -98,7 +98,6 @@ use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 
 use benilla_assets::materials::LiquidMaterial;
-use benilla_assets::AssetSet;
 
 mod drift;
 mod query;
@@ -175,15 +174,16 @@ pub(crate) struct LiquidPlugin;
 
 impl Plugin for LiquidPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MaterialPlugin::<LiquidMaterial>::default())
-            .init_resource::<Underwater>()
+        app.add_plugins(MaterialPlugin::<LiquidMaterial>::default());
+
+        app.init_resource::<Underwater>()
+            .init_resource::<LiquidAssets>()
             .init_resource::<SubmergedEye>()
             .init_resource::<WaterIndex>()
             // PreUpdate: surfaces stream in/out via Update-side commands, so the edge is visible
             // here the frame after — before any of that frame's consumers ask. A despawn's stale
             // entry in between self-filters at the consumer (`Query::get` misses).
             .add_systems(PreUpdate, maintain_water_index)
-            .add_systems(Startup, surface::setup_liquid.after(AssetSet::Open))
             .add_systems(
                 Update,
                 (
@@ -214,6 +214,14 @@ impl Plugin for LiquidPlugin {
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate)
                     .run_if(|| std::env::var_os("WOW_NO_LIQUID").is_some()),
             );
+        // Byte delivery can finish after a tile/group streams. Geometry and liquid claims
+        // are admitted immediately; original materials attach once their frame set is ready.
+        app.add_systems(
+            Update,
+            (surface::setup_liquid, surface::attach_ready_materials).chain(),
+        );
+        #[cfg(target_arch = "wasm32")]
+        app.init_resource::<benilla_assets::SpriteFiles>();
         // The scripted surfacing crossing (see [`force_submersion`]) — the node is only added
         // when the env asks for it, so an ordinary run carries neither the system nor a per-frame
         // run condition that would re-read the environment to say "no" 60 times a second.

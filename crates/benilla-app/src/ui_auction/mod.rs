@@ -658,12 +658,12 @@ fn feed_auction(
                     }
                 },
             };
-            let get = |key: &str| script.lua().globals().get::<String>(key).ok();
+            let mut get = |key: &str| script.global_string(key);
             let err = match fill {
                 Some(s) => UiError::s(msg.key, s),
                 None => UiError::key(msg.key),
             };
-            if let Some(text) = ui_error_text(&err, &get) {
+            if let Some(text) = ui_error_text(&err, &mut get) {
                 lines.push(Shown::keyed(msg.key, text));
             }
         }

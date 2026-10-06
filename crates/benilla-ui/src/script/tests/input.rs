@@ -286,7 +286,7 @@ fn hit_rect_insets_default_to_zero() {
 /// behaviour so that flip is a one-line change with a test already standing behind it.
 #[test]
 fn the_mouse_wheel_flag_round_trips_and_the_scrolling_kinds_are_born_enabled() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         Plain  = CreateFrame("Frame", "WheelPlain")
@@ -298,27 +298,27 @@ fn the_mouse_wheel_flag_round_trips_and_the_scrolling_kinds_are_born_enabled() {
 
     // A plain frame is born wheel-deaf, like WoW's own default.
     assert!(!s
-        .eval::<bool>("return Plain:IsMouseWheelEnabled()")
+        .eval_truthy("return Plain:IsMouseWheelEnabled()")
         .unwrap());
     // ...and the two kinds whose ctor takes the wheel are born enabled, the same by-construction
     // argument `mouse_enabled` already makes for a Button.
     assert!(s
-        .eval::<bool>("return Scroll:IsMouseWheelEnabled()")
+        .eval_truthy("return Scroll:IsMouseWheelEnabled()")
         .unwrap());
-    assert!(s.eval::<bool>("return Msg:IsMouseWheelEnabled()").unwrap());
+    assert!(s.eval_truthy("return Msg:IsMouseWheelEnabled()").unwrap());
 
     s.run("Plain:EnableMouseWheel(true)").unwrap();
     assert!(s
-        .eval::<bool>("return Plain:IsMouseWheelEnabled()")
+        .eval_truthy("return Plain:IsMouseWheelEnabled()")
         .unwrap());
     s.run("Plain:EnableMouseWheel(false)").unwrap();
     assert!(!s
-        .eval::<bool>("return Plain:IsMouseWheelEnabled()")
+        .eval_truthy("return Plain:IsMouseWheelEnabled()")
         .unwrap());
     // Lua truthiness, like every other flag binding: `EnableMouseWheel(1)` is on.
     s.run("Plain:EnableMouseWheel(1)").unwrap();
     assert!(s
-        .eval::<bool>("return Plain:IsMouseWheelEnabled()")
+        .eval_truthy("return Plain:IsMouseWheelEnabled()")
         .unwrap());
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
@@ -333,7 +333,7 @@ fn the_mouse_wheel_flag_round_trips_and_the_scrolling_kinds_are_born_enabled() {
 /// need its own bug report.
 #[test]
 fn an_enum_attribute_tolerates_the_whitespace_a_real_addon_ships() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         Padded = CreateFrame(" Frame ", "PaddedKind")
@@ -609,7 +609,7 @@ fn set_script_on_double_click_is_accepted_because_something_fires_it() {
 /// the moment to check something fires it.
 #[test]
 fn the_unfired_script_kinds_still_raise_rather_than_silently_accepting() {
-    let s = script();
+    let mut s = script();
     s.run(r#"Raiser = CreateFrame("EditBox", "RaiserBox")"#)
         .unwrap();
     for name in [

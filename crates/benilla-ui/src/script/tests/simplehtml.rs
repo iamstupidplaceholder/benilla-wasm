@@ -40,7 +40,7 @@ enum Rel {
 
 /// Read every block of the named SimpleHTML off the model, in emission order.
 fn blocks(s: &UiScript, name: &str) -> Vec<Blk> {
-    let lua = s.lua();
+    let lua = s.vm();
     let model = lua.app_data_ref::<Model>().expect("model");
     let fh = model.arena.lookup(name).expect("SimpleHTML frame");
     let frame_id = model.frame_to_id.get(&fh).copied();
@@ -106,7 +106,7 @@ fn texts(s: &UiScript, name: &str) -> Vec<String> {
 /// How many regions the frame owns in total — the free-on-rebuild check's instrument. A block that
 /// was orphaned rather than destroyed still sits in its owner's region list and still draws.
 fn region_count(s: &UiScript, name: &str) -> usize {
-    let lua = s.lua();
+    let lua = s.vm();
     let model = lua.app_data_ref::<Model>().expect("model");
     let fh = model.arena.lookup(name).expect("frame");
     model.arena.frame(fh).expect("live frame").regions.len()
@@ -114,7 +114,7 @@ fn region_count(s: &UiScript, name: &str) -> usize {
 
 /// A `SimpleHTML` named `Page`, 270×304 like the reference's `ItemTextPageText`, with one font
 /// object behind it (the `<FontString inherits="ItemTextFontNormal"/>` shape).
-fn page(s: &UiScript) {
+fn page(s: &mut UiScript) {
     s.run(
         r#"
         local f = CreateFont("ItemTextFontNormal")
@@ -170,7 +170,7 @@ fn client_lines(text: &str) -> usize {
 fn a_well_formed_body_is_one_block_per_tag() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(
         r#"Page:SetText("<HTML><BODY>" ..
             "<H1 align=\"center\">Title</H1>" ..
@@ -210,7 +210,7 @@ fn a_well_formed_body_is_one_block_per_tag() {
 fn blocks_chain_bottom_to_top_and_are_flush_at_spacing_zero() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(r#"Page:SetText("<HTML><BODY><P>one</P><P>two</P><P>three</P></BODY></HTML>")"#)
         .unwrap();
 
@@ -237,7 +237,7 @@ fn blocks_chain_bottom_to_top_and_are_flush_at_spacing_zero() {
 fn spacing_steps_the_blocks_apart() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(
         r#"
         Page:SetSpacing(4)
@@ -270,7 +270,7 @@ fn spacing_steps_the_blocks_apart() {
 fn a_body_level_br_is_exactly_one_blank_line() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(r#"Page:SetText("<HTML><BODY><P>a</P><BR/><P>b</P></BODY></HTML>")"#)
         .unwrap();
     assert_eq!(texts(&s, "Page"), ["a", "\n", "b"]);
@@ -286,8 +286,8 @@ fn a_body_level_br_is_exactly_one_blank_line() {
 /// the font engine turns into a line break within it.
 #[test]
 fn an_inline_br_stays_inside_its_block() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     s.run(r#"Page:SetText("<HTML><BODY><P>a<BR/>b</P></BODY></HTML>")"#)
         .unwrap();
     assert_eq!(texts(&s, "Page"), ["a|nb"]);
@@ -297,8 +297,8 @@ fn an_inline_br_stays_inside_its_block() {
 /// newlines survive as real line breaks. This is the common case for a vmangos `page_text`.
 #[test]
 fn the_three_fallback_routes_each_land_on_one_raw_block() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     for raw in [
         "Plain prose, with an & and a < in it.\nSecond line.",
         "<FOO><BAR/></FOO>",
@@ -320,8 +320,8 @@ fn the_three_fallback_routes_each_land_on_one_raw_block() {
 /// Malformed markup **falls back**; it never raises and never renders half a document.
 #[test]
 fn malformed_markup_falls_back_rather_than_erroring() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     for raw in [
         "<HTML><BODY><P>a&nbsp;b</P></BODY></HTML>",
         "<HTML><BODY><P>hi</p></BODY></HTML>",
@@ -339,7 +339,7 @@ fn malformed_markup_falls_back_rather_than_erroring() {
 fn a_second_set_text_replaces_the_blocks() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(r#"Page:SetText("<HTML><BODY><P>one</P><P>two</P><P>three</P></BODY></HTML>")"#)
         .unwrap();
     assert_eq!(region_count(&s, "Page"), 3);
@@ -370,7 +370,7 @@ fn a_second_set_text_replaces_the_blocks() {
 fn the_page_text_body_renders_the_block_list_a_reader_would_draw() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(
         "Page:SetText(\"<HTML>\\n<BODY>\\n\
          <H1 align=\\\"center\\\">The Green Hills of Stranglethorn</H1>\\n<BR/>\\n\
@@ -426,7 +426,7 @@ fn the_page_text_body_renders_the_block_list_a_reader_would_draw() {
 fn the_readers_own_newline_padding_still_parses_as_markup() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(
         "Page:SetText(\"\\n\" .. \
          \"<HTML>\\n<BODY>\\n\
@@ -474,8 +474,8 @@ fn the_readers_own_newline_padding_still_parses_as_markup() {
 /// it. This is the one of the world's 62 HTML bodies that is not well-formed.
 #[test]
 fn blizzards_own_malformed_page_falls_back_exactly_as_the_reference_does() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     s.run(
         "Page:SetText(\"<HTML> <BODY> <H1 align=\\\"center\\\"> CRYSTAL PYLON USER'S MANUAL </H1> \
          <BR/> <P align=\\\"left\\\">Chapter 1: The Northern Pylon </P> </BODY> </HTML.\")",
@@ -494,8 +494,8 @@ fn blizzards_own_malformed_page_falls_back_exactly_as_the_reference_does() {
 /// from any source, so this is the control for the test above.
 #[test]
 fn a_declared_header_font_wins_over_the_p_fallback() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     s.run(
         r#"
         local h = CreateFont("BookHeader")
@@ -520,8 +520,8 @@ fn a_declared_header_font_wins_over_the_p_fallback() {
 /// height in the flow while leaving `prevBlock` pointing at the last **text** block.
 #[test]
 fn an_unfloated_image_reserves_height_without_becoming_the_anchor() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     s.run(
         r#"Page:SetText("<HTML><BODY><P>a</P>" ..
             "<IMG src=\"Interface\\Pic\" width=\"64\" height=\"32\"/>" ..
@@ -562,7 +562,7 @@ fn the_books_unsized_crest_is_its_arts_texel_square_not_the_whole_page() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
     s.set_texture_size_probe(Box::new(|path| (path == CREST).then_some((128, 128))));
-    page(&s);
+    page(&mut s);
     s.run(&format!(
         "Page:SetText({})",
         lua_str(
@@ -613,7 +613,7 @@ fn the_books_unsized_crest_is_its_arts_texel_square_not_the_whole_page() {
 fn an_unsized_image_reserves_its_arts_texel_height_unless_it_is_floated() {
     let mut s = script();
     s.set_texture_size_probe(Box::new(|_| Some((64, 48))));
-    page(&s);
+    page(&mut s);
     s.run(
         r#"Page:SetText("<HTML><BODY><P>a</P>" ..
             "<IMG src=\"Interface\\Pic\"/>" ..
@@ -628,7 +628,7 @@ fn an_unsized_image_reserves_its_arts_texel_height_unless_it_is_floated() {
 
     let mut s = script();
     s.set_texture_size_probe(Box::new(|_| Some((64, 48))));
-    page(&s);
+    page(&mut s);
     s.run(
         r#"Page:SetText("<HTML><BODY><P>a</P>" ..
             "<IMG src=\"Interface\\Pic\" align=\"left\"/>" ..
@@ -652,7 +652,7 @@ fn an_unsized_image_reserves_its_arts_texel_height_unless_it_is_floated() {
 fn without_a_size_oracle_an_unsized_image_does_not_resolve() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
-    page(&s);
+    page(&mut s);
     s.run(r#"Page:SetText("<HTML><BODY><P>a</P><IMG src=\"Interface\\Pic\"/></BODY></HTML>")"#)
         .unwrap();
     measure_at_16px(&mut s);
@@ -675,7 +675,7 @@ fn without_a_size_oracle_an_unsized_image_does_not_resolve() {
 /// build 5875, and a name a table does not carry is as wrong as a missing one.
 #[test]
 fn the_method_table_is_the_nineteen_names() {
-    let s = script();
+    let mut s = script();
     s.run(r#"H = CreateFrame("SimpleHTML")"#).unwrap();
     for name in [
         "SetFontObject",
@@ -719,7 +719,7 @@ fn the_method_table_is_the_nineteen_names() {
 /// shared implementation's first real argument.
 #[test]
 fn the_element_name_argument_is_optional_case_insensitive_and_non_matching_falls_through() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         H = CreateFrame("SimpleHTML")
@@ -751,8 +751,8 @@ fn the_element_name_argument_is_optional_case_insensitive_and_non_matching_falls
 /// `SetHyperlinkFormat` governs how an `<A>` is spliced, and takes effect on the next parse.
 #[test]
 fn the_hyperlink_format_shapes_the_a_splice() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     assert_eq!(
         s.eval::<String>("return Page:GetHyperlinkFormat()")
             .unwrap(),
@@ -776,8 +776,8 @@ fn the_hyperlink_format_shapes_the_a_splice() {
 /// next parse builds.
 #[test]
 fn the_paint_setters_land_on_the_element_and_reach_the_next_parse() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     s.run(
         r#"
         Page:SetTextColor("H1", 1, 0, 0)
@@ -818,8 +818,8 @@ fn the_paint_setters_land_on_the_element_and_reach_the_next_parse() {
 /// a re-implementation gets wrong by merging property-by-property instead.
 #[test]
 fn an_element_with_no_font_of_its_own_loses_its_own_colour_too() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     s.run(
         r#"
         Page:SetTextColor("H1", 1, 0, 0)
@@ -854,7 +854,7 @@ fn an_element_with_no_font_of_its_own_loses_its_own_colour_too() {
 /// The `vertex_color` of block `i` — a FontString has no texel, so its vertex colour IS the colour
 /// it draws.
 fn block_color(s: &UiScript, name: &str, i: usize) -> Option<[f32; 4]> {
-    let lua = s.lua();
+    let lua = s.vm();
     let model = lua.app_data_ref::<Model>().expect("model");
     let fh = model.arena.lookup(name).expect("frame");
     let st = model.simple_html.get(&fh).expect("state");
@@ -871,7 +871,7 @@ fn block_color(s: &UiScript, name: &str, i: usize) -> Option<[f32; 4]> {
 ///   element.
 #[test]
 fn set_font_object_keeps_local_overrides_and_the_nil_form_leaves_the_paint_standing() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local a = CreateFont("FaceA"); a:SetFont("Fonts\\A.TTF", 10); a:SetTextColor(1, 0, 0)
@@ -909,8 +909,8 @@ fn set_font_object_keeps_local_overrides_and_the_nil_form_leaves_the_paint_stand
 /// every block's justifyH with the tag's `align`. The getter still answers what was stored.
 #[test]
 fn set_justify_h_is_stored_and_answered_but_never_drawn() {
-    let s = script();
-    page(&s);
+    let mut s = script();
+    page(&mut s);
     s.run(
         r#"
         Page:SetJustifyH("RIGHT")
@@ -937,7 +937,7 @@ fn set_justify_h_is_stored_and_answered_but_never_drawn() {
 
 /// Every block's resolved `(top, bottom)`, in block order.
 fn resolved_tops(s: &UiScript, name: &str) -> Vec<(f32, f32)> {
-    let lua = s.lua();
+    let lua = s.vm();
     let model = lua.app_data_ref::<Model>().expect("model");
     let fh = model.arena.lookup(name).expect("frame");
     let st = model.simple_html.get(&fh).expect("state");
@@ -952,7 +952,7 @@ fn resolved_tops(s: &UiScript, name: &str) -> Vec<(f32, f32)> {
 
 /// One block's resolved rect if it HAS one — the shape a region with no span reaches.
 fn maybe_resolved_rect(s: &UiScript, name: &str, block: usize) -> Option<crate::layout::Rect> {
-    let lua = s.lua();
+    let lua = s.vm();
     let model = lua.app_data_ref::<Model>().expect("model");
     let fh = model.arena.lookup(name).expect("frame");
     let st = model.simple_html.get(&fh).expect("state");
@@ -961,7 +961,7 @@ fn maybe_resolved_rect(s: &UiScript, name: &str, block: usize) -> Option<crate::
 
 /// One block's resolved rect, by index in the block list.
 fn resolved_rect(s: &UiScript, name: &str, block: usize) -> crate::layout::Rect {
-    let lua = s.lua();
+    let lua = s.vm();
     let model = lua.app_data_ref::<Model>().expect("model");
     let fh = model.arena.lookup(name).expect("frame");
     let st = model.simple_html.get(&fh).expect("state");

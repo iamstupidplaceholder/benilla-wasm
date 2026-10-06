@@ -367,7 +367,7 @@ mod tests {
             "{list:?}"
         );
         assert!(
-            list.contains(&"uiScale = \"1.2\" (default \"0.9\") [session]".to_string()),
+            list.contains(&"uiScale = \"1.2\" (default \"1.0\") [session]".to_string()),
             "{list:?}"
         );
         assert!(

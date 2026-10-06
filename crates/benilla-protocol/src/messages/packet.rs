@@ -722,6 +722,12 @@ pub enum ServerPacket {
         caster: u64,
         spell_id: u32,
     },
+    /// MaNGOS Zero's direct interruption notice: raw guid, spell ID, reason.
+    SpellFailure {
+        caster: u64,
+        spell_id: u32,
+        reason: u8,
+    },
     /// `SMSG_SPELL_DELAYED` — pushback: our own cast took damage and the server extended its timer
     /// by `delay_ms` (vmangos `Spell::Delayed`). The cast bar slides its window out by the same, so
     /// a hit pushes the bar back instead of letting it finish early (decision 0256).
@@ -1766,6 +1772,7 @@ impl ServerPacket {
             ServerPacket::SpellGo(_) => "SMSG_SPELL_GO".into(),
             ServerPacket::SpellChainTargets(_) => "SMSG_SPELL_UPDATE_CHAIN_TARGETS".into(),
             ServerPacket::SpellFailedOther { .. } => "SMSG_SPELL_FAILED_OTHER".into(),
+            ServerPacket::SpellFailure { .. } => "SMSG_SPELL_FAILURE".into(),
             ServerPacket::SpellDelayed { .. } => "SMSG_SPELL_DELAYED".into(),
             ServerPacket::CancelAutoRepeat => "SMSG_CANCEL_AUTO_REPEAT".into(),
             ServerPacket::SpellCooldownList { .. } => "SMSG_SPELL_COOLDOWN".into(),

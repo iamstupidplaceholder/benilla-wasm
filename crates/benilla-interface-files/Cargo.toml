@@ -1,0 +1,17 @@
+[package]
+name = "benilla-interface-files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Installed interface bytes: native patch chain or browser resident delivery"
+
+[lints]
+workspace = true
+
+[features]
+dev = ["benilla-formats/dev"]
+
+[dependencies]
+anyhow.workspace = true
+benilla-formats = { path = "../benilla-formats", default-features = false }
+tracing = "0.1"

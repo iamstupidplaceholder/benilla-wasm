@@ -37,7 +37,7 @@ fn bag_bar_icons_draw_above_the_action_bar_art() {
     // `BAG_UI` carries ActionBar.xml — both the anchor target (MainMenuBarArtFrame) and the
     // occluder (the ExpBar dwarf art) — in its manifest position.
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     s.resolve();
     let quads = s.extract();
@@ -74,7 +74,7 @@ fn backpack_toggle_plays_open_and_close_kits() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     s.set_money(0);
     // The backpack has to have slots before `ToggleBag` will open it — its `size > 0` guard.
@@ -131,11 +131,11 @@ fn b_opens_the_backpack_alone_and_closes_every_bag() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     // Backpack (16) + one equipped bag in slot 2 (6). Bags 1/3/4 are left unset → 0 slots.
@@ -214,11 +214,11 @@ fn shift_b_toggles_every_bag_at_once() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
     s.set_container(
         0,
@@ -297,11 +297,11 @@ fn bag_bar_buttons_light_while_their_bag_is_open() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
     s.set_container(
         0,
@@ -416,11 +416,11 @@ fn bag_tooltip_hangs_left_when_the_slot_sits_in_the_right_half() {
     // font is that engine here.
     s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     let mut slots = std::collections::HashMap::new();
@@ -463,7 +463,7 @@ fn bag_tooltip_hangs_left_when_the_slot_sits_in_the_right_half() {
     // The bag window anchors bottom-right, so every slot button is in the right half. The bag
     // numbers its buttons visually (reversed from container slots) — find the button showing
     // container slot 1, where the fixture item lives.
-    let btn = bag_slot_button(&s, 0, 1);
+    let btn = bag_slot_button(&mut s, 0, 1);
     let ok: bool = s
         .eval(&format!("return {btn}:GetRight() >= GetScreenWidth() / 2"))
         .unwrap();
@@ -495,11 +495,11 @@ fn hovered_bag_tooltip_fills_itself_when_the_stats_land() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     let mut slots = std::collections::HashMap::new();
@@ -535,7 +535,7 @@ fn hovered_bag_tooltip_fills_itself_when_the_stats_land() {
     );
     s.run("MainMenuBarBackpackButton:Click()").unwrap();
     s.resolve();
-    let btn = bag_slot_button(&s, 0, 1);
+    let btn = bag_slot_button(&mut s, 0, 1);
 
     // Hover with the stats store empty: the fallback one-line tooltip, and the miss recorded.
     hover(&mut s, &btn);
@@ -601,11 +601,11 @@ fn vendor_bag_hover_shows_sell_price_and_arms_the_pouch_cursor() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     let mut slots = std::collections::HashMap::new();
@@ -687,8 +687,8 @@ fn vendor_bag_hover_shows_sell_price_and_arms_the_pouch_cursor() {
     s.fire_event("MERCHANT_SHOW", vec![ScriptValue::Str("Vendor".into())]);
     s.take_sounds();
     s.resolve();
-    let b1 = bag_slot_button(&s, 0, 1);
-    let b2 = bag_slot_button(&s, 0, 2);
+    let b1 = bag_slot_button(&mut s, 0, 1);
+    let b2 = bag_slot_button(&mut s, 0, 2);
 
     // The sellable stack: a money row (52c → the copper coin slot shows "52") + the pouch armed.
     hover(&mut s, &b1);
@@ -739,11 +739,11 @@ fn readable_letter_hover_shows_the_inspect_magnifier() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     let mut slots = std::collections::HashMap::new();
@@ -781,8 +781,8 @@ fn readable_letter_hover_shows_the_inspect_magnifier() {
     s.run("MainMenuBarBackpackButton:Click()").unwrap();
     s.take_sounds();
     s.resolve();
-    let b1 = bag_slot_button(&s, 0, 1);
-    let b2 = bag_slot_button(&s, 0, 2);
+    let b1 = bag_slot_button(&mut s, 0, 1);
+    let b2 = bag_slot_button(&mut s, 0, 2);
 
     hover(&mut s, &b1);
     assert!(s.errors().is_empty(), "hover errors: {:?}", s.errors());
@@ -811,11 +811,11 @@ fn drag_across_two_slots_queues_the_same_move_a_click_pickup_would() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     let mut slots = std::collections::HashMap::new();
@@ -853,8 +853,8 @@ fn drag_across_two_slots_queues_the_same_move_a_click_pickup_would() {
     s.take_sounds();
     s.resolve();
 
-    let b1 = bag_slot_button(&s, 0, 1);
-    let b5 = bag_slot_button(&s, 0, 5);
+    let b1 = bag_slot_button(&mut s, 0, 1);
+    let b5 = bag_slot_button(&mut s, 0, 5);
     let (x1, y1): (f64, f64) = s
         .eval(&format!(
             "return ({b1}:GetLeft() + {b1}:GetRight()) / 2, \
@@ -897,11 +897,11 @@ fn a_second_bag_window_feeds_and_paints_via_the_bag_bar() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     let mut slots = std::collections::HashMap::new();
@@ -973,11 +973,11 @@ fn equipped_bag_window_snug_fits_its_row_count() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     // (bag id, slot count, expected window height). 6 → 2 rows plus-two-top (72+32+10); 8 → 2 rows
@@ -1327,7 +1327,7 @@ fn split_okay_then_a_placement_queues_the_split_move() {
     );
 
     // Place the carry on slot 5 (empty) — NOW the move queues, carrying the split count.
-    let b5 = bag_slot_button(&s, 0, 5);
+    let b5 = bag_slot_button(&mut s, 0, 5);
     click(&mut s, &b5, "LeftButton");
     assert!(s.cursor_item().is_none());
     assert_eq!(
@@ -1357,7 +1357,7 @@ fn a_plain_click_hides_an_open_split_frame() {
     s.set_modifiers(false, false, false);
     assert!(s.eval::<bool>("return StackSplitFrame:IsShown()").unwrap());
 
-    let b9 = bag_slot_button(&s, 0, 9);
+    let b9 = bag_slot_button(&mut s, 0, 9);
     click(&mut s, &b9, "LeftButton");
     assert!(
         !s.eval::<bool>("return StackSplitFrame:IsShown()").unwrap(),
@@ -1377,11 +1377,11 @@ fn bag_slot_cooldown_sweeps_through_the_xml() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
     s.tick(100.0); // a nonzero clock epoch, like the engine cooldown tests
 
@@ -1448,11 +1448,11 @@ fn the_bar_bag_buttons_name_themselves_on_hover() {
     s.register_bindings(&crate::bindings::registry_commands());
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.resolve();
 
     // The backpack: its label plus OPENALLBAGS's live key (default B; 0997's divergence note).
@@ -1860,11 +1860,11 @@ fn an_item_push_drops_its_icon_into_the_bag_that_took_it() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1600.0, 900.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // `ForcedBackpackItem.m2` (`m2seq`/`m2batch`): one sequence, id 0, 1000 ms, clamp; the
     // header box spans the card's whole travel band — 0.02707 × 0.07962 model units, which at
     // 16:9 (a layout unit is 768·√(a²+1) = 1566.4 FrameXML units) is the 42.41 × 124.72 rect
@@ -1884,7 +1884,7 @@ fn an_item_push_drops_its_icon_into_the_bag_that_took_it() {
     );
     s.resolve();
 
-    let shown = |s: &UiScript, name: &str| {
+    let shown = |s: &mut UiScript, name: &str| {
         s.eval::<bool>(&format!("return {name}ItemAnim:IsShown()"))
             .unwrap()
     };
@@ -1918,7 +1918,7 @@ fn an_item_push_drops_its_icon_into_the_bag_that_took_it() {
         "CharacterBag1Slot",
         "KeyRingButton",
     ] {
-        assert!(!shown(&s, b), "{b}'s card starts hidden");
+        assert!(!shown(&mut s, b), "{b}'s card starts hidden");
     }
     assert!(cards(&mut s).is_empty());
 
@@ -1933,11 +1933,11 @@ fn an_item_push_drops_its_icon_into_the_bag_that_took_it() {
         ],
     );
     assert!(
-        shown(&s, "CharacterBag1Slot"),
+        shown(&mut s, "CharacterBag1Slot"),
         "the card that took it plays"
     );
     assert!(
-        !shown(&s, "MainMenuBarBackpackButton") && !shown(&s, "KeyRingButton"),
+        !shown(&mut s, "MainMenuBarBackpackButton") && !shown(&mut s, "KeyRingButton"),
         "…and nobody else's"
     );
     s.resolve();
@@ -1976,7 +1976,7 @@ fn an_item_push_drops_its_icon_into_the_bag_that_took_it() {
     // …and past 1000 ms the completion fires `ItemAnim_OnAnimFinished` → `Hide()`.
     s.tick(0.55);
     assert!(
-        !shown(&s, "CharacterBag1Slot"),
+        !shown(&mut s, "CharacterBag1Slot"),
         "one play, then gone (the stock OnAnimFinished hides it)"
     );
     assert!(cards(&mut s).is_empty());
@@ -2006,9 +2006,9 @@ fn an_item_push_drops_its_icon_into_the_bag_that_took_it() {
             benilla_ui::script::ScriptValue::Str("Interface\\Icons\\INV_Misc_Key_03".into()),
         ],
     );
-    assert!(shown(&s, "KeyRingButton"), "the keyring card plays");
+    assert!(shown(&mut s, "KeyRingButton"), "the keyring card plays");
     assert!(
-        !shown(&s, "MainMenuBarBackpackButton"),
+        !shown(&mut s, "MainMenuBarBackpackButton"),
         "and the backpack's does not"
     );
 
@@ -2038,11 +2038,11 @@ fn an_addon_that_hooks_toggle_backpack_receives_the_click() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
 
     // Bagnon's exact idiom: capture the original, replace the global.
@@ -2096,11 +2096,11 @@ fn the_bag_slots_carry_the_references_names_and_icon_names() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
 
     for i in 0..4 {
         assert!(
@@ -2158,11 +2158,11 @@ fn the_backpack_buttons_ring_follows_its_own_window_through_real_clicks() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
     // The reference's `ToggleBag` opens nothing for a container of size 0, so the backpack has to
     // be fed — our own windows existed statically and opened regardless.

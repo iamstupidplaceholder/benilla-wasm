@@ -199,7 +199,7 @@ fn resolve_service(
     items: &Items,
     commands: &NetCommands,
     // The VM's own `GlobalStrings.lua`, for [`service_group`]'s three header labels.
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> TrainerService {
     // The trainer offers a LEARN wrapper (decision 0247); the ability it teaches is the taught
     // spell, and the tree GROUPS by that hop (`0x4d7c60` → `[skillrec+4]`). It is the only thing
@@ -269,7 +269,7 @@ fn resolve_service(
         cat,
         spells,
         skill_lines,
-        get,
+        &mut *get,
     );
     if group_key == 0 && skill_lines.is_some() {
         debug!(
@@ -301,6 +301,9 @@ fn resolve_service(
         is_trade_skill: trainer_type == TRAINER_TYPE_TRADESKILL,
         group_key,
         group_name,
+        skill_line_name: skill_lines
+            .and_then(|c| c.spell_to_line(taught).and_then(|id| c.line(id)))
+            .map(|line| line.name.clone()),
         tooltip: service_tooltip(wire.spell, spells),
     }
 }
@@ -315,7 +318,7 @@ fn snapshot(
     icons: Option<&ItemDisplays>,
     items: &Items,
     commands: &NetCommands,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<TrainerState> {
     open.trainer?;
     Some(TrainerState {
@@ -334,7 +337,7 @@ fn snapshot(
                     icons,
                     items,
                     commands,
-                    get,
+                    &mut *get,
                 )
             })
             .collect(),
@@ -405,13 +408,8 @@ fn feed_trainer(
         icons.as_deref(),
         &items,
         &commands,
-        &|key: &str| {
-            script
-                .lua()
-                .globals()
-                .get::<String>(key)
-                .ok()
-                .filter(|t| !t.is_empty())
+        &mut |key: &str| {
+            benilla_ui::strings::global_context(script.vm_mut(), key).filter(|t| !t.is_empty())
         },
     );
     // The trainer's name resolves through the NameCache (a creature-name query, ask-once — the

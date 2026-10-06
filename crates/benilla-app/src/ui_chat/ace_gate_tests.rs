@@ -97,7 +97,7 @@ fn ace_vm(root: &Path) -> UiScript {
     script.set_screen_size(1024.0, 768.0);
     // Our interface, exactly as the app loads it — Ace calls `CreateFrame`, `GetTime` and
     // `ChatTypeInfo` as readily as it calls anything of its own.
-    let failures = crate::ui_script::load_default_ui(&script);
+    let failures = crate::ui_script::load_default_ui(&mut script);
     assert!(
         failures.is_empty(),
         "our own FrameXML failed to load: {failures:#?}"
@@ -117,7 +117,7 @@ fn ace_vm(root: &Path) -> UiScript {
 }
 
 /// Whether `AceEvent:IsFullyInitialized()` answers true.
-fn gate_open(s: &UiScript) -> bool {
+fn gate_open(s: &mut UiScript) -> bool {
     s.eval::<bool>("return AceLibrary('AceEvent-2.0'):IsFullyInitialized() and true or false")
         .expect("AceEvent-2.0 is registered")
 }
@@ -149,7 +149,7 @@ fn a_you_joined_notice_opens_ace2s_initialisation_gate() {
     .unwrap();
 
     assert!(
-        !gate_open(&s),
+        !gate_open(&mut s),
         "before any notice the gate is shut — that IS the bug this closes"
     );
 
@@ -164,13 +164,13 @@ fn a_you_joined_notice_opens_ace2s_initialisation_gate() {
 
     // AceEvent does not open on the event itself — it schedules `func` 0.05 s out and lets its own
     // OnUpdate drive it (`AceEvent-2.0.lua:938`, `:471`). So the clock has to move.
-    assert!(!gate_open(&s), "still shut inside the 0.05 s delay");
+    assert!(!gate_open(&mut s), "still shut inside the 0.05 s delay");
     s.tick(0.02);
-    assert!(!gate_open(&s), "0.02 s is not 0.05 s");
+    assert!(!gate_open(&mut s), "0.02 s is not 0.05 s");
     s.tick(0.05);
 
     assert!(
-        gate_open(&s),
+        gate_open(&mut s),
         "AceEvent:IsFullyInitialized() must be true once the notice's delay elapses"
     );
     assert_eq!(
@@ -192,7 +192,7 @@ fn without_the_notice_the_gate_stays_shut() {
         s.tick(0.1); // four seconds — well past both the 0.05 s and the 1 s schedules
     }
     assert!(
-        !gate_open(&s),
+        !gate_open(&mut s),
         "nothing but CHAT_MSG_CHANNEL_NOTICE can honestly arm this gate on a 1.12 server"
     );
 }

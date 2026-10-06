@@ -40,10 +40,10 @@ fn load_inline(s: &UiScript, xml: &str) {
 fn harness() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
     load_inline(
         &s,
         r#"<Ui>
@@ -78,7 +78,7 @@ fn harness() -> UiScript {
 /// wear instead of a `Benilla*` one.)
 #[test]
 fn a_fresh_faux_frame_loads_at_the_top_with_no_range() {
-    let s = harness();
+    let mut s = harness();
     assert_eq!(s.eval::<i64>("return TestScroll.offset").unwrap(), 0);
     let (lo, hi) = s
         .eval::<(f64, f64)>("return TestScrollScrollBar:GetMinMaxValues()")
@@ -98,7 +98,7 @@ fn a_fresh_faux_frame_loads_at_the_top_with_no_range() {
 /// row, and `FauxScrollFrame_Update` returns the reference's `showScrollBar`.
 #[test]
 fn more_rows_than_fit_raise_the_bar_over_the_overflow_range() {
-    let s = harness();
+    let mut s = harness();
     let shown = s
         .eval::<i64>("return FauxScrollFrame_Update(TestScroll, 12, 5, 16)")
         .unwrap();
@@ -139,7 +139,7 @@ fn more_rows_than_fit_raise_the_bar_over_the_overflow_range() {
 /// in five slots shows nothing, and there is no off-by-one that leaves a dead bar up.
 #[test]
 fn a_list_that_exactly_fits_shows_no_bar() {
-    let s = harness();
+    let mut s = harness();
     let shown = s
         .eval::<Option<i64>>("return FauxScrollFrame_Update(TestScroll, 5, 5, 16)")
         .unwrap();
@@ -238,7 +238,7 @@ fn a_shrinking_list_clamps_the_offset_back_into_range() {
 /// it leaves (ref UIPanelTemplates.lua l.205-223).
 #[test]
 fn the_shrink_widen_tail_resizes_the_rows_and_the_highlight() {
-    let s = harness();
+    let mut s = harness();
     s.run(
         "FauxScrollFrame_Update(TestScroll, 12, 5, 16, \"TestRow\", 280, 300, TestHighlight, 276, 296)",
     )
@@ -416,11 +416,11 @@ fn the_reference_on_vertical_scroll_path_runs_once_a_scroll_child_exists() {
 /// on that fallback, so the no-argument path is what this test drives.
 #[test]
 fn scrolling_edit_helpers_answer_bare_calls_from_a_handler() {
-    let s = UiScript::new().unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    let mut s = UiScript::new().unwrap();
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
     load_inline(
         &s,
         r#"<Ui>

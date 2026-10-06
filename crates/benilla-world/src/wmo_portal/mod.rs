@@ -330,33 +330,36 @@ pub struct WmoPortalPlugin;
 
 impl Plugin for WmoPortalPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(
             Startup,
             interior::load_wmo_areas.after(benilla_assets::AssetSet::Open),
-        )
-        .init_resource::<CurrentWmoInterior>()
-        .init_resource::<PlayerWmoRoom>()
-        .init_resource::<CurrentAreaInterior>()
-        .init_resource::<CameraWmoFog>()
-        .init_resource::<CameraInteriorClaim>()
-        .init_resource::<ExteriorWindows>()
-        .init_resource::<WmoCullProbe>()
-        .add_systems(
-            Update,
-            (
-                compute_wmo_pvs,
-                track_current_interior,
-                track_area_interior,
-                track_unit_interiors,
-            )
-                .in_set(WmoPvsSet)
-                // **On this frame's camera pose, not last frame's** (decision 1503). The flood,
-                // the interior claim and the exterior windows all key on the eye, and every one of
-                // them decides what the frame is allowed to draw. Unordered, this set could even
-                // run before the controller had moved the camera at all; ordered here it answers
-                // about the eye the frame will be rendered from.
-                .after(crate::view::CameraPoseSet),
         );
+        #[cfg(target_arch = "wasm32")]
+        interior::browser_catalogs(app);
+        app.init_resource::<CurrentWmoInterior>()
+            .init_resource::<PlayerWmoRoom>()
+            .init_resource::<CurrentAreaInterior>()
+            .init_resource::<CameraWmoFog>()
+            .init_resource::<CameraInteriorClaim>()
+            .init_resource::<ExteriorWindows>()
+            .init_resource::<WmoCullProbe>()
+            .add_systems(
+                Update,
+                (
+                    compute_wmo_pvs,
+                    track_current_interior,
+                    track_area_interior,
+                    track_unit_interiors,
+                )
+                    .in_set(WmoPvsSet)
+                    // **On this frame's camera pose, not last frame's** (decision 1503). The flood,
+                    // the interior claim and the exterior windows all key on the eye, and every one of
+                    // them decides what the frame is allowed to draw. Unordered, this set could even
+                    // run before the controller had moved the camera at all; ordered here it answers
+                    // about the eye the frame will be rendered from.
+                    .after(crate::view::CameraPoseSet),
+            );
     }
 }
 

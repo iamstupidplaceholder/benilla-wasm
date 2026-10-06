@@ -80,8 +80,8 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
 use crate::dbc::{parse, str_at, u32_at};
+use crate::FileSource;
 
 const CHR_CLASSES: &str = "DBFilesClient\\ChrClasses.dbc";
 
@@ -108,6 +108,7 @@ pub const PET_NAME_TOKEN_FALLBACK: &str = "PET";
 /// One class row, narrowed to the columns anything reads.
 #[derive(Debug, Clone)]
 struct ChrClass {
+    name: Option<String>,
     pet_name_token: Option<String>,
     has_relic_slot: bool,
     spell_family: u32,
@@ -118,6 +119,10 @@ struct ChrClass {
 pub struct ChrClasses(HashMap<u32, ChrClass>);
 
 impl ChrClasses {
+    /// Installed localized class name (first language slot, field 5).
+    pub fn name(&self, class: u32) -> Option<&str> {
+        self.0.get(&class)?.name.as_deref()
+    }
     /// The pet name token for a class id, or the client's own [`PET_NAME_TOKEN_FALLBACK`] for a
     /// class with no row. Mirrors `0x4b44a6`: the reference never answers nil here, only ever a
     /// string.
@@ -156,9 +161,8 @@ impl ChrClasses {
 fn schema() -> Schema {
     let mut s = Schema::new("ChrClasses");
     for i in 0..CHR_CLASSES_FIELDS {
-        // Only the two read columns are typed; everything else stays an opaque dword. The class
-        // NAME block (field 5 up) is deliberately not decoded — nothing here displays it.
-        let ty = if i == PET_NAME_TOKEN_FIELD {
+        // The active install's name slot and pet token are strings.
+        let ty = if i == PET_NAME_TOKEN_FIELD || i == 5 {
             FieldType::String
         } else {
             FieldType::UInt32
@@ -169,7 +173,7 @@ fn schema() -> Schema {
 }
 
 /// Load `ChrClasses.dbc`'s read columns from the patch chain.
-pub fn load_chr_classes(chain: &mut Chain) -> Result<ChrClasses> {
+pub fn load_chr_classes(chain: &mut impl FileSource) -> Result<ChrClasses> {
     let bytes = chain
         .read_file(CHR_CLASSES)
         .with_context(|| format!("reading {CHR_CLASSES}"))?;
@@ -180,6 +184,7 @@ pub fn load_chr_classes(chain: &mut Chain) -> Result<ChrClasses> {
         by_id.insert(
             id,
             ChrClass {
+                name: str_at(&rs, r, 5),
                 pet_name_token: str_at(&rs, r, PET_NAME_TOKEN_FIELD),
                 has_relic_slot: u32_at(r, RELIC_SLOT_FIELD).is_some_and(|v| v != 0),
                 spell_family: u32_at(r, SPELL_FAMILY_FIELD).unwrap_or(0),

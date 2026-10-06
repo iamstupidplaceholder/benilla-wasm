@@ -12,7 +12,7 @@
 //! | `0x6f3620` → `0x40a2b0` | `tonumber` then `double → int32`, **truncating toward zero** |
 //!
 //! `0x40a2b0` sets the x87 rounding control to chop (`or ah,0xc`) before `fistp`, so it is a C
-//! cast and **not** `floor`: `−2.9 → −2`. [`number_arg`] reproduces that (Rust's `as` on a float
+//! cast and **not** `floor`: `−2.9 → −2`. [`neutral_number_arg`] reproduces that (Rust's `as` on a float
 //! truncates toward zero as well), and hands back the low dword the bindings actually consume.
 //!
 //! ## The headline: the `Usage:` arm RAISES
@@ -43,49 +43,29 @@
 //!    assignment, identical to it for a single-value caller (`GetDefaultLanguage`'s failure edges).
 //! 3. **raise** — the statement is abandoned.
 
-use mlua::{Lua, Value};
-
-/// `is-number` (`0x6f34d0`) → `tonumber` (`0x6f3620`) → `double → int32` truncating toward zero
-/// (`0x40a2b0`), with the binding's own `Usage:` string on the failure edge.
-///
-/// A **missing** argument fails the same test a wrong-typed one does — `0x6f3410` returns NULL
-/// past `L->top`, which `0x6f34d0` reports as "not a number" — so `f()` and `f({})` take the same
-/// raise. A numeric *string* passes: Lua 5.1's `lua_isnumber` coerces, and so does
-/// [`Lua::coerce_number`].
-///
-/// The `i32` is deliberate: `0x40a2b0` stores a qword but every binding here consumes only `eax`,
-/// the low dword. Rust's `i64 as i32` truncates the same way. (Past ±2^63 the two diverge — the
-/// x87 stores the "integer indefinite" pattern where Rust saturates — which no caller can reach
-/// and no consumer could tell apart, since both answers are garbage.)
-pub(crate) fn number_arg(lua: &Lua, v: Value, usage: &'static str) -> mlua::Result<i32> {
-    match lua.coerce_number(v)? {
-        Some(n) => Ok(n as i64 as i32),
-        None => Err(mlua::Error::RuntimeError(usage.into())),
-    }
-}
-
-/// **Shape D** — a `lua_isnumber`-gated *flag* whose failure edge does NOT raise: the local keeps
-/// the zero it was seeded with and the binding carries on. `SetInventoryItem`'s optional third
-/// argument, the one the image's own usage string (`0x8552dc`) calls `nameOnly`, is this repo's
-/// example, and it is stricter than the other shapes on one point: after the
-/// `is-number(L, idx)` guard (`0x6f34d0`, so a numeric STRING passes it) the value is compared
-/// `> 0.0` **strictly** — `0x53303f fcomp qword [0x802970]` against a literal `0.0`, then
-/// `0x533047 test ah,0x41; 0x53304a jne` onto the block that keeps the zero. Masked AH is `0x00`
-/// only for greater-than; less (`0x01`), equal (`0x40`) and unordered (`0x41`) all jump. So `0`,
-/// a negative and NaN are false, and `1`, `0.5` and `"1"` are true.
-///
-/// The distinction from [`number_arg`] is the whole point: shape A *raises* `Usage:` on a
-/// non-number, shape D shrugs. Which shape an argument takes is per binding — wow-re
-/// `ui/scratch/tooltip-nameonly-p4-census.md` §3 for this one.
-pub(crate) fn positive_number_flag(lua: &Lua, v: Value) -> mlua::Result<bool> {
-    Ok(lua.coerce_number(v)?.is_some_and(|n| n > 0.0))
+/// Backend-neutral numeric gate for migrated bindings.
+pub(crate) fn number_arg_value(
+    value: benilla_lua::Value,
+    usage: &'static str,
+) -> benilla_lua::Result<i32> {
+    let number = match value {
+        benilla_lua::Value::Integer(value) => value as f64,
+        benilla_lua::Value::Number(value) => value,
+        benilla_lua::Value::String(value) => value
+            .as_str()
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .ok_or_else(|| benilla_lua::Error::runtime(usage))?,
+        _ => return Err(benilla_lua::Error::runtime(usage)),
+    };
+    Ok(number as i64 as i32)
 }
 
 /// **Shape C** — a numeric argument the binding reads with a bare `lua_tonumber 0x6f3620` and NO
 /// `lua_isnumber` guard, so it cannot fail: absent, `nil`, `true`, a table, a function, or an
 /// unparseable string all land on **`0.0`** and the binding completes.
 ///
-/// This is the counterpart to [`number_arg`] (shape A, which raises `Usage:`), and which shape a
+/// This is the counterpart to [`neutral_number_arg`] (shape A, which raises `Usage:`), and which shape a
 /// given argument takes is **per binding, not a global law** — wow-re
 /// `scratch/numeric-arg-coercion-law.md`, which censused all 408 widget-registrar entries and
 /// found 110 gated positions against 64 ungated ones. The clustering is the useful part: C is the
@@ -95,29 +75,27 @@ pub(crate) fn positive_number_flag(lua: &Lua, v: Value) -> mlua::Result<bool> {
 ///
 /// One instruction settles why nil and a table are not distinguished: `0x6f7c32 cmp ecx,4;
 /// jne 0x6f7c6a` refuses every non-string tag without inspecting the value.
-pub(crate) fn coerced_number(lua: &Lua, v: Option<Value>) -> f64 {
-    v.and_then(|v| lua.coerce_number(v).ok().flatten())
-        .unwrap_or(0.0)
-}
-
-/// `is-number-or-string` (`0x6f3510`) → `arg-as-C-string` (`0x6f3690`), with the binding's own
-/// `Usage:` string on the failure edge.
 ///
-/// Strictly wider than [`number_arg`]'s guard: a *number* is accepted and stringified, which is
-/// why `UnitAffectingCombat(5)` does not raise in the reference — it resolves the token `"5"`,
-/// finds nothing, and answers `nil`. Everything else (nil, boolean, table, function) raises.
-pub(crate) fn string_arg(lua: &Lua, v: Value, usage: &'static str) -> mlua::Result<String> {
-    match lua.coerce_string(v)? {
-        // Lossy, per decision 1193: a Lua 5.0 string is BYTES and the reference reads it as
-        // bytes, so an argument that is not valid UTF-8 costs a glyph here — it does not cost
-        // the call. `to_str()` used to raise, which turned one stray byte in one cp1252 addon's
-        // literal into a dead handler (2138).
-        Some(s) => Ok(s.to_string_lossy()),
-        None => Err(mlua::Error::RuntimeError(usage.into())),
+/// `is-number-or-string` (`0x6f3510`) → `arg-as-C-string` (`0x6f3690`), with the binding's own
+/// `Usage:` string on the failure edge. Strictly wider than [`neutral_number_arg`]'s guard: a
+/// *number* is accepted and stringified, which is why `UnitAffectingCombat(5)` does not raise
+/// in the reference — it resolves the token `"5"`, finds nothing, and answers `nil`.
+/// Everything else (nil, boolean, table, function) raises. Lossy, per decision 1193: a Lua 5.0
+/// string is bytes, so an argument that is not valid UTF-8 costs a glyph here — it does not
+/// cost the call.
+pub(crate) fn neutral_string_arg(
+    value: benilla_lua::Value,
+    usage: &'static str,
+) -> benilla_lua::Result<String> {
+    match value {
+        benilla_lua::Value::String(value) => Ok(value.to_string_lossy().into_owned()),
+        benilla_lua::Value::Integer(value) => Ok(value.to_string()),
+        benilla_lua::Value::Number(value) => Ok(lua_number_text(value)),
+        _ => Err(benilla_lua::Error::runtime(usage)),
     }
 }
 
-/// **[`string_arg`]'s shape-C partner**: coerce like the reference, and treat everything else as
+/// **[`neutral_string_arg`]'s shape-C partner**: coerce like the reference, and treat everything else as
 /// **absent** rather than raising.
 ///
 /// The pair is 1717's rule applied to string positions — *which* shape a position takes is settled
@@ -126,7 +104,7 @@ pub(crate) fn string_arg(lua: &Lua, v: Value, usage: &'static str) -> mlua::Resu
 ///
 /// | position | fetch | a table there |
 /// |---|---|---|
-/// | `Model:SetModel` arg 1 | `0x6f3510` → `0x6f3690`, result **tested** | **raises** ([`string_arg`]) |
+/// | `Model:SetModel` arg 1 | `0x6f3510` → `0x6f3690`, result **tested** | **raises** ([`neutral_string_arg`]) |
 /// | `CreateFontString`/`CreateTexture` `name`, `layer` | `0x6f3510` → `0x6f3690`, result **not** tested | absent — this fn |
 /// | `CreateFrame` `name`, `inherits` | `0x6f3690` **unguarded** | absent — this fn |
 ///
@@ -138,42 +116,16 @@ pub(crate) fn string_arg(lua: &Lua, v: Value, usage: &'static str) -> mlua::Resu
 /// `CreateFrame("Frame", 5)` names the frame `"5"`. Callers that must *not* coerce a number (the
 /// `lua_type(L,idx) == LUA_TSTRING` gate `CreateTexture`/`CreateFontString` put on their **fourth**
 /// argument, and only there) test the tag themselves before calling this.
-pub(crate) fn optional_string(lua: &Lua, v: &Value) -> Option<String> {
-    match v {
-        // Lossy, per decision 1193 and for the same reason as [`string_arg`] — with a sharper
-        // symptom, because this one's failure was SILENT: `to_str().ok()` folded a string that
-        // was not valid UTF-8 into `None`, which every caller here reads as *the argument was
-        // not there*. `AddMessage` printed nothing, `CreateFrame` produced an unnamed frame, and
-        // nothing anywhere said why (2138).
-        Value::String(_) | Value::Number(_) | Value::Integer(_) => lua
-            .coerce_string(v.clone())
-            .ok()
-            .flatten()
-            .map(|s| s.to_string_lossy()),
+///
+/// Lossy, per decision 1193 and for the same reason as [`neutral_string_arg`] — with a sharper
+/// symptom, because the native form's failure was SILENT: folding a string that was not valid
+/// UTF-8 into `None`, which every caller here reads as *the argument was not there*.
+pub(crate) fn neutral_optional_string(value: &benilla_lua::Value) -> Option<String> {
+    match value {
+        benilla_lua::Value::String(value) => Some(value.to_string_lossy().into_owned()),
+        benilla_lua::Value::Integer(value) => Some(value.to_string()),
+        benilla_lua::Value::Number(value) => Some(lua_number_text(*value)),
         _ => None,
-    }
-}
-
-/// **A free-text argument — the player-visible kind — as the reference takes it** (decision 2138).
-///
-/// The text sinks (`FontString`/`Button`/`EditBox`/`SimpleHTML` `SetText`, `SetFormattedText`,
-/// `EditBox:Insert`) took their argument as mlua's `Option<String>`, whose `FromLua` demands valid
-/// UTF-8 and **raises** otherwise. Decision 1193 settled that a UI source file is bytes and that
-/// "the right place to turn bytes into text is the boundary that actually requires text… A stray
-/// byte should cost one glyph, not the file" — and then these boundaries cost the whole call.
-/// `strsub` is byte-indexed (1193 keeps it that way deliberately), so *any* addon slicing
-/// non-ASCII text hands a sink a broken sequence, and a cp1252 literal is a broken sequence to
-/// begin with.
-///
-/// This is `Option<String>`'s conversion with exactly one arm changed: a **string** becomes its
-/// lossy text. Every other type behaves as before — absent and `nil` are `None`, a number
-/// coerces, a table or a function raises mlua's own conversion error — so the raise/absent split
-/// each binding already had (§ [`optional_string`]'s table) is untouched.
-pub(crate) fn text_arg(lua: &Lua, v: Option<Value>) -> mlua::Result<Option<String>> {
-    match v {
-        None | Some(Value::Nil) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.to_string_lossy())),
-        Some(other) => mlua::FromLua::from_lua(other, lua).map(Some),
     }
 }
 
@@ -184,8 +136,8 @@ pub(crate) fn text_arg(lua: &Lua, v: Option<Value>) -> mlua::Result<Option<Strin
 /// helper).
 ///
 /// `v` is `None` for an **absent** argument (`LUA_TNONE` = −1, unsigned-compares above the table's
-/// bound and takes the default arm). mlua collapses "missing" into `Value::Nil` for a plain
-/// `Value` parameter, and the two are *different* here, so a binding whose default is `true` must
+/// bound and takes the default arm). A plain `Value` parameter collapses "missing" into `Nil`,
+/// and the two are *different* here, so a binding whose default is `true` must
 /// take its argument as a `MultiValue` to tell them apart.
 ///
 /// | Lua type | result |
@@ -290,21 +242,48 @@ fn trim_g(s: &str) -> &str {
     s.trim_end_matches('0').trim_end_matches('.')
 }
 
-pub(crate) fn bool_or_default(v: Option<&Value>, default: bool) -> bool {
+pub(crate) enum BoolArgument {
+    Nil,
+    Boolean(bool),
+    LightUserData,
+    Integer(i64),
+    Number(f64),
+    String(Vec<u8>),
+    Other,
+}
+
+pub(crate) trait BoolArgumentValue {
+    fn binding_bool_argument(&self) -> BoolArgument;
+}
+
+impl BoolArgumentValue for benilla_lua::Value {
+    fn binding_bool_argument(&self) -> BoolArgument {
+        match self {
+            benilla_lua::Value::Nil => BoolArgument::Nil,
+            benilla_lua::Value::Boolean(value) => BoolArgument::Boolean(*value),
+            benilla_lua::Value::LightUserData(_) => BoolArgument::LightUserData,
+            benilla_lua::Value::Integer(value) => BoolArgument::Integer(*value),
+            benilla_lua::Value::Number(value) => BoolArgument::Number(*value),
+            benilla_lua::Value::String(value) => BoolArgument::String(value.as_bytes().to_vec()),
+            _ => BoolArgument::Other,
+        }
+    }
+}
+
+pub(crate) fn bool_or_default<T: BoolArgumentValue>(v: Option<&T>, default: bool) -> bool {
     let Some(v) = v else {
         return default; // LUA_TNONE
     };
-    match v {
-        Value::Nil => false,
-        Value::Boolean(b) => *b,
-        Value::LightUserData(_) => default,
+    match v.binding_bool_argument() {
+        BoolArgument::Nil => false,
+        BoolArgument::Boolean(value) => value,
+        BoolArgument::LightUserData => default,
         // `lua_tonumber` then `0x40a2b0`, whose RC = chop makes it a C cast; the caller tests the
         // low dword only, which is why the double round-trips through `i64 as i32` (see
-        // [`number_arg`]).
-        Value::Integer(i) => (*i as i32) != 0,
-        Value::Number(n) => (*n as i64 as i32) != 0,
-        Value::String(s) => {
-            let bytes = s.as_bytes();
+        // [`neutral_number_arg`]).
+        BoolArgument::Integer(value) => (value as i32) != 0,
+        BoolArgument::Number(value) => (value as i64 as i32) != 0,
+        BoolArgument::String(bytes) => {
             match bytes.first() {
                 Some(b'0' | b'F' | b'N' | b'f' | b'n') => false,
                 Some(b'1'..=b'9' | b'T' | b'Y' | b't' | b'y') => true,
@@ -324,7 +303,155 @@ pub(crate) fn bool_or_default(v: Option<&Value>, default: bool) -> bool {
                 }
             }
         }
-        _ => default,
+        BoolArgument::Other => default,
+    }
+}
+
+/// Backend-neutral shape-D flag for the one migrated binding that needs it
+/// (`SetInventoryItem`'s `nameOnly`): the `is-number` guard (`0x6f34d0`, so a
+/// numeric string passes) followed by a STRICT `> 0.0` compare (`0x53303f`
+/// `fcomp` + `0x533047 test ah,0x41` — only greater-than takes the true leg,
+/// so `0`, negatives and NaN are false, `1`/`0.5`/`"1"` true; wow-re
+/// `ui/scratch/tooltip-nameonly-p4-census.md` §3). Never raises — shape A
+/// raises `Usage:`, shape D shrugs.
+pub(crate) fn neutral_positive_number_flag(value: benilla_lua::Value) -> bool {
+    <f64 as benilla_lua::FromLua>::from_lua(value).is_ok_and(|n| n > 0.0)
+}
+
+/// Backend-neutral free-text argument for migrated sinks (`EditBox` `SetText`/`Insert`,
+/// `Button` and the rest follow with their own batches).
+///
+/// **A free-text argument — the player-visible kind — as the reference takes it** (decision
+/// 2138): `None`/`nil` is absent, a string is its lossy text (decision 1193 — a stray byte
+/// costs one glyph, not the call), and every other type converts exactly as the typed
+/// callback boundary does — so the raise/absent split each binding already had is untouched.
+pub(crate) fn neutral_text_arg(
+    value: Option<benilla_lua::Value>,
+) -> benilla_lua::Result<Option<String>> {
+    match value {
+        None | Some(benilla_lua::Value::Nil) => Ok(None),
+        Some(benilla_lua::Value::String(s)) => Ok(Some(s.to_string_lossy().into_owned())),
+        Some(other) => benilla_lua::FromLua::from_lua(other).map(Some),
+    }
+}
+
+/// Backend-neutral whole-number read for migrated bindings: an index, count or id
+/// position the reference reaches through `lua_tonumber`/`lua_tointeger`, where Lua
+/// 5.1 has ONE number type and the two backends report a whole value differently
+/// across it (mlua: `Integer`, rilua: `Number`). Both spellings answer; a
+/// fractional number, a string, or anything else answers `None` — the caller
+/// decides whether that is absent, a default, or a raise. This is the shared
+/// home for what used to be per-file `Integer`-only matches, every one of
+/// which silently misread on rilua (macros' icon index, decision-recorded here
+/// so the next one is found by grep rather than by a red test).
+pub(crate) fn neutral_integer(value: &benilla_lua::Value) -> Option<i64> {
+    match value {
+        benilla_lua::Value::Integer(i) => Some(*i),
+        benilla_lua::Value::Number(n)
+            if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 =>
+        {
+            Some(*n as i64)
+        }
+        _ => None,
+    }
+}
+
+/// Backend-neutral shape-C number for migrated bindings: a numeric argument the binding
+/// reads with a bare `lua_tonumber` and NO `lua_isnumber` guard, so it cannot fail — absent,
+/// `nil`, `true`, a table, a function, or an unparseable string all land on **`0.0`** and the
+/// binding completes (one instruction settles why nil and a table are not distinguished:
+/// `0x6f7c32` refuses every non-string tag without inspecting the value).
+pub(crate) fn neutral_coerced_number(value: Option<benilla_lua::Value>) -> f64 {
+    value
+        .and_then(|v| <f64 as benilla_lua::FromLua>::from_lua(v).ok())
+        .unwrap_or(0.0)
+}
+
+/// Backend-neutral shape-A number argument for already-ported bindings.
+///
+/// `is-number` (`0x6f34d0`) → `tonumber` (`0x6f3620`) → `double → int32`
+/// truncating toward zero (`0x40a2b0`): Rust's `as` truncates the same way.
+/// A **missing** argument fails like a wrong-typed one, and the `i32` is the
+/// low dword the bindings consume (past ±2^63 the two diverge — unreachable
+/// garbage either way).
+pub(crate) fn neutral_number_arg(
+    value: benilla_lua::Value,
+    usage: &'static str,
+) -> benilla_lua::Result<i32> {
+    <f64 as benilla_lua::FromLua>::from_lua(value)
+        .map(|number| number as i64 as i32)
+        .map_err(|_| benilla_lua::Error::runtime(usage))
+}
+
+/// Backend-neutral `1`/`nil` predicate result for already-ported bindings.
+/// **The 1.12 predicate return** — `1` for true, `nil` for false, and never a Lua boolean.
+///
+/// The reference client has essentially no boolean-returning query. Across the 1503 rows
+/// `reference/1.12-shapes.tsv` marks `kinds_conf = agree`, exactly two slots in the whole binding
+/// surface are `boolean`: `IsPetAttackActive` (which really does call `lua_pushboolean 0x6f39f0`,
+/// noted in [`super::pet`]) and Lua's own `rawequal`. Every other `Is*`, `Can*`, `Has*` and every
+/// predicate slot of a multi-value answer is `(nil) | (number)`.
+///
+/// **The difference is invisible to `if x then` and decisive to everything else** — `x == 1`,
+/// `x == nil`, `tostring(x)`, arithmetic, a table key, a value round-tripped through a saved
+/// variable. That is why it survived so long: the transcribed FrameXML reads every one of these
+/// with a plain `if`, so `true` and `1` were interchangeable for as long as *we* wrote the callers.
+/// Real 1.12 addons are not our callers — `ColorPickerPlus.lua:121` writes
+/// `if IsShiftKeyDown() == 1 then`, and reads a `true` as "not held" (decision 2118).
+///
+/// Enforced, not remembered: `ui_script::shape_gate::no_query_binding_answers_a_lua_boolean`
+/// probes the whole registered query surface and fails on any Lua boolean.
+///
+/// ## What `predicate` said, folded in (2142)
+///
+/// This helper had a byte-identical TWIN sixty lines up the same file — `predicate`, 49 call
+/// sites to this one's 77 — carrying its own half of the evidence. 2118 consolidated five *local*
+/// copies into this one and left that one standing, which is the same drift one level up: a house
+/// rule with two homes gets re-derived at each new file, and the file that picks the wrong one is
+/// invisible against the others. The twin is gone; everything it recorded is below.
+///
+///
+/// The return-side counterpart to [`bool_or_default`], and the same class of fact: 1.12's widget
+/// predicates (1830) and its 29 `Unit*` predicates (2043) do not push booleans. `lua_pushboolean
+/// 0x6f39f0` has seven call sites in the whole image; **not one is inside a widget registrar body,
+/// and no binding in the 83-entry unit table at `0x850438` calls it at all** — those predicates go
+/// through `lua_pushnumber 0x6f3810` (the constant double `1.0`) / `lua_pushnil 0x6f37f0`, exactly
+/// one value at every live `ret`.
+///
+/// **Not a whole-image absolute, and 2048 corrects 2043 for saying so.** `lua_pushboolean` is real
+/// and one of its seven callers *is* a registered FrameScript binding: `IsPetAttackActive
+/// 0x4be0e0` answers a genuine Lua `true`/`false` and **never nil** (ours matches — see
+/// [`super::pet`]). The other six are `rawequal`/`pcall`/`xpcall` in the base table `0x811e28` and
+/// two unregistered helpers. So "1.12 has no `lua_pushboolean`" is false; "these two predicate
+/// families never reach it" is what the bytes support, and is what this helper encodes.
+///
+/// **The false leg is settled per body, never inherited from a neighbour.** `IsEnabled 0x7800b0`
+/// is number-`1`/number-`0`-and-never-nil (`setne` + `fild`), which is what makes
+/// `FriendsFrame.lua:404`'s `== 0` live code — so it does NOT come through here. Inside the unit
+/// table itself the *numeric getters* answer the number `0.0` where the predicates answer `nil`
+/// (`UnitLevel 0x518144`, `UnitMana 0x5177c8`, `UnitXP 0x5173f5`, ~15 more; `UnitSex 0x517f9f`
+/// pushes `2.0`).
+///
+/// **Truthiness hides the difference and direct comparison inverts it**, which is why this survived
+/// so long. `if frame:IsVisible()` reads the same either way; `if frame:IsVisible() == nil` does
+/// not — under a boolean a hidden frame answers `false`, and `false == nil` is FALSE, so the caller
+/// concludes the frame is visible exactly when it is not. The 1.12 addon corpus has 21 such direct
+/// comparisons (`IsVisible() == nil` ×9, `GetChecked() == 1` ×6, `IsVisible() ~= nil` ×4, and one
+/// each of `~= 1` / `== 1`) across Questie, AtlasQuest, CT_BagMod, MikScrollingBattleText's options
+/// and `_dl`.
+///
+/// The reference proves its own shape without needing the bytes: stock `UIOptionsFrame.xml:310`
+/// saves a checkbox as `SHOW_BUFF_DURATIONS = tostring(this:GetChecked())` and stock
+/// `BuffFrame.lua:71` reads it back as `== "1"`. That round-trip only closes if `GetChecked`
+/// returns the number 1 — `tostring(true)` is `"true"`, and buff timers would never appear.
+///
+/// Adopting it is strictly safer than what it replaces: every `if x` and `not x` site reads
+/// identically, and only the direct comparisons change — from wrong to right.
+pub(crate) fn neutral_flag(value: bool) -> benilla_lua::Value {
+    if value {
+        benilla_lua::Value::Integer(1)
+    } else {
+        benilla_lua::Value::Nil
     }
 }
 
@@ -391,45 +518,34 @@ pub(crate) fn bool_or_default(v: Option<&Value>, default: bool) -> bool {
 ///
 /// Adopting it is strictly safer than what it replaces: every `if x` and `not x` site reads
 /// identically, and only the direct comparisons change — from wrong to right.
-pub(crate) fn flag(b: bool) -> Value {
-    if b {
-        Value::Integer(1)
-    } else {
-        Value::Nil
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn lua() -> Lua {
-        Lua::new()
-    }
+    use benilla_lua::Value as NeutralValue;
 
     /// Every arm of `0x6f1c10`, including the three a plausible implementation gets backwards.
     #[test]
     fn bool_or_default_is_not_lua_truthiness() {
-        let lua = lua();
-        let st = |t: &str| Value::String(lua.create_string(t).unwrap());
+        let mut vm = benilla_lua::Vm::new().expect("VM");
+        let st = |t: &str| NeutralValue::String(t.into());
 
         // Absent takes the DEFAULT; an explicit nil is FALSE. The two are different arms.
-        assert!(bool_or_default(None, true));
-        assert!(!bool_or_default(None, false));
-        assert!(!bool_or_default(Some(&Value::Nil), true));
+        assert!(bool_or_default(None::<&NeutralValue>, true));
+        assert!(!bool_or_default(None::<&NeutralValue>, false));
+        assert!(!bool_or_default(Some(&NeutralValue::Nil), true));
 
         // Booleans pass through.
-        assert!(bool_or_default(Some(&Value::Boolean(true)), false));
-        assert!(!bool_or_default(Some(&Value::Boolean(false)), true));
+        assert!(bool_or_default(Some(&NeutralValue::Boolean(true)), false));
+        assert!(!bool_or_default(Some(&NeutralValue::Boolean(false)), true));
 
         // Numbers TRUNCATE toward zero — they do not round. `0.5` is off, not on.
-        assert!(!bool_or_default(Some(&Value::Number(0.5)), true));
-        assert!(!bool_or_default(Some(&Value::Number(-0.5)), true));
-        assert!(!bool_or_default(Some(&Value::Number(-0.999)), true));
-        assert!(bool_or_default(Some(&Value::Number(1.5)), false));
-        assert!(bool_or_default(Some(&Value::Number(-1.5)), false));
-        assert!(!bool_or_default(Some(&Value::Integer(0)), true));
-        assert!(bool_or_default(Some(&Value::Integer(7)), false));
+        assert!(!bool_or_default(Some(&NeutralValue::Number(0.5)), true));
+        assert!(!bool_or_default(Some(&NeutralValue::Number(-0.5)), true));
+        assert!(!bool_or_default(Some(&NeutralValue::Number(-0.999)), true));
+        assert!(bool_or_default(Some(&NeutralValue::Number(1.5)), false));
+        assert!(bool_or_default(Some(&NeutralValue::Number(-1.5)), false));
+        assert!(!bool_or_default(Some(&NeutralValue::Integer(0)), true));
+        assert!(bool_or_default(Some(&NeutralValue::Integer(7)), false));
 
         // THE headline: `"0"` is FALSE, where Lua truthiness would say true.
         assert!(!bool_or_default(Some(&st("0")), true));
@@ -469,38 +585,52 @@ mod tests {
         }
 
         // Table/function take the default arm, like an absent argument.
-        let tbl = Value::Table(lua.create_table().unwrap());
+        let tbl = NeutralValue::Table(vm.create_table().expect("table"));
         assert!(bool_or_default(Some(&tbl), true));
         assert!(!bool_or_default(Some(&tbl), false));
     }
 
     #[test]
-    fn number_arg_truncates_toward_zero_not_floor() {
-        let lua = lua();
+    fn neutral_number_arg_truncates_toward_zero_not_floor() {
+        use benilla_lua::Value as NeutralValue;
         // `0x40a2b0` sets RC = chop before `fistp` — a C cast, not `floor`.
-        assert_eq!(number_arg(&lua, Value::Number(2.9), "u").unwrap(), 2);
-        assert_eq!(number_arg(&lua, Value::Number(-2.9), "u").unwrap(), -2);
-        assert_eq!(number_arg(&lua, Value::Number(-0.5), "u").unwrap(), 0);
+        assert_eq!(
+            neutral_number_arg(NeutralValue::Number(2.9), "u").unwrap(),
+            2
+        );
+        assert_eq!(
+            neutral_number_arg(NeutralValue::Number(-2.9), "u").unwrap(),
+            -2
+        );
+        assert_eq!(
+            neutral_number_arg(NeutralValue::Number(-0.5), "u").unwrap(),
+            0
+        );
     }
 
     #[test]
-    fn number_arg_accepts_a_numeric_string_and_raises_on_everything_else() {
-        let lua = lua();
-        let s = lua.create_string("7").unwrap();
-        assert_eq!(number_arg(&lua, Value::String(s), "u").unwrap(), 7);
+    fn neutral_number_arg_accepts_a_numeric_string_and_raises_on_everything_else() {
+        use benilla_lua::Value as NeutralValue;
+        assert_eq!(
+            neutral_number_arg(NeutralValue::String("7".into()), "u").unwrap(),
+            7
+        );
         // Missing and wrong-typed take the SAME arm: `0x6f3410` hands `0x6f34d0` a NULL for an
         // absent argument, which reports "not a number" exactly as a table does.
-        for v in [Value::Nil, Value::Boolean(true)] {
-            let err = number_arg(&lua, v, "Usage: Thing(n)").unwrap_err();
+        for v in [NeutralValue::Nil, NeutralValue::Boolean(true)] {
+            let err = neutral_number_arg(v, "Usage: Thing(n)").unwrap_err();
             assert!(format!("{err}").contains("Usage: Thing(n)"));
         }
     }
 
     #[test]
-    fn string_arg_accepts_a_number_and_raises_on_nil() {
-        let lua = lua();
-        assert_eq!(string_arg(&lua, Value::Integer(5), "u").unwrap(), "5");
-        let err = string_arg(&lua, Value::Nil, "Usage: Thing(\"s\")").unwrap_err();
+    fn neutral_string_arg_accepts_a_number_and_raises_on_nil() {
+        use benilla_lua::Value as NeutralValue;
+        assert_eq!(
+            neutral_string_arg(NeutralValue::Integer(5), "u").unwrap(),
+            "5"
+        );
+        let err = neutral_string_arg(NeutralValue::Nil, "Usage: Thing(\"s\")").unwrap_err();
         assert!(format!("{err}").contains("Usage: Thing(\"s\")"));
     }
 }

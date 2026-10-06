@@ -311,14 +311,14 @@ pub(crate) struct Items {
     /// feed is `SMSG_ITEM_ENCHANT_TIME_UPDATE`. NOT derived from `ITEM_FIELD_ENCHANTMENT`'s
     /// duration field, which the reference's tooltip never reads. Session state, so it clears with
     /// the objects (decision 0920).
-    enchant_deadlines: HashMap<(u64, u32), std::time::Instant>,
+    enchant_deadlines: HashMap<(u64, u32), benilla_time::Instant>,
     /// The **item-lifetime deadlines**, keyed by item guid — a duration-limited instance's
     /// remaining life (a conjured stone, a holiday gift, a timed quest item). Its only feed is
     /// `SMSG_ITEM_TIME_UPDATE`; the instance's own `ITEM_FIELD_DURATION` carries the same number
     /// and is sent to the owner, but vmangos's writer says in as many words that the field is not
     /// what the client displays from (`Item::SendTimeUpdate`, `Objects/Item.cpp:1094`). Same shape
     /// as [`Self::enchant_deadlines`] one field up, for the same reason (decision 1933).
-    duration_deadlines: HashMap<u64, std::time::Instant>,
+    duration_deadlines: HashMap<u64, benilla_time::Instant>,
 }
 
 impl Items {
@@ -371,7 +371,8 @@ impl Items {
                 }
             }
             n => {
-                let at = std::time::Instant::now() + std::time::Duration::from_secs(u64::from(n));
+                let at =
+                    benilla_time::Instant::now() + benilla_time::Duration::from_secs(u64::from(n));
                 self.enchant_deadlines.insert((guid, slot), at);
                 self.object_epoch = self.object_epoch.wrapping_add(1);
                 debug!("enchant timer: item {guid:#x} slot {slot} → {n}s");
@@ -384,7 +385,7 @@ impl Items {
     /// `!= 0` gate then prints the plain name).
     pub(crate) fn enchant_remaining_ms(&self, guid: u64, slot: u32) -> Option<u64> {
         let at = self.enchant_deadlines.get(&(guid, slot))?;
-        let left = at.saturating_duration_since(std::time::Instant::now());
+        let left = at.saturating_duration_since(benilla_time::Instant::now());
         (!left.is_zero()).then_some(left.as_millis() as u64)
     }
 
@@ -412,8 +413,8 @@ impl Items {
     /// Landings and removals move [`Self::object_epoch`] on their own. Empty — the overwhelmingly
     /// common case — costs two empty iterations.
     pub(crate) fn countdown_display_epoch(&self) -> u64 {
-        let now = std::time::Instant::now();
-        let step = |at: &std::time::Instant| {
+        let now = benilla_time::Instant::now();
+        let step = |at: &benilla_time::Instant| {
             let left = at.saturating_duration_since(now);
             if left.is_zero() {
                 0
@@ -441,7 +442,7 @@ impl Items {
     pub(crate) fn enchant_deadline_ms(&self, guid: u64, slot: u32) -> Option<u64> {
         let at = self.enchant_deadlines.get(&(guid, slot))?;
         Some(
-            at.saturating_duration_since(std::time::Instant::now())
+            at.saturating_duration_since(benilla_time::Instant::now())
                 .as_millis() as u64,
         )
     }
@@ -474,7 +475,8 @@ impl Items {
             }
             return;
         }
-        let at = std::time::Instant::now() + std::time::Duration::from_secs(u64::from(seconds));
+        let at =
+            benilla_time::Instant::now() + benilla_time::Duration::from_secs(u64::from(seconds));
         self.duration_deadlines.insert(guid, at);
         self.object_epoch = self.object_epoch.wrapping_add(1);
         debug!("item duration: item {guid:#x} → {seconds}s");
@@ -485,7 +487,7 @@ impl Items {
     /// enchant path's `0x5d9d00` shape).
     pub(crate) fn duration_remaining_ms(&self, guid: u64) -> Option<u64> {
         let at = self.duration_deadlines.get(&guid)?;
-        let left = at.saturating_duration_since(std::time::Instant::now());
+        let left = at.saturating_duration_since(benilla_time::Instant::now());
         (!left.is_zero()).then_some(left.as_millis() as u64)
     }
 

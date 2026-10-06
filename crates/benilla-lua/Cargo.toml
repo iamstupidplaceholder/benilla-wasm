@@ -1,0 +1,22 @@
+[package]
+name = "benilla-lua"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform-neutral Lua VM boundary for Benilla"
+
+[features]
+default = ["wow_112"]
+wow_112 = ["rilua/wow_112"]
+# Reference backend used only for comparing behavior with the upstream native host.
+# The production/default backend is rilua on every target.
+mlua-backend = ["dep:mlua_native"]
+
+[lints]
+workspace = true
+
+[dependencies]
+rilua.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mlua_native = { package = "mlua", version = "0.11", features = ["lua51", "vendored"], optional = true }

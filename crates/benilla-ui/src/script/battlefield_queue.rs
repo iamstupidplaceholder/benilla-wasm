@@ -33,9 +33,9 @@
 //! `GetBattlefieldInfo`'s usage string — the shipped client's own mislabel, reproduced.
 //! `CloseBattlefield` does nothing (`xor eax,eax; ret`).
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
-use super::binding_abi::{bool_or_default, flag, number_arg};
+use super::binding_abi::{bool_or_default, neutral_flag, neutral_number_arg};
 use super::Model;
 
 /// One queue slot as the app pushes it — the reference's `0x20`-byte slot (§2.2) plus the map
@@ -164,146 +164,117 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `GetNumBattlefields()` — 0 args, never raises: the instance count.
-    g.set(
-        "GetNumBattlefields",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.battlefield_list.instances.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumBattlefields", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.battlefield_list.instances.len() as i64)
+    })?;
 
     // `GetBattlefieldInfo()` — 0 args, never raises; ZERO values behind either gate (no player, no
     // map row), else nine (§3.4).
-    g.set(
-        "GetBattlefieldInfo",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let list = &model.battlefield_list;
-            let (Some(info), true) = (list.info.as_ref(), player_exists(&model)) else {
-                return Ok(MultiValue::new());
-            };
-            let description = match &info.description {
-                Some(d) => Value::String(lua.create_string(d)?),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&info.name)?),
-                description,
-                Value::Number(f64::from(info.min_level)),
-                Value::Number(f64::from(info.max_level)),
-                Value::Number(f64::from(info.field_16)),
-                Value::Number(f64::from(info.field_17)),
-                Value::Number(f64::from(info.field_18)),
-                Value::Number(f64::from(list.bracket_min)),
-                Value::Number(f64::from(list.bracket_max)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldInfo", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let list = &model.battlefield_list;
+        let (Some(info), true) = (list.info.as_ref(), player_exists(&model)) else {
+            return Ok(MultiValue::new());
+        };
+        let description = info.description.clone().map_or(Value::Nil, Value::from);
+        Ok(MultiValue::from([
+            Value::from(info.name.clone()),
+            description,
+            Value::Number(f64::from(info.min_level)),
+            Value::Number(f64::from(info.max_level)),
+            Value::Number(f64::from(info.field_16)),
+            Value::Number(f64::from(info.field_17)),
+            Value::Number(f64::from(info.field_18)),
+            Value::Number(f64::from(list.bracket_min)),
+            Value::Number(f64::from(list.bracket_max)),
+        ]))
+    })?;
 
     // `GetBattlefieldInstanceInfo(index)` — raises with GetBattlefieldInfo's usage string (the
     // shipped mislabel, §3.1); no player or out of range → zero values; else the instance id,
     // pushed SIGNED (`fild dword`).
-    g.set(
-        "GetBattlefieldInstanceInfo",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: GetBattlefieldInfo(index)")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let list = &model.battlefield_list;
-            if !player_exists(&model) {
-                return Ok(MultiValue::new());
-            }
-            Ok(match slot_index(index, list.instances.len()) {
-                Some(i) => {
-                    MultiValue::from_vec(vec![Value::Number(f64::from(list.instances[i] as i32))])
-                }
-                None => MultiValue::new(),
-            })
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldInstanceInfo", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: GetBattlefieldInfo(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let list = &model.battlefield_list;
+        if !player_exists(&model) {
+            return Ok(MultiValue::new());
+        }
+        Ok(match slot_index(index, list.instances.len()) {
+            Some(i) => MultiValue::from([Value::Number(f64::from(list.instances[i] as i32))]),
+            None => MultiValue::new(),
+        })
+    })?;
 
     // `JoinBattlefield(index [, asGroup])` — arg 1 shape A, arg 2 the never-raising optional
     // boolean reader; the instance is `index−1 < count ? list[index−1] : 0` (0 = first
     // available, and what an out-of-range index — 0 included — degrades to), §5.2. The refusal
     // leg and the opcode choice are the app's and invisible to Lua.
-    g.set(
+    lua.register_function(
         "JoinBattlefield",
-        lua.create_function(|lua, (index, as_group): (Value, Value)| {
-            let index = number_arg(lua, index, "Usage: JoinBattlefield(index)")?;
+        |lua, (index, as_group): (Value, Value)| {
+            let index = neutral_number_arg(index, "Usage: JoinBattlefield(index)")?;
             let as_group = bool_or_default(Some(&as_group), false);
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let instance = slot_index(index, model.battlefield_list.instances.len())
                 .map_or(0, |i| model.battlefield_list.instances[i]);
             model.battlefield_join_requests.push((instance, as_group));
             Ok(())
-        })?,
+        },
     )?;
 
     // `CloseBattlefield()` — `xor eax,eax; ret`: nothing, and the stock window calls it on hide.
-    g.set("CloseBattlefield", lua.create_function(|_, ()| Ok(()))?)?;
+    lua.register_function("CloseBattlefield", |_, ()| Ok(()))?;
 
     // `SetSelectedBattlefield(index)` — stores the instance id at that position, or 0 when out
     // of range (§3.5).
-    g.set(
-        "SetSelectedBattlefield",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: SetSelectedBattlefield(index)")?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.battlefield_selected = slot_index(index, model.battlefield_list.instances.len())
-                .map_or(0, |i| model.battlefield_list.instances[i]);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetSelectedBattlefield", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: SetSelectedBattlefield(index)")?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.battlefield_selected = slot_index(index, model.battlefield_list.instances.len())
+            .map_or(0, |i| model.battlefield_list.instances[i]);
+        Ok(())
+    })?;
 
     // `GetSelectedBattlefield()` — the 1-based position of the stored id in the CURRENT list, or
     // 0 on a miss (which is also what a stored 0 answers: the "first available" row).
-    g.set(
-        "GetSelectedBattlefield",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let selected = model.battlefield_selected;
-            Ok(model
-                .battlefield_list
-                .instances
-                .iter()
-                .position(|&id| id == selected)
-                .map_or(0, |i| i as i64 + 1))
-        })?,
-    )?;
+    lua.register_function("GetSelectedBattlefield", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let selected = model.battlefield_selected;
+        Ok(model
+            .battlefield_list
+            .instances
+            .iter()
+            .position(|&id| id == selected)
+            .map_or(0, |i| i as i64 + 1))
+    })?;
 
     // `GetBattlefieldStatus(index)` — five values on EVERY leg (§3.2): off 1..3 it is
     // `(nil, nil, 0, 0, 0)`, never a raise and never zero values.
-    g.set(
-        "GetBattlefieldStatus",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: GetBattlefieldStatus(index)")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(slot) = slot_index(index, 3).and_then(|i| model.battlefield_slots.get(i))
-            else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                ]));
-            };
-            let name = match &slot.map_name {
-                Some(n) => Value::String(lua.create_string(n)?),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(status_text(slot.status))?),
-                name,
-                Value::Number(f64::from(slot.instance_id)),
-                Value::Number(f64::from(slot.min_level)),
-                Value::Number(f64::from(slot.max_level)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldStatus", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: GetBattlefieldStatus(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(slot) = slot_index(index, 3).and_then(|i| model.battlefield_slots.get(i)) else {
+            return Ok(MultiValue::from([
+                Value::Nil,
+                Value::Nil,
+                Value::Number(0.0),
+                Value::Number(0.0),
+                Value::Number(0.0),
+            ]));
+        };
+        let name = slot.map_name.clone().map_or(Value::Nil, Value::from);
+        Ok(MultiValue::from([
+            Value::from(status_text(slot.status)),
+            name,
+            Value::Number(f64::from(slot.instance_id)),
+            Value::Number(f64::from(slot.min_level)),
+            Value::Number(f64::from(slot.max_level)),
+        ]))
+    })?;
 
     // The three per-slot clock-shaped getters (§3.3): shape A index, 0 off 1..3, one number
     // always. The app reduces each against its clock; the values arrive in ms.
@@ -324,56 +295,44 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             |s: &BattlefieldQueueSlot| s.time_waited_ms,
         ),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, index: Value| {
-                let index = number_arg(lua, index, usage)?;
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                Ok(i64::from(
-                    slot_index(index, 3)
-                        .and_then(|i| model.battlefield_slots.get(i))
-                        .map_or(0, read),
-                ))
-            })?,
-        )?;
+        lua.register_function(name, move |lua, index: Value| {
+            let index = neutral_number_arg(index, usage)?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(i64::from(
+                slot_index(index, 3)
+                    .and_then(|i| model.battlefield_slots.get(i))
+                    .map_or(0, read),
+            ))
+        })?;
     }
 
     // `GetBattlefieldInstanceExpiration()` — 0 args: `[0xb6ebb8] − now`, 0 when unset or past.
-    g.set(
-        "GetBattlefieldInstanceExpiration",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.battlefield_instance_expiration_ms))
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldInstanceExpiration", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.battlefield_instance_expiration_ms))
+    })?;
 
     // `ShowBattlefieldList(index)` — shape A; silent off 1..3, on an empty slot, and on any
     // status but "queued"; else the slot's map goes out as `CMSG_BATTLEFIELD_LIST`. No event.
-    g.set(
-        "ShowBattlefieldList",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: ShowBattlefieldList(index)")?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let map_id = slot_index(index, 3)
-                .and_then(|i| model.battlefield_slots.get(i))
-                .filter(|s| s.map_id != 0 && s.status == 1)
-                .map(|s| s.map_id);
-            if let Some(map_id) = map_id {
-                model.battlefield_list_requests.push(map_id);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ShowBattlefieldList", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: ShowBattlefieldList(index)")?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let map_id = slot_index(index, 3)
+            .and_then(|i| model.battlefield_slots.get(i))
+            .filter(|s| s.map_id != 0 && s.status == 1)
+            .map(|s| s.map_id);
+        if let Some(map_id) = map_id {
+            model.battlefield_list_requests.push(map_id);
+        }
+        Ok(())
+    })?;
 
     // `CanJoinBattlefieldAsGroup()` — `1` or nil off the listed map's `+0xa0` flag (§3.6). The
     // join-time size check reads a different column and lives with the sender.
-    g.set(
-        "CanJoinBattlefieldAsGroup",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.battlefield_list.group_queue))
-        })?,
-    )?;
+    lua.register_function("CanJoinBattlefieldAsGroup", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(model.battlefield_list.group_queue))
+    })?;
 
     Ok(())
 }

@@ -120,7 +120,7 @@ const GAMMA_BYTES: TextureFormat = TextureFormat::Rgba8Unorm;
 
 /// World/model albedo: the BLP's authored mip pyramid laid in verbatim, repeat + the process
 /// filter policy ([`crate::tex_filter`]). (Port of the old `repeat_texture_authored`.)
-fn world_art_image(upload: UploadChain, wrap: (bool, bool)) -> Image {
+pub fn world_art_image(upload: UploadChain, wrap: (bool, bool)) -> Image {
     let UploadChain { chain, format } = upload;
     let levels = chain.mips.len() as u32;
     let mut data = Vec::with_capacity(chain.mips.iter().map(Vec::len).sum());

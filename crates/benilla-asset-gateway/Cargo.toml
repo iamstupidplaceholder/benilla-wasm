@@ -1,0 +1,18 @@
+[package]
+name = "benilla-asset-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bounded HTTP gateway from browser asset requests to Benilla's MPQ patch chain"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+clap.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = "0.8.23"
+sha1.workspace = true
+benilla-formats = { path = "../benilla-formats", default-features = false }

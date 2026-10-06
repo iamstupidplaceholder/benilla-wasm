@@ -14,11 +14,9 @@
 //! The whole surface honors the MAXCSTACK discipline: the two metatables, the two method tables, and
 //! the wrapper cache live in the Lua registry (named keys); Rust holds none of them across calls.
 
-use std::ffi::c_void;
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use mlua::{LightUserData, Lua, ObjectLike, Table, Value};
-
-use super::binding_abi::optional_string;
+use super::binding_abi::neutral_optional_string;
 use super::{Model, REG_FRAME_META, REG_FRAME_METHODS, REG_SCRIPTS, REG_WRAPPERS};
 use crate::layout::Point;
 use crate::order::{DrawLayer, Strata};
@@ -40,29 +38,32 @@ pub(crate) use movable::{advance_move, advance_size, FrameMove, FrameSizing};
 // id ↔ lightuserdata
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-pub(super) fn id_to_lud(id: u32) -> LightUserData {
-    LightUserData(id as usize as *mut c_void)
-}
-
 /// Read the id out of a wrapper table's `T[0]` lightuserdata (RF-0023).
-pub(crate) fn decode_id(this: &Table) -> mlua::Result<u32> {
-    match this.raw_get::<Value>(0)? {
-        Value::LightUserData(l) => Ok(l.0 as usize as u32),
-        _ => Err(mlua::Error::runtime(
+pub(crate) fn decode_id_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<u32> {
+    match lua.table_get_raw_value(this, LuaValue::Integer(0))? {
+        LuaValue::LightUserData(bits) => crate::script_runtime::object_id_from_bits(bits)
+            .ok_or_else(|| benilla_lua::Error::runtime("FrameScript object id does not fit u32")),
+        _ => Err(benilla_lua::Error::runtime(
             "not a benilla frame/region object (missing T[0] identity)",
         )),
     }
 }
 
 /// Resolve `self` (a frame wrapper) to its live [`FrameHandle`].
-pub(super) fn frame_handle_of(lua: &Lua, this: &Table) -> mlua::Result<FrameHandle> {
-    let id = decode_id(this)?;
+pub(crate) fn frame_handle_of_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<FrameHandle> {
+    let id = decode_id_context(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     model
         .id_to_frame
         .get(&id)
         .copied()
-        .ok_or_else(|| mlua::Error::runtime("stale or invalid frame handle"))
+        .ok_or_else(|| benilla_lua::Error::runtime("stale or invalid frame handle"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -72,13 +73,23 @@ pub(super) fn frame_handle_of(lua: &Lua, this: &Table) -> mlua::Result<FrameHand
 /// Get-or-create the wrapper table for a frame id, caching it and (if the frame is named and `_G`
 /// has no such global yet) publishing it to `_G`. Callers must hold **no** model borrow (this takes
 /// a short one to read the frame's name).
-pub(super) fn frame_wrapper(lua: &Lua, id: u32) -> mlua::Result<Table> {
-    let wrappers: Table = lua.named_registry_value(REG_WRAPPERS)?;
-    if let Value::Table(t) = wrappers.get::<Value>(id)? {
-        return Ok(t);
+/// Backend-neutral frame wrapper constructor. The wrapper cache, identity slot, class metatable
+/// and non-overwriting global publication are the original production behavior; only the VM
+/// operations are abstracted here.
+pub(crate) fn frame_wrapper_context(
+    lua: &mut impl LuaContext,
+    id: u32,
+) -> benilla_lua::Result<LuaTable> {
+    let wrappers: LuaTable = lua.get_registry(REG_WRAPPERS)?;
+    if let LuaValue::Table(wrapper) = lua.table_get(&wrappers, id)? {
+        return Ok(wrapper);
     }
-    let t = lua.create_table()?;
-    t.raw_set(0, Value::LightUserData(id_to_lud(id)))?;
+    let wrapper = lua.create_table()?;
+    lua.table_set_raw(
+        &wrapper,
+        0_i64,
+        LuaValue::LightUserData(crate::script_runtime::object_id_bits(id)),
+    )?;
     // The frame's kind and name in one borrow. **The KIND picks the metatable, here rather than
     // per lookup** — the region side's shape since its leaves split, and decision 2310's whole
     // change on this side: a wrapper is built once per frame, so resolving the class chain at
@@ -93,25 +104,29 @@ pub(super) fn frame_wrapper(lua: &Lua, id: u32) -> mlua::Result<Table> {
             .and_then(|h| model.arena.frame(*h));
         (frame.map(|f| f.kind), frame.and_then(|f| f.name.clone()))
     };
-    t.set_metatable(Some(frame_meta_for(lua, kind)?))?;
-    wrappers.set(id, t.clone())?;
+    let metatable = frame_meta_for_context(lua, kind)?;
+    lua.table_set_metatable(&wrapper, Some(&metatable))?;
+    lua.table_set(&wrappers, id, wrapper.clone())?;
     if let Some(name) = name {
-        publish_global(lua, &name, &t)?;
+        publish_global_context(lua, &name, &wrapper)?;
     }
-    Ok(t)
+    Ok(wrapper)
 }
 
 /// Publish a wrapper to `_G[name]`, non-overwriting (RF-0023).
-pub(super) fn publish_global(lua: &Lua, name: &str, wrapper: &Table) -> mlua::Result<()> {
-    let g = lua.globals();
-    if g.get::<Value>(name)?.is_nil() {
-        g.set(name, wrapper.clone())?;
+pub(crate) fn publish_global_context(
+    lua: &mut impl LuaContext,
+    name: &str,
+    wrapper: &LuaTable,
+) -> benilla_lua::Result<()> {
+    if matches!(lua.global_value(name)?, LuaValue::Nil) {
+        lua.set_global_value(name, LuaValue::Table(wrapper.clone()))?;
     }
     Ok(())
 }
 
 /// A widget **name string** argument, already looked up in `_G` — every Lua binding that takes
-/// "a frame or its name" resolves one of these ([`prefetch_named_target`] then
+/// "a frame or its name" resolves one of these ([`prefetch_named_target_context`] then
 /// [`resolve_named_target`]).
 ///
 /// **The client has ONE widget namespace and it is the Lua globals table.** The wrapper binder
@@ -142,8 +157,13 @@ pub(crate) struct NamedTarget {
     /// The name as the client looked it up — after `$parent` expansion where the caller allows it.
     /// This is the spelling a diagnostic must quote.
     pub(crate) name: String,
-    /// `_G[name]`, kept only when it is a table (the Lua-type-5 gate). Identity is checked later.
-    wrapper: Option<Table>,
+    /// `_G[name]`'s decoded identity, kept only when the value is a wrapper table. Liveness and
+    /// the required widget class are checked later against the model, after the global lookup's
+    /// possible `__index` callback has returned and no Lua operation remains under that borrow.
+    id: Option<u32>,
+    /// The exact table returned by `_G[name]`. XML materialization passes this table onward rather
+    /// than performing a second global lookup whose `__index` could answer differently.
+    pub(crate) wrapper: Option<LuaTable>,
 }
 
 impl NamedTarget {
@@ -152,6 +172,7 @@ impl NamedTarget {
     pub(crate) fn unreadable() -> Self {
         Self {
             name: "<non-utf8>".into(),
+            id: None,
             wrapper: None,
         }
     }
@@ -165,8 +186,8 @@ impl NamedTarget {
 /// layout resolver `0x76c700` — so `SetPoint`/`SetAllPoints`' `relativeTo` **is** expanded at
 /// runtime, and `SetParent`, `SetScrollChild` and the XML `parent=` chain (which call `0x76c760`
 /// directly) are **not**.
-pub(crate) fn prefetch_named_target(
-    lua: &Lua,
+pub(crate) fn prefetch_named_target_context(
+    lua: &mut impl LuaContext,
     name: &str,
     parent_base: Option<&str>,
 ) -> NamedTarget {
@@ -174,11 +195,14 @@ pub(crate) fn prefetch_named_target(
         Some(base) => crate::framexml::resolve_name(name, base),
         None => name.to_string(),
     };
-    let wrapper = match lua.globals().get::<Value>(name.as_str()) {
-        Ok(Value::Table(t)) => Some(t),
+    let wrapper = match lua.global_value(&name) {
+        Ok(LuaValue::Table(table)) => Some(table),
         _ => None,
     };
-    NamedTarget { name, wrapper }
+    let id = wrapper
+        .as_ref()
+        .and_then(|table| decode_id_context(lua, table).ok());
+    NamedTarget { name, id, wrapper }
 }
 
 /// Decode a [`NamedTarget`] to the stable id of a live frame **or** region (the namespace is one —
@@ -188,7 +212,7 @@ pub(crate) fn prefetch_named_target(
 /// accepts; `SetParent`/`SetScrollChild` use the narrower Frame id `[0xcf0c10]`, so those callers
 /// narrow the result to `id_to_frame` themselves.
 pub(crate) fn resolve_named_target(model: &Model, target: &NamedTarget) -> Option<u32> {
-    let id = decode_id(target.wrapper.as_ref()?).ok()?;
+    let id = target.id?;
     (model.id_to_frame.contains_key(&id) || model.id_to_region.contains_key(&id)).then_some(id)
 }
 
@@ -324,7 +348,10 @@ pub fn frame_kind_from_tag(s: &str) -> Option<FrameKind> {
 /// (decision 2191): the Lua binding raises ([`create_frame`]), the XML loader logs
 /// `"Unknown frame type: %s"` and skips the node (`crate::loader`), and wow-re's
 /// `taxiroute-widget-type.md`/`lootbutton-widget-type.md` verify both legs off the same `0x6ee280`.
-pub(crate) fn registered_frame_kind(lua: &Lua, kind: &str) -> Option<FrameKind> {
+pub(crate) fn registered_frame_kind_context(
+    lua: &impl LuaContext,
+    kind: &str,
+) -> Option<FrameKind> {
     let frame_kind = frame_kind_from_str(kind)?;
     let one_shot_spent = frame_kind == FrameKind::WorldFrame
         && lua
@@ -384,34 +411,16 @@ fn frame_kind_from_str(s: &str) -> Option<FrameKind> {
     })
 }
 
-/// A Lua number-ish → f32 (nil/other → 0.0), for offset/color args.
-pub(super) fn as_f32(v: &Value) -> f32 {
-    match v {
-        Value::Number(n) => *n as f32,
-        Value::Integer(i) => *i as f32,
-        _ => 0.0,
-    }
-}
-
-/// [`as_f32`]'s double-width sibling, for the shape-C positions whose store is `f64` — today only
-/// `ColorSelect:SetColorRGB`, whose channels go through a quantizer where a detour via `f32` could
-/// move a value across a rounding boundary (`colorselect`'s module doc).
-pub(super) fn as_f64(v: &Value) -> f64 {
-    match v {
-        Value::Number(n) => *n,
-        Value::Integer(i) => *i as f64,
-        _ => 0.0,
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // install — build the method tables, metatables, CreateFrame, and registry roots
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // The wrapper cache + the per-frame script tables (Lua-side roots — the MAXCSTACK discipline).
-    lua.set_named_registry_value(REG_WRAPPERS, lua.create_table()?)?;
-    lua.set_named_registry_value(REG_SCRIPTS, lua.create_table()?)?;
+    let wrappers = lua.create_table()?;
+    lua.put_registry(REG_WRAPPERS, wrappers)?;
+    let scripts = lua.create_table()?;
+    lua.put_registry(REG_SCRIPTS, scripts)?;
 
     // The Region-map arm collection, opened before either method table is built and closed by
     // `region_map::install` below (its [`super::region_map::Arms`] doc says why it is app_data).
@@ -425,36 +434,35 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // implementation each, so a method pulled off a frame works on a texture (decision 1501).
     super::region_map::install(lua)?;
 
-    // The per-kind metatable cache ([`frame_meta_for`]) and the base metatable in it: the one a
+    // The per-kind metatable cache ([`frame_meta_for_context`]) and the base metatable in it: the one a
     // plain `Frame` wears, whose `__index` is the shared frame method table itself.
-    lua.set_named_registry_value(REG_KIND_METAS, lua.create_table()?)?;
-    let frame_meta = frame_meta_for(lua, None)?;
-    lua.set_named_registry_value(REG_FRAME_META, frame_meta.clone())?;
+    let metas = lua.create_table()?;
+    lua.put_registry(REG_KIND_METAS, metas)?;
+    let frame_meta = frame_meta_for_context(lua, None)?;
+    lua.put_registry(REG_FRAME_META, frame_meta.clone())?;
     // RF-0023 publishes the shared metatable as _G["__framescript_meta"].
-    lua.globals().set("__framescript_meta", frame_meta)?;
+    lua.set_global_value("__framescript_meta", LuaValue::Table(frame_meta))?;
 
     // CreateFrame(kind, name?, parent?, inherits?) — a global (RF-0024's factory is the loader's;
     // this is the runtime one). `inherits` (4th) applies a registered template to the frame this
-    // call just made, through `crate::loader::apply_template`.
-    let create_frame = lua.create_function(create_frame)?;
-    lua.globals().set("CreateFrame", create_frame)?;
+    // call just made, through `crate::loader::apply_template_context`.
+    lua.register_function(
+        "CreateFrame",
+        |lua, args: (String, Option<LuaValue>, Option<LuaValue>, Option<LuaValue>)| {
+            create_frame_context(lua, args)
+        },
+    )?;
 
     // GetScreenWidth/Height — the screen-root rect in UI units (the ref's tooltip side-pick reads
     // them: ContainerFrameItemButton_OnEnter anchors LEFT when the slot sits in the right half).
-    lua.globals().set(
-        "GetScreenWidth",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(model.screen.width())
-        })?,
-    )?;
-    lua.globals().set(
-        "GetScreenHeight",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(model.screen.height())
-        })?,
-    )?;
+    lua.register_function("GetScreenWidth", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(model.screen.width())
+    })?;
+    lua.register_function("GetScreenHeight", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(model.screen.height())
+    })?;
 
     // SetupFullscreenScale(frame) — the registered binding `0x48c270` the stock WorldMapFrame.xml,
     // CinematicFrame.xml and UIOptionsFrame.xml call from OnShow (decision 1980; wow-re
@@ -465,29 +473,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // scale never enters. It is the same `CSimpleFrame::SetScale` the Lua method calls. The
     // window's aspect is the configured one here (the UI-unit rect keeps the pixel ratio); NaN
     // takes the 1.0 leg as the reference's `fcomp` does. The three raises are the binding's own.
-    lua.globals().set(
-        "SetupFullscreenScale",
-        lua.create_function(|lua, frame: Value| {
-            let Value::Table(frame) = frame else {
-                return Err(mlua::Error::runtime("Usage: SetupFullscreenScale(frame)"));
-            };
-            if decode_id(&frame).is_err() {
-                return Err(mlua::Error::runtime(
-                    "SetupFullscreenScale(): Couldn't find 'this' in frame object",
-                ));
-            }
-            if frame_handle_of(lua, &frame).is_err() {
-                return Err(mlua::Error::runtime(
-                    "SetupFullscreenScale(): Wrong object type, expected frame",
-                ));
-            }
-            let scale = {
-                let model = lua.app_data_ref::<Model>().expect("model");
-                fullscreen_scale(model.screen.width() / model.screen.height())
-            };
-            frame.call_method::<()>("SetScale", scale)
-        })?,
-    )?;
+    lua.register_function("SetupFullscreenScale", |lua, frame: LuaValue| {
+        let LuaValue::Table(frame) = frame else {
+            return Err(benilla_lua::Error::runtime(
+                "Usage: SetupFullscreenScale(frame)",
+            ));
+        };
+        if decode_id_context(lua, &frame).is_err() {
+            return Err(benilla_lua::Error::runtime(
+                "SetupFullscreenScale(): Couldn't find 'this' in frame object",
+            ));
+        }
+        if frame_handle_of_context(lua, &frame).is_err() {
+            return Err(benilla_lua::Error::runtime(
+                "SetupFullscreenScale(): Wrong object type, expected frame",
+            ));
+        }
+        let scale = {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            fullscreen_scale(model.screen.width() / model.screen.height())
+        };
+        lua.call_method::<_, ()>(&frame, "SetScale", (scale,))
+    })?;
 
     // GetCursorPosition() → x, y — the last cursor position the host fed (`mouse_move`/
     // `mouse_button`), UI units y-up like every other coordinate read — the SCREEN's units, which
@@ -495,13 +502,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `GetEffectiveScale()` (the reference's own `MouseIsOver` does, and the stock world map at
     // a scale under 1 is the case that made the division load-bearing here — decision 1985). The
     // world map polls this every OnUpdate for hover/click math.
-    lua.globals().set(
-        "GetCursorPosition",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(model.cursor_pos)
-        })?,
-    )?;
+    lua.register_function("GetCursorPosition", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(model.cursor_pos)
+    })?;
 
     // The modifier-key mirror ([`UiScript::set_modifiers`], fed by the app's input pass before
     // any mouse event each frame) — the reference handlers fork on these at click time
@@ -517,14 +521,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("IsControlKeyDown", 1),
         ("IsAltKeyDown", 2),
     ] {
-        lua.globals().set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let model = lua.app_data_ref::<Model>().expect("model");
-                let m = [model.modifiers.0, model.modifiers.1, model.modifiers.2];
-                Ok(crate::script::binding_abi::flag(m[pick]))
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let m = [model.modifiers.0, model.modifiers.1, model.modifiers.2];
+            Ok(crate::script::binding_abi::neutral_flag(m[pick]))
+        })?;
     }
 
     Ok(())
@@ -560,27 +561,30 @@ const REG_KIND_METAS: &str = "__benilla_frame_meta_by_kind";
 /// when a method table is written after the fact, and the per-kind surface stays exactly what
 /// [`kind_method_registries`] declares. Duck typing is preserved by construction: a plain Frame's
 /// chain never reaches `StatusBar`'s map, so `frame.SetValue` is still nil.
-fn frame_meta_for(lua: &Lua, kind: Option<FrameKind>) -> mlua::Result<Table> {
+fn frame_meta_for_context(
+    lua: &mut impl LuaContext,
+    kind: Option<FrameKind>,
+) -> benilla_lua::Result<LuaTable> {
     let chain = kind_method_registries(kind);
     let key = chain.first().copied().unwrap_or("");
-    let metas: Table = lua.named_registry_value(REG_KIND_METAS)?;
-    if let Value::Table(meta) = metas.raw_get::<Value>(key)? {
+    let metas: LuaTable = lua.get_registry(REG_KIND_METAS)?;
+    if let LuaValue::Table(meta) = lua.table_get_raw(&metas, key)? {
         return Ok(meta);
     }
     // Link `own -> base -> ... -> Frame`, idempotently: a base table shared by several kinds (every
     // button kind reaches `Button`'s) is simply re-pointed at the same place.
-    let frame_methods: Table = lua.named_registry_value(REG_FRAME_METHODS)?;
+    let frame_methods: LuaTable = lua.get_registry(REG_FRAME_METHODS)?;
     let mut below = frame_methods.clone();
     for reg in chain.iter().rev() {
-        let own: Table = lua.named_registry_value(reg)?;
+        let own: LuaTable = lua.get_registry(reg)?;
         let link = lua.create_table()?;
-        link.set("__index", below)?;
-        own.set_metatable(Some(link))?;
+        lua.table_set(&link, "__index", below)?;
+        lua.table_set_metatable(&own, Some(&link))?;
         below = own;
     }
     let meta = lua.create_table()?;
-    meta.set("__index", below)?;
-    metas.raw_set(key, meta.clone())?;
+    lua.table_set(&meta, "__index", below)?;
+    lua.table_set_raw(&metas, key, meta.clone())?;
     Ok(meta)
 }
 
@@ -658,7 +662,7 @@ fn kind_method_registries(kind: Option<FrameKind>) -> &'static [&'static str] {
 /// `CreateFrame("Button", "MyButton", UIParent, "UIPanelButtonTemplate")` — the corpus's most
 /// common single line — produce a button with art, regions, scripts and a fired `OnLoad` rather
 /// than an empty frame. The frame is created first and decorated second
-/// ([`crate::loader::apply_template`]), in that order and never the other way: the template's own
+/// ([`crate::loader::apply_template_context`]), in that order and never the other way: the template's own
 /// `OnLoad` must be able to see the frame's real name, and `$parent` inside the template must
 /// resolve against **the caller's** name, not the template's.
 ///
@@ -668,15 +672,16 @@ fn kind_method_registries(kind: Option<FrameKind>) -> &'static [&'static str] {
 /// `virtual="true"`, or of a shape that does not fit the kind asked for — is still a warning plus a
 /// working frame, because the registry lookup itself succeeded and that is the only thing the miss
 /// branch tests.
-pub(super) fn create_frame(
-    lua: &Lua,
-    (kind, name, parent, inherits): (String, Option<Value>, Option<Value>, Option<Value>),
-) -> mlua::Result<Table> {
+pub(super) fn create_frame_context(
+    lua: &mut impl LuaContext,
+    (kind, name, parent, inherits): (String, Option<LuaValue>, Option<LuaValue>, Option<LuaValue>),
+) -> benilla_lua::Result<LuaTable> {
     // The Lua door's miss RAISES: `0x7060b0` reaches `"CreateFrame: Unknown frame type '%s'"`
     // (`0x872fa8`) through `luaL_error 0x6f4940`, which never returns. The XML door's does not —
-    // see [`registered_frame_kind`].
-    let frame_kind = registered_frame_kind(lua, &kind)
-        .ok_or_else(|| mlua::Error::runtime(format!("CreateFrame: unknown frame type '{kind}'")))?;
+    // see [`registered_frame_kind_context`].
+    let frame_kind = registered_frame_kind_context(lua, &kind).ok_or_else(|| {
+        benilla_lua::Error::runtime(format!("CreateFrame: unknown frame type '{kind}'"))
+    })?;
     // **`name` and `inherits` are `lua_tostring` positions, and a NUMBER is a string to it.**
     // `0x7060b0` reads both through `0x6f3690` with no type guard at all, so `CreateFrame("Frame",
     // 5)` names the frame `"5"` — a `Value::String`-only match drops it (wow-re
@@ -689,8 +694,8 @@ pub(super) fn create_frame(
     // "5"`, while `f:CreateTexture(nil, nil, 5)` silently ignores the 5, because the region
     // constructors ask `lua_type` first and never coerce. Same value, opposite outcome, decided by
     // argument order alone — which is why this is spelled out rather than shared with them.
-    let name: Option<String> = name.as_ref().and_then(|v| optional_string(lua, v));
-    let template: Option<String> = inherits.as_ref().and_then(|v| optional_string(lua, v));
+    let name: Option<String> = name.as_ref().and_then(neutral_optional_string);
+    let template: Option<String> = inherits.as_ref().and_then(neutral_optional_string);
 
     // Resolve the parent handle (a wrapper table, or a name string) under a short read borrow.
     //
@@ -704,15 +709,23 @@ pub(super) fn create_frame(
     // voice of a finding. Measured meanwhile: **zero** call sites pass a string parent, in the
     // 109-folder corpus or in our own FrameXML, so the superset is unreachable in practice and
     // removing it blind would buy nothing. Pruning it needs the message, not more confidence.
+    let parent_id = match &parent {
+        Some(LuaValue::Table(table)) => decode_id_context(lua, table).ok(),
+        _ => None,
+    };
+    let parent_name = match &parent {
+        Some(LuaValue::String(value)) => value.as_str().ok().map(str::to_owned),
+        _ => None,
+    };
     let parent_handle: Option<FrameHandle> = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
-        match &parent {
-            Some(Value::Table(t)) => decode_id(t)
-                .ok()
-                .and_then(|id| model.id_to_frame.get(&id).copied()),
-            Some(Value::String(s)) => s.to_str().ok().and_then(|n| model.arena.lookup(n.as_ref())),
-            _ => None,
-        }
+        parent_id
+            .and_then(|id| model.id_to_frame.get(&id).copied())
+            .or_else(|| {
+                parent_name
+                    .as_deref()
+                    .and_then(|name| model.arena.lookup(name))
+            })
     };
 
     // A 4th argument that is present but neither a string nor a number is **silently ignored by
@@ -720,7 +733,7 @@ pub(super) fn create_frame(
     // the ordinary construction path. So this is a benilla-only diagnostic and stays a WARNING,
     // never a raise: it tells a reader something was dropped without changing what runs.
     if template.is_none() {
-        if let Some(v) = inherits.as_ref().filter(|v| !v.is_nil()) {
+        if let Some(v) = inherits.as_ref().filter(|v| !matches!(v, LuaValue::Nil)) {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.record_warning(format!(
                 "CreateFrame: the 4th argument (inherits) must be a template-name string, got {}; \
@@ -758,7 +771,7 @@ pub(super) fn create_frame(
             templates.contains_key(t) || templates.keys().any(|k| k.eq_ignore_ascii_case(t))
         };
         if !known {
-            return Err(mlua::Error::runtime(format!(
+            return Err(benilla_lua::Error::runtime(format!(
                 "CreateFrame(): Couldn't find inherited node \"{t}\""
             )));
         }
@@ -811,9 +824,9 @@ pub(super) fn create_frame(
     // template's `OnLoad` fires inside this call, and the reference's addons rely on both facts:
     // `local b = CreateFrame(...)` hands back a frame whose OnLoad has already run, and that
     // handler can reach itself by name.
-    let wrapper = frame_wrapper(lua, id)?;
+    let wrapper = frame_wrapper_context(lua, id)?;
     if let Some(template) = template {
-        let messages = crate::loader::apply_template(lua, &wrapper, &kind, &template);
+        let messages = crate::loader::apply_template_context(lua, &wrapper, &kind, &template);
         if !messages.is_empty() {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             for m in messages {
@@ -830,15 +843,14 @@ pub(super) fn create_frame(
 
 /// Build the shared frame method table from the five clusters ([`frame_state`], [`layout_methods`],
 /// [`events_regions`], [`movable`], [`toplevel`]) and publish it to the registry.
-fn install_frame_methods(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
-    frame_state::install(lua, &m)?;
-    layout_methods::install(lua, &m)?;
-    events_regions::install(lua, &m)?;
-    movable::install(lua, &m)?;
-    toplevel::install(lua, &m)?;
-    lua.set_named_registry_value(REG_FRAME_METHODS, m)?;
-    Ok(())
+fn install_frame_methods(lua: &mut Vm) -> benilla_lua::Result<()> {
+    let methods = lua.create_table()?;
+    frame_state::install(lua, &methods)?;
+    layout_methods::install_context(lua, &methods)?;
+    events_regions::install(lua, &methods)?;
+    movable::install(lua, &methods)?;
+    toplevel::install(lua, &methods)?;
+    lua.put_registry(REG_FRAME_METHODS, methods)
 }
 
 /// `0x48c270`'s law: `g = 0.75 · aspect`, and the scale is `g` below 1.0, else 1.0 — NaN lands on

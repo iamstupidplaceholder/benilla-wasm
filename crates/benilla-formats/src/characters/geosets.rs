@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const CHAR_HAIR_GEOSETS: &str = "DBFilesClient\\CharHairGeosets.dbc";
 const CHAR_FACIAL_HAIR: &str = "DBFilesClient\\CharacterFacialHairStyles.dbc";
@@ -219,7 +219,7 @@ impl CharacterGeosets {
     /// character-model goblin displays select variation 0, so last-write put a white tuft on every one
     /// of them. `CharacterFacialHairStyles` has no duplicate keys today; it takes the same rule
     /// because the same scan law governs it.
-    pub fn load(chain: &mut Chain) -> Result<Self> {
+    pub fn load(chain: &mut impl FileSource) -> Result<Self> {
         let hair = {
             let bytes = chain
                 .read_file(CHAR_HAIR_GEOSETS)

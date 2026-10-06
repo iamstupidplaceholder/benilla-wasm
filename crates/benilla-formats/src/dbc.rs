@@ -10,7 +10,7 @@ use std::io::Cursor;
 use anyhow::{anyhow, Context, Result};
 use benilla_dbc::{DbcParser, FieldType, Record, RecordSet, Schema, SchemaField, StringRef, Value};
 
-use crate::Chain;
+use crate::FileSource;
 
 /// Parse a DBC's bytes with `schema` into an owned record set (`what` names it for error messages).
 pub(crate) fn parse(bytes: &[u8], schema: Schema, what: &str) -> Result<RecordSet> {
@@ -67,7 +67,7 @@ pub(crate) fn str_at(rs: &RecordSet, r: &Record, i: usize) -> Option<String> {
 /// fields (`ID(0)`, `TextureFilename(1, str)`) — verified against build 5875 (`spells.rs`'s own
 /// module doc). Shared by [`crate::spells`] (the action-bar catalog) and [`crate::skill_lines`]
 /// (a skill line's own tab icon) — one load, not two, since both just want id → path.
-pub(crate) fn load_spell_icon_map(chain: &mut Chain) -> Result<HashMap<u32, String>> {
+pub(crate) fn load_spell_icon_map(chain: &mut impl FileSource) -> Result<HashMap<u32, String>> {
     let bytes = chain
         .read_file("DBFilesClient\\SpellIcon.dbc")
         .context("reading SpellIcon.dbc")?;
@@ -104,7 +104,7 @@ pub(crate) fn id_name_schema(what: &str, name_col: usize, cols: usize) -> Schema
 /// Shared by every such table ([`crate::quest_headers`]'s AreaTable/QuestSort,
 /// [`crate::quest_info`]'s QuestInfo) — the layout differences are the two column numbers.
 pub(crate) fn load_id_name_table(
-    chain: &mut Chain,
+    chain: &mut impl FileSource,
     file: &str,
     name_col: usize,
     cols: usize,

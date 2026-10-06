@@ -1,0 +1,13 @@
+**
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates/
+!crates/**
+!third_party/
+!third_party/**
+!deploy/
+!deploy/**
+**/target/
+**/.git/
+**/tests/fixtures/

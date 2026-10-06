@@ -539,13 +539,10 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| {
-            s.lua()
-                .globals()
-                .get::<String>(key)
-                .ok()
+        let mut g = |key: &str| {
+            s.global_string(key)
                 .unwrap_or_default()
         };
 
@@ -749,7 +746,7 @@ mod tests {
 
         // A bare frame standing in for the pet page: it records what `HasPetUI()` answered at the
         // moment the event was dispatched, which is the only thing under test.
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 r#"

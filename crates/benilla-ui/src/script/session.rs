@@ -22,46 +22,11 @@
 //!   completely implemented (they currently have a failure case)" — so 1.12 ships no way to call it
 //!   from the UI, and neither do we.)
 
-use mlua::Lua;
+use benilla_lua::{Value, Vm};
 
 use super::Model;
 
-/// Outbound session-exit intents queued by the Era API calls, drained by the app
-/// ([`super::UiScript::take_session_requests`]). Plain data — [`super::DuelRequest`]'s twin.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionRequest {
-    /// `Logout()` — leave the world back to character select.
-    Logout,
-    /// `Quit()` — leave the world and end the process once it completes.
-    Quit,
-    /// `CancelLogout()` — call off a pending logout or quit.
-    CancelLogout,
-    /// `ForceQuit()` — end the process now, no server round trip.
-    ForceQuit,
-    /// `ForceLogout()` — the session dispatcher with `force = 1`: `CMSG_PLAYER_LOGOUT` (`0x4A`,
-    /// empty) instead of `Logout`'s `0x4B`, the pending-logout latch bypassed, and nothing at all
-    /// without a live in-world session (decision 1963; wow-re `staticpopup-dialog-bindings.md`
-    /// §4).
-    ForceLogout,
-    /// `ReloadUI()` — tear this VM down and build a fresh one, without leaving the world.
-    ///
-    /// The reference's `ReloadUI 0x4884d0` reads no arguments and returns no values; it only sets
-    /// `ds:0xb4b3f4`, and the per-frame callback `0x495590` runs the teardown/rebuild pair
-    /// (`0x490bd0` → `0x48fbf0`) on the NEXT frame — a deferral that doubles as the reentrancy
-    /// guard: the Lua state being destroyed is never the one mid-way through executing the call.
-    /// Queuing an intent the app runs outside any VM call is that same guard in this engine's
-    /// shape (wow-re `system/ui/scratch/savedvariables-protocol.md` §2, byte-verified).
-    ReloadUi,
-    /// `StopCinematic()` — skip the cinematic that is playing.
-    ///
-    /// **The only skip path there is.** In the reference this binding (`0x48b970`) has *zero*
-    /// native callers: nothing in the engine calls it, and it is absent from `Bindings.xml`, so
-    /// ESC reaches it purely through `CinematicFrame`'s own `OnKeyDown` handler while that
-    /// fullscreen frame holds keyboard focus. A cinematic with no `CinematicFrame` on screen is
-    /// therefore un-skippable — which is why benilla starts playback only once the in-game UI
-    /// exists.
-    StopCinematic,
-}
+pub use crate::script_data::SessionRequest;
 
 impl super::UiScript {
     /// Drain the session-exit intents queued since the last call.
@@ -78,9 +43,7 @@ impl super::UiScript {
 }
 
 /// Register the session globals — the four exit verbs, `ReloadUI`, and the cinematic skip.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     for (name, request) in [
         ("Logout", SessionRequest::Logout),
         ("Quit", SessionRequest::Quit),
@@ -90,30 +53,24 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("ReloadUI", SessionRequest::ReloadUi),
         ("StopCinematic", SessionRequest::StopCinematic),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.session_requests.push(request);
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.session_requests.push(request);
+            Ok(())
+        })?;
     }
 
     // `InCinematic()` — the reference's `0x48c930`: reads the "a cinematic is playing" global and
     // answers the **number 1** while one is, `nil` otherwise (both legs push exactly one result).
     // Era convention, not `true`/`false`.
-    g.set(
-        "InCinematic",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(if model.in_cinematic {
-                mlua::Value::Integer(1)
-            } else {
-                mlua::Value::Nil
-            })
-        })?,
-    )?;
+    lua.register_function("InCinematic", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(if model.in_cinematic {
+            Value::Integer(1)
+        } else {
+            Value::Nil
+        })
+    })?;
 
     Ok(())
 }

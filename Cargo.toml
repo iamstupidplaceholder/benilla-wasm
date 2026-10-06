@@ -22,6 +22,10 @@ authors = ["sam <samuv.eth@gmail.com>"]
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 
+# Development-only conditional code is unavailable in this source preview.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("dev", "tracy", "trace_chrome"))'] }
+
 [workspace.dependencies]
 anyhow = "1.0.102"
 # bevy's `default` is `["2d", "3d", "ui"]`, and every one of those three pulls `audio`
@@ -44,12 +48,17 @@ bevy = { version = "0.18.1", default-features = false, features = [
     "ui_bevy_render",
     "scene",
     "picking",
+    # System/parameter names in validation errors; independent of Rust DWARF.
+    "debug",
 ] }
 # The render app's raw GPU handles (the WOW_GPU_MS meter's query set): bevy 0.18 does not wrap
 # wgpu's QuerySet family, so the meter reaches for the same wgpu the workspace already builds.
 wgpu = "27"
 clap = { version = "4.6.1", features = ["derive"] }
 sha1 = "0.10.6"
+getrandom = "0.2.17"
+rilua = { version = "=0.1.24", default-features = false }
+benilla-time = { path = "crates/benilla-time" }
 
 # The WoW format + protocol stack is fully in-repo (decision 0021), so there are no warcraft-rs /
 # wow_messages crates (or forks of them) anywhere in the tree. That is still true and is why this
@@ -71,6 +80,7 @@ sha1 = "0.10.6"
 # the per-hunk byte evidence and the verifying command (decisions 1215, 1315, 2101).
 [patch.crates-io]
 lua-src = { path = "third_party/lua-src" }
+rilua = { path = "third_party/rilua" }
 # kira 0.12.1 with one patch: spatial gains and the volume tween evaluated per CHUNK and
 # interpolated, not per frame (decision 1945; `third_party/kira/BENILLA.md`).
 kira = { path = "third_party/kira" }
@@ -93,6 +103,14 @@ opt-level = 1
 # No debuginfo trimming: `debug = "line-tables-only"` was A/B-measured (decision 0192) at zero
 # recurring win on this stack (macOS unpacked split-debuginfo; sccache; fast ld) — not worth
 # invalidating every warm target and the sccache cache for.
+
+# Browser development keeps assertions and Bevy diagnostic names, but not full
+# DWARF (wasm-bindgen strips it anyway). Native profiles above remain unchanged.
+# Use this profile consistently to avoid accumulating dev/wasm feature variants.
+[profile.wasm-dev]
+inherits = "dev"
+debug = 0
+incremental = false
 
 # Shipping-grade optimization, A/B-graded at the pin (decision 0736): −1.0 cpu_ms (−5 %) vs
 # default release, flat at the empty-map and bare-Bevy floors. The campaign keeps grading on

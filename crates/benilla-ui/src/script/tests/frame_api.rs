@@ -43,7 +43,7 @@ fn get_locale_and_set_all_points() {
 
 #[test]
 fn getpoint_reads_back_anchors() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         a = CreateFrame("Frame", "GP_A")

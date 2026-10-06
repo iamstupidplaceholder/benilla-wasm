@@ -24,7 +24,7 @@
 //! - **World enter** (§8) clears the list scalars and the selection (not the queue slots) and
 //!   sends the bodyless `CMSG_BATTLEFIELD_STATUS`, which the server answers slot by slot.
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use bevy::prelude::*;
 
@@ -163,7 +163,7 @@ fn slot_view(
     catalog: Option<&MapCatalog>,
     now: Instant,
 ) -> BattlefieldQueueSlot {
-    let ms = |d: std::time::Duration| d.as_millis().min(u128::from(u32::MAX)) as u32;
+    let ms = |d: benilla_time::Duration| d.as_millis().min(u128::from(u32::MAX)) as u32;
     let map_id = slot.map_or(0, |(s, _)| s.map_id);
     let mut view = BattlefieldQueueSlot {
         map_id,
@@ -180,13 +180,13 @@ fn slot_view(
     }
     // Status 2: `[slot+0x14] = Δ ? now + Δ : 0`; read as `deadline − now`, 0 once past.
     if let Some(delta) = status.time_ms.filter(|&d| d != 0) {
-        let deadline = *at + std::time::Duration::from_millis(u64::from(delta));
+        let deadline = *at + benilla_time::Duration::from_millis(u64::from(delta));
         view.port_expiration_ms = ms(deadline.saturating_duration_since(now));
     }
     // Status 1: the raw estimate, and `[slot+0x1c] = now − Δ` read back as `now − stamp`.
     if let Some((estimate, waited)) = status.queued {
         view.estimated_wait_ms = estimate;
-        let stamp = *at - std::time::Duration::from_millis(u64::from(waited));
+        let stamp = *at - benilla_time::Duration::from_millis(u64::from(waited));
         view.time_waited_ms = ms(now.saturating_duration_since(stamp));
     }
     view
@@ -268,11 +268,11 @@ fn feed_battlefield(
     let mut lines = Vec::new();
     for result in std::mem::take(&mut state.verdicts) {
         let line = if result == GROUP_JOIN_DESERTERS {
-            crate::ui_action::keyed_line(&script, "ERR_GROUP_JOIN_BATTLEGROUND_DESERTERS")
+            crate::ui_action::keyed_line(&mut script, "ERR_GROUP_JOIN_BATTLEGROUND_DESERTERS")
         } else if let Some(name) = catalog.and_then(|c| c.name(result)) {
-            crate::ui_action::keyed_line_s(&script, "ERR_GROUP_JOIN_BATTLEGROUND_S", &[name])
+            crate::ui_action::keyed_line_s(&mut script, "ERR_GROUP_JOIN_BATTLEGROUND_S", &[name])
         } else {
-            crate::ui_action::keyed_line(&script, "ERR_GROUP_JOIN_BATTLEGROUND_FAIL")
+            crate::ui_action::keyed_line(&mut script, "ERR_GROUP_JOIN_BATTLEGROUND_FAIL")
         };
         lines.extend(line);
     }
@@ -283,9 +283,9 @@ fn feed_battlefield(
             continue;
         };
         let line = if joined {
-            crate::ui_action::keyed_line_s(&script, "ERR_BG_PLAYER_JOINED_SS", &[&name, &name])
+            crate::ui_action::keyed_line_s(&mut script, "ERR_BG_PLAYER_JOINED_SS", &[&name, &name])
         } else {
-            crate::ui_action::keyed_line_s(&script, "ERR_BG_PLAYER_LEFT_S", &[&name])
+            crate::ui_action::keyed_line_s(&mut script, "ERR_BG_PLAYER_LEFT_S", &[&name])
         };
         lines.extend(line);
     }
@@ -312,7 +312,7 @@ fn drain_battlefield(
     for (instance_id, as_group) in script.take_battlefield_join_requests() {
         if as_group && !group_fits(catalog, map_id, group.as_deref()) {
             if let Some(line) =
-                crate::ui_action::keyed_line(&script, "ERR_GROUP_JOIN_BATTLEGROUND_TOO_MANY")
+                crate::ui_action::keyed_line(&mut script, "ERR_GROUP_JOIN_BATTLEGROUND_TOO_MANY")
             {
                 crate::ui_action::show_messages(&mut script, &mut sink, "ui_battlefield", [line]);
             }
@@ -432,7 +432,7 @@ mod tests {
         let at = Instant::now();
         let mut queued = status(0, 489, 1);
         queued.queued = Some((30_000, 5_000));
-        let later = at + std::time::Duration::from_millis(2_000);
+        let later = at + benilla_time::Duration::from_millis(2_000);
         let v = slot_view(Some(&(queued, at)), None, later);
         assert_eq!((v.map_id, v.status, v.instance_id), (489, 1, 7));
         assert_eq!(v.estimated_wait_ms, 30_000, "raw, no clock");
@@ -445,7 +445,7 @@ mod tests {
         confirm.time_ms = Some(60_000);
         let v = slot_view(Some(&(confirm.clone(), at)), None, later);
         assert_eq!(v.port_expiration_ms, 58_000);
-        let past = at + std::time::Duration::from_millis(61_000);
+        let past = at + benilla_time::Duration::from_millis(61_000);
         let v = slot_view(Some(&(confirm, at)), None, past);
         assert_eq!(
             v.port_expiration_ms, 0,

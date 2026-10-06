@@ -40,7 +40,6 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
 use crate::dbc::{f32_at, parse, str_at, u32_at};
 
 const PET_PERSONALITY: &str = "DBFilesClient\\PetPersonality.dbc";
@@ -195,7 +194,7 @@ fn loyalty_schema() -> Schema {
 }
 
 /// Load `PetPersonality.dbc` from the patch chain.
-pub fn load_pet_personalities(chain: &mut Chain) -> Result<PetPersonalities> {
+pub fn load_pet_personalities(chain: &mut impl crate::FileSource) -> Result<PetPersonalities> {
     let bytes = chain
         .read_file(PET_PERSONALITY)
         .with_context(|| format!("reading {PET_PERSONALITY}"))?;
@@ -218,7 +217,7 @@ pub fn load_pet_personalities(chain: &mut Chain) -> Result<PetPersonalities> {
 }
 
 /// Load `PetLoyalty.dbc` from the patch chain.
-pub fn load_pet_loyalty_names(chain: &mut Chain) -> Result<PetLoyaltyNames> {
+pub fn load_pet_loyalty_names(chain: &mut impl crate::FileSource) -> Result<PetLoyaltyNames> {
     let bytes = chain
         .read_file(PET_LOYALTY)
         .with_context(|| format!("reading {PET_LOYALTY}"))?;

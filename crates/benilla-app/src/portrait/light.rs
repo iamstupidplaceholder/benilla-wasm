@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use benilla_assets::materials::WowModelMaterial;
+use benilla_assets::{gpu_table::GpuTable, materials::WowModelMaterial};
 
 /// One booth light: its own copy of the shared-light storage buffer (the canonical
 /// [`benilla_world::lighting::LIGHT_HEADER_ROWS`]-row std430 layout, lit lanes packed by the scene's own
@@ -23,7 +23,7 @@ use benilla_assets::materials::WowModelMaterial;
 /// world-built material (same texture/blend/flags), different light.
 #[derive(Default)]
 pub(super) struct BoothRig {
-    pub(super) buffer: Option<bevy::render::render_resource::Buffer>,
+    pub(super) buffer: Option<GpuTable>,
     variants: HashMap<AssetId<WowModelMaterial>, Handle<WowModelMaterial>>,
     /// Set by [`Self::variant`] when it could NOT build a real booth twin because the source
     /// material was not resident yet — see [`Self::take_unready`].
@@ -142,7 +142,7 @@ pub(crate) enum VariantLane {
 /// [`BoothRig::variant`]). Callers wait and retry rather than baking something wrong.
 pub(crate) fn material_variant(
     variants: &mut HashMap<AssetId<WowModelMaterial>, Handle<WowModelMaterial>>,
-    buffer: &bevy::render::render_resource::Buffer,
+    buffer: &GpuTable,
     world: &Handle<WowModelMaterial>,
     materials: &mut Assets<WowModelMaterial>,
     lane: VariantLane,

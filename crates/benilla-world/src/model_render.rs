@@ -8,9 +8,44 @@ use bevy::asset::AssetId;
 use bevy::mesh::MeshTag;
 use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Buffer, Face};
+use bevy::render::render_resource::Face;
 
+use benilla_assets::gpu_table::{gpu_table_id, GpuTable, GpuTableId};
 use benilla_assets::materials::{WowModelExt, WowModelMaterial, VANILLA_ALPHA_KEY_REF};
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crate::lighting::SharedLightBuffer as SharedModelLight;
+
+/// Browser model materials use the world table when a world renderer is installed, and a
+/// scene-owned table in a glue-only composition. Backdrop/booth variants bind their own table
+/// explicitly; their source materials must keep the world table across world entry.
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource, Clone)]
+pub(crate) struct SharedModelLight(pub GpuTable);
+
+/// Publish an off-world stage's authored table through the ordinary entity-material input.
+///
+/// A glue-only app has no world lighting plugin, but its character/pet assembly deliberately uses
+/// the same `entity_variants` builder as world entities. The stage owner calls this with its real
+/// authored light table; it is not a dummy world light. The booth may subsequently derive a
+/// per-stage material variant from the same table as usual.
+#[cfg(target_arch = "wasm32")]
+pub fn publish_off_world_model_light(commands: &mut Commands, light: GpuTable) {
+    commands.queue(move |world: &mut World| {
+        // A full client shares display/material caches between selection and live
+        // entities. Publishing a booth table there strands cached skinned parts
+        // on a table whose palette uploader only updates mirrored booth rigs.
+        let light = world
+            .get_resource::<crate::lighting::SharedLightBuffer>()
+            .map_or(light.clone(), |shared| shared.0.clone());
+        if world
+            .get_resource::<SharedModelLight>()
+            .is_none_or(|current| gpu_table_id(&current.0) != gpu_table_id(&light))
+        {
+            world.insert_resource(SharedModelLight(light));
+        }
+    });
+}
 
 mod batch;
 pub mod lazy;
@@ -69,7 +104,7 @@ pub struct MatKey {
     /// it two lanes building the same batch collide and the second gets the first's *lighting* —
     /// which the booths avoided only by each keeping a private cache, a discipline nothing
     /// enforced and which cost them any distance sweep (they never expired at all).
-    light: bevy::render::render_resource::BufferId,
+    light: GpuTableId,
     texture: Option<AssetId<Image>>,
     blend: ModelBlend,
     two_sided: bool,
@@ -253,7 +288,7 @@ pub fn model_material(
     // This batch belongs to a **WMO skybox** — the sky lane: forced far depth, no rasterizer bias,
     // and the skybox sort rung instead of the ordinary batch-order eps. See [`MatKey::sky_depth`].
     sky_depth: bool,
-    light: &Buffer,
+    light: &GpuTable,
     // The ONE placement this material belongs to, or `None` for the shared batch material every
     // instance of the model reuses. `Some` only for a batch whose animated UV/tint loop depends on
     // the sequence its instance is playing (decision 1408): the animated-material registries are
@@ -261,7 +296,7 @@ pub fn model_material(
     instance: Option<Entity>,
 ) -> Handle<WowModelMaterial> {
     let key = MatKey {
-        light: light.id(),
+        light: gpu_table_id(light),
         texture: texture.as_ref().map(Handle::id),
         blend,
         two_sided,
@@ -597,10 +632,10 @@ pub fn zfill_material(
     texture: Option<Handle<Image>>,
     two_sided: bool,
     cutout: bool,
-    light: &Buffer,
+    light: &GpuTable,
 ) -> Handle<WowModelMaterial> {
     let key = MatKey {
-        light: light.id(),
+        light: gpu_table_id(light),
         texture: texture.as_ref().map(Handle::id),
         blend: if cutout {
             ModelBlend::AlphaTest
@@ -1190,7 +1225,11 @@ pub fn plugin(app: &mut App) {
     // after the compute that fills it.
     app.add_systems(
         Update,
-        visibility::apply_model_visibility
+        (
+            visibility::cache_world_bounds,
+            visibility::apply_model_visibility,
+        )
+            .chain()
             .after(crate::wmo_portal::WmoPvsSet)
             .in_set(ModelVisSet),
     );
@@ -1217,17 +1256,28 @@ pub fn plugin(app: &mut App) {
     // (`AssetEventSystems`) or the bound entity loses a frame of drawing, and before
     // `VisibilityPropagate` clears the view-visibility bits it reads. Both bounds and why they
     // are the only two available: `lazy`'s module doc.
+    off_world_material_lifecycle(app);
+    // Parking (`park`): a long-hidden streamed part puts its `Mesh3d` down. `Update`, after the
+    // authority, on last frame's propagated verdict — the order the module doc explains.
+    if park::enabled() {
+        app.add_systems(Update, park::park_hidden_parts.after(ModelVisSet));
+    }
+}
+
+/// Install the production material-realization lifecycle without the streamed-world visibility,
+/// water-side and residency authorities owned by [`plugin`].
+///
+/// Off-world stages build through [`M2BatchMaterials`] too, so their material values enter the
+/// same deferred table as world batches. They still need the bound-handle sweep that promotes
+/// those values into `Assets<WowModelMaterial>` before asset events are published; without it the
+/// entities and handles exist, but Bevy correctly skips every draw because no material asset does.
+pub(crate) fn off_world_material_lifecycle(app: &mut App) {
     app.add_systems(
         PostUpdate,
         lazy::realize_bound
             .before(bevy::asset::AssetEventSystems)
             .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
     );
-    // Parking (`park`): a long-hidden streamed part puts its `Mesh3d` down. `Update`, after the
-    // authority, on last frame's propagated verdict — the order the module doc explains.
-    if park::enabled() {
-        app.add_systems(Update, park::park_hidden_parts.after(ModelVisSet));
-    }
 }
 
 /// Expire the material dedup by **distance** (decision 0785).

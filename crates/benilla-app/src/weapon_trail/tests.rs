@@ -434,7 +434,7 @@ fn an_armed_trail_commits_a_strip_to_the_effect_stream() {
             )));
         app.world_mut()
             .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_millis(16));
+            .advance_by(benilla_time::Duration::from_millis(16));
         app.update();
     }
     let quads = app.world().resource::<EffectQuads>();
@@ -497,7 +497,7 @@ fn a_hidden_weapon_draws_nothing() {
     for _ in 0..6 {
         app.world_mut()
             .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_millis(16));
+            .advance_by(benilla_time::Duration::from_millis(16));
         app.update();
     }
     assert!(app.world().resource::<EffectQuads>().draws.is_empty());
@@ -560,7 +560,7 @@ fn an_indoor_wearers_committed_ambient_wins_over_the_scenes() {
                 .clone_from(&GlobalTransform::from_translation(Vec3::X * f as f32));
             app.world_mut()
                 .resource_mut::<Time>()
-                .advance_by(std::time::Duration::from_millis(16));
+                .advance_by(benilla_time::Duration::from_millis(16));
             app.update();
         }
         lit[i] = strip_rgb(&app);

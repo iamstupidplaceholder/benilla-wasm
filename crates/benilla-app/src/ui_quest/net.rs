@@ -214,6 +214,10 @@ fn quest_progress(p: QuestRequestItems, quest: &mut QuestGiver) {
         "net: quest progress — quest {} on {:#x} (complete: {})",
         p.quest_id, p.npc, p.is_complete
     );
+    // This panel carries its own close-on-cancel flag. A sole active
+    // quest is opened directly by the server with this flag set; reusing
+    // an old details flag sends HELLO on close and reopens that same quest.
+    quest.detail_flag = p.close_on_cancel;
     quest.open(p.npc, crate::ui_quest::QuestView::Progress(p));
 }
 
@@ -223,6 +227,7 @@ fn quest_offer(o: QuestOfferReward, quest: &mut QuestGiver) {
         "net: quest reward offer — quest {} on {:#x}",
         o.quest_id, o.npc
     );
+    quest.detail_flag = o.auto_finish;
     quest.open(o.npc, crate::ui_quest::QuestView::Reward(o));
 }
 

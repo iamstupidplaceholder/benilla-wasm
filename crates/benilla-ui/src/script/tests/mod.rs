@@ -65,7 +65,7 @@ mod worldmap;
 /// turns that into an ordinary Lua error, which every caller already knows how to report.
 #[test]
 fn an_instruction_budget_turns_a_runaway_loop_into_an_error() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.set_instruction_budget(5_000_000);
     let err = s
         .run("local i = 0 while true do i = i + 1 end")
@@ -91,7 +91,7 @@ fn an_instruction_budget_turns_a_runaway_loop_into_an_error() {
     );
 
     // An ordinary chunk is untouched by a budget it never approaches.
-    let t = crate::script::UiScript::new().unwrap();
+    let mut t = crate::script::UiScript::new().unwrap();
     t.set_instruction_budget(200_000_000);
     t.run("BudgetOk = 0 for i = 1, 1000 do BudgetOk = BudgetOk + i end")
         .unwrap();

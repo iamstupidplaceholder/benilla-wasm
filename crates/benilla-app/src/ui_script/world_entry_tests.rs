@@ -967,7 +967,7 @@ fn an_addon_that_fails_to_load_without_raising_is_readable_in_the_error_log() {
         "the addon after the broken one still loads"
     );
 
-    let script = world
+    let mut script = world
         .get_non_send_resource::<benilla_ui::script::UiScript>()
         .expect("VM");
 
@@ -1527,7 +1527,7 @@ BindProbeSet = SetBinding(\"J\", \"TOGGLEWORLDMAP\")
 
     log_in_as(&mut world, "Onewarrior", 1);
 
-    let script = world
+    let mut script = world
         .get_non_send_resource::<benilla_ui::script::UiScript>()
         .expect("VM");
     assert_eq!(
@@ -1638,10 +1638,10 @@ ScreenProbeHeight = GetScreenHeight()
 
     log_in_as(&mut world, "Onewarrior", 1);
 
-    let script = world
+    let mut script = world
         .get_non_send_resource::<benilla_ui::script::UiScript>()
         .expect("VM");
-    let read = |expr: &str| script.eval::<Option<f32>>(expr).ok().flatten();
+    let mut read = |expr: &str| script.eval::<Option<f32>>(expr).ok().flatten();
     let width = read("ScreenProbeWidth").expect("the probe ran at file scope");
     assert!(
         (width - 2560.0 * 768.0 / 1440.0).abs() < 0.01,

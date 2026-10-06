@@ -23,7 +23,7 @@
 //! either kind — starts a key at its saved value. The host folds the dying VM's table back into
 //! its persist state on the session edge, so the two halves meet.
 
-use mlua::{Lua, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::{Model, ScriptValue};
 
@@ -48,105 +48,7 @@ pub(crate) struct CvarSlot {
     pub pending: Option<String>,
 }
 
-/// One row of the host's registry, as the VM's mirror is seeded from it (decision 2303): the
-/// registered spelling, the **applied** value, the registered default, and the latch flag.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SeededCvar {
-    pub name: String,
-    pub value: String,
-    pub default: String,
-    pub latched: bool,
-}
-
-/// One device-supported multisample format, as the Video options dropdown shows it.
-///
-/// The reference's distilled triple (`[0xb4b444]`, count `[0xb4b440]`, built by `0x48c3e0`), and
-/// the shape `MULTISAMPLING_FORMAT_STRING` formats: `"%d-bit color %d-bit depth %dx multisample"`.
-///
-/// `samples == 1` is the encoding of **no multisampling**, not "one sample of it" — the convention
-/// both of the reference's enumerators normalise to (`0x58b8b1`'s jump table maps
-/// `D3DMULTISAMPLE_NONE → 1`; the GL path at `0x58d5fa`/`0x58d5fe`/`0x58d605` turns a failed
-/// `WGL_SAMPLES_ARB` query or a value of 0 into 1), and the same convention the device paths test
-/// with `> 1`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MultisampleFormat {
-    pub color_bits: u32,
-    pub depth_bits: u32,
-    pub samples: u32,
-}
-
-/// One screen resolution the Video options dropdown offers, in **physical pixels**.
-///
-/// The reference enumerates the graphics device's own display modes; benilla has no exclusive
-/// mode-set to make (`benilla_app::video`'s module doc: Wayland has no client-side mode-setting,
-/// X11's is XRandR on the *desktop*, macOS has none, and WoW itself deleted exclusive fullscreen in
-/// 8.0.1), so the list is the sizes this client can actually present a window at. Either way it is
-/// a fact about the display that the VM cannot ask for itself, so the host pushes it.
-///
-/// **The `"WxH"` spelling is the contract, not a convenience.** `OptionsFrame.lua:281-284` finds
-/// the `x`, `strsub`s both sides and evaluates `width/height > 4/3` for the WIDESCREEN tag, and
-/// `CT_Viewport.lua:107` re-reads it with `string.find(currRes, "(%d+)x(%d+)")`. Two independent
-/// consumers, both of which fail silently on a space, a suffix, or an `X`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScreenResolution {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl ScreenResolution {
-    /// The reference's ordering key, made total: **pixel area first** (`0x58be40`'s whole body is
-    /// `a.h*a.w - b.h*b.w`), then width, then height. The tie-break is ours — see
-    /// [`super::UiScript::set_screen_resolutions`].
-    pub(crate) fn sort_key(&self) -> (u64, u32, u32) {
-        (
-            u64::from(self.width) * u64::from(self.height),
-            self.width,
-            self.height,
-        )
-    }
-}
-
-impl std::fmt::Display for ScreenResolution {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}x{}", self.width, self.height)
-    }
-}
-
-/// What `GetVideoCaps` answers with — the seven values `OptionsFrame_Load` destructures at
-/// `OptionsFrame.lua:59`, in that order.
-///
-/// ```lua
-/// local hasAnisotropic, hasPixelShaders, hasVertexShaders, hasTrilinear,
-///       hasTripleBuffering, maxAnisotropy, hasHardwareCursor = GetVideoCaps();
-/// ```
-///
-/// In the reference these are the D3D/GL device's own answers, cached at start-up. Here they are
-/// what wgpu and this client's own presentation path really do — pushed by the host, which is the
-/// only side that holds a `RenderAdapter`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct VideoCaps {
-    pub anisotropic: bool,
-    pub pixel_shaders: bool,
-    pub vertex_shaders: bool,
-    pub trilinear: bool,
-    /// **A BACKEND constant, not a device capability** — `caps+0x20` is written by the two device
-    /// constructors only (1 under Direct3D, 0 under OpenGL) and read by `GetVideoCaps` alone, so
-    /// `hasTripleBuffering == 1` means "the backend is Direct3D". Its name is the one INFERRED
-    /// label in the seven (wow-re `ui/scratch/video-options-verbs.md` §2.2).
-    ///
-    /// `false` here, and it is pushed as the **number 0**, never nil: benilla is not Direct3D and
-    /// exposes no buffering knob, so check button 13 is hidden and button 6 re-seated
-    /// (`OptionsFrame.lua:168-175`) — while the file's two `not hasTripleBuffering` clauses stay
-    /// dead, which is what the reference does in both backends.
-    pub triple_buffering: bool,
-    /// The raw maximum sample count, matched against `ANISOTROPIC_VALUES = {"1","2","4","8","16"}`
-    /// with `tonumber` (`OptionsFrame.lua:124`) — so it must be one of those numbers to move the
-    /// slider's ceiling, and anything else leaves `value.maxValue` where it was. Pushed raw, or
-    /// **nil iff 0**; the reference is effectively never nil here (its base ctor seeds the field
-    /// to 1), which is why its consumers gate on slot 1 or on `< 2` rather than on nil.
-    pub max_anisotropy: u32,
-    pub hardware_cursor: bool,
-}
+pub use crate::script_cvar_types::{MultisampleFormat, ScreenResolution, SeededCvar, VideoCaps};
 
 impl super::UiScript {
     /// Hand registration the config file's persisted values (decision 1291): name → value, keys
@@ -170,12 +72,12 @@ impl super::UiScript {
     /// registration starts at the saved-base value when the config file carries one
     /// ([`Self::set_cvar_saved_base`]), else at the default.
     ///
-    /// Takes `&self` rather than `&mut self` because the table lives behind the VM's app-data
-    /// (interior mutability), and the interface loader has to be able to guarantee it from a
-    /// `&UiScript` — the stock `UIOptionsFrame.xml` reads CVars in its own `OnLoad`, so a VM that
-    /// loads the client's interface without the client's CVar table is not the client
-    /// (decision 2115).
-    pub fn register_cvars<'a>(&self, vars: impl IntoIterator<Item = (&'a str, &'a str)>) {
+    /// Takes `&mut self` because the table lives behind the VM's app-data, which the neutral
+    /// VM only opens exclusively. The stock `UIOptionsFrame.xml` reads CVars in its own `OnLoad`,
+    /// so a VM that loads the client's interface without the client's CVar table is not the
+    /// client (decision 2115) — the host registers before the interface load, while it still
+    /// owns the script mutably.
+    pub fn register_cvars<'a>(&mut self, vars: impl IntoIterator<Item = (&'a str, &'a str)>) {
         let mut model = self.model_mut();
         for (name, default) in vars {
             let key = name.to_ascii_lowercase();
@@ -211,7 +113,7 @@ impl super::UiScript {
     ///
     /// `&self` for [`Self::register_cvars`]'s reason — the interface loader seeds from a
     /// `&UiScript` before the stock files read their first CVar (decision 2115).
-    pub fn seed_cvars(&self, rows: impl IntoIterator<Item = SeededCvar>) {
+    pub fn seed_cvars(&mut self, rows: impl IntoIterator<Item = SeededCvar>) {
         let mut model = self.model_mut();
         for row in rows {
             let key = row.name.to_ascii_lowercase();
@@ -245,7 +147,7 @@ impl super::UiScript {
     }
 
     /// Read one CVar's live value (host side).
-    pub fn cvar(&self, name: &str) -> Option<String> {
+    pub fn cvar(&mut self, name: &str) -> Option<String> {
         self.model_mut()
             .cvars
             .get(&name.to_ascii_lowercase())
@@ -254,7 +156,7 @@ impl super::UiScript {
 
     /// Snapshot the whole table as `(name, value, default)` — the saver writes the entries whose
     /// value moved off the default, and nothing else (the config file stays a diff, not a dump).
-    pub fn cvars_snapshot(&self) -> Vec<(String, String, String)> {
+    pub fn cvars_snapshot(&mut self) -> Vec<(String, String, String)> {
         self.model_mut()
             .cvars
             .values()
@@ -430,7 +332,7 @@ fn warn_unknown(model: &mut Model, name: &str) {
 /// booleans the same way (`SetCVar("MusicVolume", 0.4)` is the common call shape).
 fn value_to_string(v: &Value) -> Option<String> {
     match v {
-        Value::String(s) => s.to_str().ok().map(|s| s.to_owned()),
+        Value::String(s) => s.as_str().ok().map(|s| s.to_owned()),
         Value::Integer(i) => Some(i.to_string()),
         Value::Number(n) => Some(n.to_string()),
         Value::Boolean(b) => Some(if *b { "1".into() } else { "0".into() }),
@@ -451,7 +353,7 @@ pub const CVAR_NAMEPLATE_ENEMIES: &str = "nameplateShowEnemies";
 /// The friendly-plate half of [`CVAR_NAMEPLATE_ENEMIES`].
 pub const CVAR_NAMEPLATE_FRIENDS: &str = "nameplateShowFriends";
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `RegisterCVar(name, value)` — declare a CVar the client does not ship (decision 1195).
     //
     // This is how an addon gets a persisted setting without a saved-variables file, and it is why
@@ -460,9 +362,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // existing name is a **no-op, not an overwrite** — the reference will not let an addon reset a
     // client CVar's live value by re-declaring it, and a re-run of the addon's own load must not
     // wipe the player's setting either.
-    lua.globals().set(
+    lua.register_function(
         "RegisterCVar",
-        lua.create_function(|lua, (name, value): (String, Option<Value>)| {
+        |lua, (name, value): (String, Option<Value>)| {
             let value = value.as_ref().and_then(value_to_string).unwrap_or_default();
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let key = name.to_ascii_lowercase();
@@ -488,35 +390,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 },
             );
             Ok(())
-        })?,
+        },
     )?;
 
-    lua.globals().set(
-        "GetCVar",
-        lua.create_function(|lua, name: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            match model.cvars.get(&name.to_ascii_lowercase()) {
-                Some(slot) => Ok(Value::String(lua.create_string(&slot.value)?)),
-                None => {
-                    warn_unknown(&mut model, &name);
-                    Ok(Value::Nil)
-                }
+    lua.register_function("GetCVar", |lua, name: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        match model.cvars.get(&name.to_ascii_lowercase()) {
+            Some(slot) => Ok(Value::from(slot.value.clone())),
+            None => {
+                warn_unknown(&mut model, &name);
+                Ok(Value::Nil)
             }
-        })?,
-    )?;
-    lua.globals().set(
-        "GetCVarDefault",
-        lua.create_function(|lua, name: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            match model.cvars.get(&name.to_ascii_lowercase()) {
-                Some(slot) => Ok(Value::String(lua.create_string(&slot.default)?)),
-                None => {
-                    warn_unknown(&mut model, &name);
-                    Ok(Value::Nil)
-                }
+        }
+    })?;
+    lua.register_function("GetCVarDefault", |lua, name: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        match model.cvars.get(&name.to_ascii_lowercase()) {
+            Some(slot) => Ok(Value::from(slot.default.clone())),
+            None => {
+                warn_unknown(&mut model, &name);
+                Ok(Value::Nil)
             }
-        })?,
-    )?;
+        }
+    })?;
     // ── The Video options Multisampling dropdown ──────────────────────────────────────────────
     // Three bindings over one list, exactly as `OptionsFrame.lua` consumes them: `_OnLoad` seeds
     // the selection with `GetCurrentMultisampleFormat()`, `_Initialize` walks
@@ -524,105 +420,98 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (l.240) calls `SetMultisampleFormat(UIDropDownMenu_GetSelectedID(...))`. Identities and
     // behaviour from wow-re `system/console/scratch/gxmultisample-default.md` §7 — registration
     // table `0x83de68`, records `0x83e2c0`/`0x83e2c8`/`0x83e2d0`.
-    lua.globals().set(
-        "GetMultisampleFormats",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            // Flat, three per entry — `0x48c360` "pushes all three fields of every entry", and the
-            // Lua walks `for i=1, arg.n, 3`. A device with nothing to offer returns nothing, and
-            // the loop runs zero times: an empty dropdown, not a fabricated one.
-            let mut out = mlua::MultiValue::new();
-            for f in &model.multisample_formats {
-                out.push_back(Value::Number(f.color_bits as f64));
-                out.push_back(Value::Number(f.depth_bits as f64));
-                out.push_back(Value::Number(f.samples as f64));
-            }
-            Ok(out)
-        })?,
-    )?;
-    lua.globals().set(
-        "GetCurrentMultisampleFormat",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let cvar = |n: &str| model.cvars.get(n).and_then(|s| s.value.parse::<u32>().ok());
-            let (Some(color), Some(depth), Some(samples)) = (
-                cvar("gxcolorbits"),
-                cvar("gxdepthbits"),
-                cvar("gxmultisample"),
-            ) else {
-                return Ok(1.0f64);
-            };
-            // **1-based, and 1.0 on no match** — `0x48c580` "returns the 1-based index of the
-            // matching triple, or 1.0 on no match". Not 0 and not nil: `_OnLoad` feeds this
-            // straight to `UIDropDownMenu_SetSelectedID`, so a miss has to name a real row.
-            let idx = model
-                .multisample_formats
-                .iter()
-                .position(|f| {
-                    f.color_bits == color && f.depth_bits == depth && f.samples == samples
-                })
-                .map_or(1.0, |i| (i + 1) as f64);
-            Ok(idx)
-        })?,
-    )?;
-    lua.globals().set(
-        "SetMultisampleFormat",
-        lua.create_function(|lua, id: Option<f64>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // 1-based from `UIDropDownMenu_GetSelectedID`; anything off the end is ignored rather
-            // than clamped, because a clamp would silently apply a format the player did not pick.
-            let Some(f) = id
-                .filter(|v| *v >= 1.0)
-                .and_then(|v| model.multisample_formats.get(v as usize - 1).copied())
-            else {
-                return Ok(());
-            };
-            // All three, from the chosen entry — `0x48c640` "writes those three CVars from the
-            // chosen entry". Through `set_from_engine` so each ride the host's change queue and
-            // the config file is marked dirty, the same route a Lua `SetCVar` takes.
-            set_from_engine(&mut model, "gxColorBits", f.color_bits.to_string());
-            set_from_engine(&mut model, "gxDepthBits", f.depth_bits.to_string());
-            set_from_engine(&mut model, "gxMultisample", f.samples.to_string());
-            // The reference then sets `gxRestart` (`0x842978`, `0x63ce00`). We deliberately do not
-            // register that CVar: `gxMultisample` is latched here too (decision 1629 — the camera
-            // reads its sample count once, at spawn), so "applies at next launch" is already the
-            // behaviour and a second flag saying so would be a flag nothing reads.
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("GetMultisampleFormats", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        // Flat, three per entry — `0x48c360` "pushes all three fields of every entry", and the
+        // Lua walks `for i=1, arg.n, 3`. A device with nothing to offer returns nothing, and
+        // the loop runs zero times: an empty dropdown, not a fabricated one.
+        let mut out = MultiValue::new();
+        for f in &model.multisample_formats {
+            out.push(Value::Number(f.color_bits as f64));
+            out.push(Value::Number(f.depth_bits as f64));
+            out.push(Value::Number(f.samples as f64));
+        }
+        Ok(out)
+    })?;
+    lua.register_function("GetCurrentMultisampleFormat", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let cvar = |n: &str| model.cvars.get(n).and_then(|s| s.value.parse::<u32>().ok());
+        let (Some(color), Some(depth), Some(samples)) = (
+            cvar("gxcolorbits"),
+            cvar("gxdepthbits"),
+            cvar("gxmultisample"),
+        ) else {
+            return Ok(1.0f64);
+        };
+        // **1-based, and 1.0 on no match** — `0x48c580` "returns the 1-based index of the
+        // matching triple, or 1.0 on no match". Not 0 and not nil: `_OnLoad` feeds this
+        // straight to `UIDropDownMenu_SetSelectedID`, so a miss has to name a real row.
+        let idx = model
+            .multisample_formats
+            .iter()
+            .position(|f| f.color_bits == color && f.depth_bits == depth && f.samples == samples)
+            .map_or(1.0, |i| (i + 1) as f64);
+        Ok(idx)
+    })?;
+    lua.register_function("SetMultisampleFormat", |lua, id: Option<f64>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // 1-based from `UIDropDownMenu_GetSelectedID`; anything off the end is ignored rather
+        // than clamped, because a clamp would silently apply a format the player did not pick.
+        let Some(f) = id
+            .filter(|v| *v >= 1.0)
+            .and_then(|v| model.multisample_formats.get(v as usize - 1).copied())
+        else {
+            return Ok(());
+        };
+        // All three, from the chosen entry — `0x48c640` "writes those three CVars from the
+        // chosen entry". Through `set_from_engine` so each ride the host's change queue and
+        // the config file is marked dirty, the same route a Lua `SetCVar` takes.
+        set_from_engine(&mut model, "gxColorBits", f.color_bits.to_string());
+        set_from_engine(&mut model, "gxDepthBits", f.depth_bits.to_string());
+        set_from_engine(&mut model, "gxMultisample", f.samples.to_string());
+        // The reference then sets `gxRestart` (`0x842978`, `0x63ce00`). We deliberately do not
+        // register that CVar: `gxMultisample` is latched here too (decision 1629 — the camera
+        // reads its sample count once, at spawn), so "applies at next launch" is already the
+        // behaviour and a second flag saying so would be a flag nothing reads.
+        Ok(())
+    })?;
 
     install_video_verbs(lua)?;
 
-    lua.globals().set(
-        "SetCVar",
-        lua.create_function(|lua, args: mlua::MultiValue| {
-            let mut it = args.iter();
-            let (Some(Value::String(name)), Some(v)) = (it.next(), it.next()) else {
-                return Err(mlua::Error::runtime("Usage: SetCVar(\"name\", value)"));
-            };
-            let name = name.to_str()?.to_owned();
-            let Some(value) = value_to_string(v) else {
-                return Err(mlua::Error::runtime("Usage: SetCVar(\"name\", value)"));
-            };
-            // The THIRD argument is the `CVAR_UPDATE` token, and it is the whole mechanism behind
-            // that event (decision 1140). 1.12's own callers are its two options panels —
-            // `SetCVar(value.cvar, value.value, index)` (UIOptionsFrame.lua l.335/343/345,
-            // OptionsFrame.lua l.192) — where `index` is the CheckButtons table's KEY, an
-            // uppercase display name like "STATUS_BAR_TEXT". The engine passes it straight through
-            // as arg1, which is why `UIOptionsFrame_OnEvent` can look the row up with
-            // `UIOptionsFrameCheckButtons[arg1]`, and why `TextStatusBar_OnEvent` compares against
-            // "STATUS_BAR_TEXT" rather than "statusBarText".
-            //
-            // A caller that omits it fires nothing — the event is opt-in per write, not a
-            // property of the variable. (Which means `ReputationFrame.xml`'s
-            // `arg1 == "statusBarText"` arm is dead code in shipped 1.12: nothing ever passes the
-            // CVar's own name as the token. Transcribed as found, not repaired.)
-            let token = it.next().and_then(value_to_string);
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            write_cvar(&mut model, &name, value, token);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetCVar", |lua, args: MultiValue| {
+        let mut it = args.iter();
+        let (Some(Value::String(name)), Some(v)) = (it.next(), it.next()) else {
+            return Err(benilla_lua::Error::runtime(
+                "Usage: SetCVar(\"name\", value)",
+            ));
+        };
+        let name = name
+            .as_str()
+            .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?
+            .to_owned();
+        let Some(value) = value_to_string(v) else {
+            return Err(benilla_lua::Error::runtime(
+                "Usage: SetCVar(\"name\", value)",
+            ));
+        };
+        // The THIRD argument is the `CVAR_UPDATE` token, and it is the whole mechanism behind
+        // that event (decision 1140). 1.12's own callers are its two options panels —
+        // `SetCVar(value.cvar, value.value, index)` (UIOptionsFrame.lua l.335/343/345,
+        // OptionsFrame.lua l.192) — where `index` is the CheckButtons table's KEY, an
+        // uppercase display name like "STATUS_BAR_TEXT". The engine passes it straight through
+        // as arg1, which is why `UIOptionsFrame_OnEvent` can look the row up with
+        // `UIOptionsFrameCheckButtons[arg1]`, and why `TextStatusBar_OnEvent` compares against
+        // "STATUS_BAR_TEXT" rather than "statusBarText".
+        //
+        // A caller that omits it fires nothing — the event is opt-in per write, not a
+        // property of the variable. (Which means `ReputationFrame.xml`'s
+        // `arg1 == "statusBarText"` arm is dead code in shipped 1.12: nothing ever passes the
+        // CVar's own name as the token. Transcribed as found, not repaired.)
+        let token = it.next().and_then(value_to_string);
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        write_cvar(&mut model, &name, value, token);
+        Ok(())
+    })?;
 
     install_nameplate_verbs(lua)?;
     install_world_detail_verbs(lua)
@@ -705,24 +594,21 @@ pub const VIDEO_DEFAULT_CVARS: &[&str] = &[
 /// DO exist at `0x488f00`/`0x488f30` with a capital F while `value.func` is `"farclip"`: the stock
 /// client takes the CVar path only because `getglobal` is case-sensitive. Pinned by
 /// `benilla_app`'s `the_video_windows_ten_composed_names_stay_nil`.
-fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
+fn install_video_verbs(lua: &mut Vm) -> benilla_lua::Result<()> {
     // ── GetScreenResolutions ─────────────────────────────────────────────────────────────────
     // A vararg of `"WxH"` strings. The format is pinned by two independent consumers, neither of
     // which raises on a wrong one: `OptionsFrame.lua:281-284` splits on the `x` and evaluates
     // `width/height > 4/3` to decide the WIDESCREEN tag, and `CT_Viewport.lua:107` re-parses with
     // `string.find(currRes, "(%d+)x(%d+)")` to size its viewport. A space, an `X`, or a trailing
     // suffix silently gives one of them the wrong answer.
-    lua.globals().set(
-        "GetScreenResolutions",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = mlua::MultiValue::new();
-            for r in &model.screen_resolutions {
-                out.push_back(Value::String(lua.create_string(r.to_string())?));
-            }
-            Ok(out)
-        })?,
-    )?;
+    lua.register_function("GetScreenResolutions", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = MultiValue::new();
+        for r in &model.screen_resolutions {
+            out.push(Value::from(r.to_string()));
+        }
+        Ok(out)
+    })?;
     // ── GetCurrentResolution ─────────────────────────────────────────────────────────────────
     // The **1-based index** into that list — `0x48bfa2 inc eax` over the same array, which is the
     // only reading `arg[GetCurrentResolution()]` (`CT_Viewport.lua:105`) can have.
@@ -743,13 +629,10 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
     // and reporting a windowed size while filling a 4K panel would be a wrong answer that
     // succeeds. A pick made while fullscreen still lands in `gxResolution` and takes effect on the
     // way out, which is the honest reading of a windowed-size setting.
-    lua.globals().set(
-        "GetCurrentResolution",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.current_resolution.map_or(1.0, |i| (i + 1) as f64))
-        })?,
-    )?;
+    lua.register_function("GetCurrentResolution", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.current_resolution.map_or(1.0, |i| (i + 1) as f64))
+    })?;
     // ── SetScreenResolution ──────────────────────────────────────────────────────────────────
     // 1-based, from `UIDropDownMenu_GetSelectedID(OptionsFrameResolutionDropDown)`
     // (`OptionsFrame.lua:239`). Three things about the argument, all carved at `0x48bfd0`:
@@ -775,34 +658,31 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
     // change twice. Ours does the same, through the same counted request the host drains — benilla
     // applies the size live, so the restart is a re-assertion rather than a device rebuild, but the
     // CALL is the reference's and belongs here rather than only at the Okay button.
-    lua.globals().set(
-        "SetScreenResolution",
-        lua.create_function(|lua, id: Option<f64>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if model.screen_resolutions.is_empty() {
-                return Ok(());
-            }
-            // nil / non-numeric → 0 → entry 1. Truncate, then clamp both ends.
-            let idx = id.map_or(0.0, f64::trunc);
-            let last = model.screen_resolutions.len() - 1;
-            let r = model.screen_resolutions[if idx < 1.0 {
-                0
-            } else {
-                (idx as usize - 1).min(last)
-            }];
-            let want = r.to_string();
-            if model
-                .cvars
-                .get("gxresolution")
-                .is_some_and(|slot| slot.value.eq_ignore_ascii_case(&want))
-            {
-                return Ok(());
-            }
-            set_from_engine(&mut model, "gxResolution", want);
-            model.restart_gx_asks += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetScreenResolution", |lua, id: Option<f64>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if model.screen_resolutions.is_empty() {
+            return Ok(());
+        }
+        // nil / non-numeric → 0 → entry 1. Truncate, then clamp both ends.
+        let idx = id.map_or(0.0, f64::trunc);
+        let last = model.screen_resolutions.len() - 1;
+        let r = model.screen_resolutions[if idx < 1.0 {
+            0
+        } else {
+            (idx as usize - 1).min(last)
+        }];
+        let want = r.to_string();
+        if model
+            .cvars
+            .get("gxresolution")
+            .is_some_and(|slot| slot.value.eq_ignore_ascii_case(&want))
+        {
+            return Ok(());
+        }
+        set_from_engine(&mut model, "gxResolution", want);
+        model.restart_gx_asks += 1;
+        Ok(())
+    })?;
     // ── GetRefreshRates ─────────────────────────────────────────────────────────────────────
     // **Zero return values, and that IS the reference's "nothing to offer" answer** —
     // `0x48c136 xor eax,eax; ret`. It was written here as a single `0` first, from
@@ -822,10 +702,7 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
     // **The optional index argument is tolerated and ignored**, which is the reference's own shape
     // (`0x48c0ec xor esi,esi`): with no argument it asks for the rates of the FIRST — smallest —
     // resolution in the list, never the selected one, and the stock caller passes nothing.
-    lua.globals().set(
-        "GetRefreshRates",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
-    )?;
+    lua.register_function("GetRefreshRates", |_, _: MultiValue| Ok(MultiValue::new()))?;
     // ── GetVideoCaps ─────────────────────────────────────────────────────────────────────────
     // Seven values in `OptionsFrame.lua:59`'s own order, and **THREE push shapes, not two**
     // (`0x48db40`, each polarity read through to `lua_pushnil 0x6f37f0`):
@@ -849,32 +726,29 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
     // answers the number **0**: check button 13 is hidden and button 6 re-seated
     // (`OptionsFrame.lua:168-175`), and the two dead clauses stay dead, which is correct.
     // Answering nil instead would *revive* them — a branch the reference cannot reach.
-    lua.globals().set(
-        "GetVideoCaps",
-        lua.create_function(|lua, ()| {
-            let caps = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .video_caps;
-            let flag = |b: bool| if b { Value::Number(1.0) } else { Value::Nil };
-            let mut out = mlua::MultiValue::new();
-            out.push_back(flag(caps.anisotropic));
-            out.push_back(flag(caps.pixel_shaders));
-            out.push_back(flag(caps.vertex_shaders));
-            out.push_back(flag(caps.trilinear));
-            // Slot 5: unconditional number, per the straight-line `fild` above.
-            out.push_back(Value::Number(if caps.triple_buffering { 1.0 } else { 0.0 }));
-            // Slot 6: nil iff 0. The reference is effectively never nil here — its base ctor seeds
-            // `caps+0xac = 1` — so a consumer gates on slot 1 or on `< 2`, never on nil.
-            out.push_back(if caps.max_anisotropy == 0 {
-                Value::Nil
-            } else {
-                Value::Number(caps.max_anisotropy as f64)
-            });
-            out.push_back(flag(caps.hardware_cursor));
-            Ok(out)
-        })?,
-    )?;
+    lua.register_function("GetVideoCaps", |lua, ()| {
+        let caps = lua
+            .app_data_ref::<Model>()
+            .expect("model app_data")
+            .video_caps;
+        let flag = |b: bool| if b { Value::Number(1.0) } else { Value::Nil };
+        let mut out = MultiValue::new();
+        out.push(flag(caps.anisotropic));
+        out.push(flag(caps.pixel_shaders));
+        out.push(flag(caps.vertex_shaders));
+        out.push(flag(caps.trilinear));
+        // Slot 5: unconditional number, per the straight-line `fild` above.
+        out.push(Value::Number(if caps.triple_buffering { 1.0 } else { 0.0 }));
+        // Slot 6: nil iff 0. The reference is effectively never nil here — its base ctor seeds
+        // `caps+0xac = 1` — so a consumer gates on slot 1 or on `< 2`, never on nil.
+        out.push(if caps.max_anisotropy == 0 {
+            Value::Nil
+        } else {
+            Value::Number(caps.max_anisotropy as f64)
+        });
+        out.push(flag(caps.hardware_cursor));
+        Ok(out)
+    })?;
     // ── RestartGx ────────────────────────────────────────────────────────────────────────────
     // "Apply the staged video settings now." `0x48dab0` is three instructions — it hands the line
     // `"gxRestart"` to the CONSOLE COMMAND EXECUTOR `0x63ce00`, which looks the action up and calls
@@ -897,15 +771,12 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
     // `gxMultisample` is the one setting no restart can deliver here, and none can in the reference
     // either: 1629 latches the sample count at camera spawn, which is what `SetMultisampleFormat`
     // above already documents as "applies at next launch".
-    lua.globals().set(
-        "RestartGx",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .restart_gx_asks += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RestartGx", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .restart_gx_asks += 1;
+        Ok(())
+    })?;
     // ── RestoreVideoDefaults ─────────────────────────────────────────────────────────────────
     // **The Defaults button's whole effect, and the FrameXML proves it.** `OptionsFrame_SetDefaults`
     // sets every check button and slider from `GetCVarDefault` — and then the button's own
@@ -923,26 +794,23 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
     // `gxRestart` handler directly and synchronously, between the twelve gx writes and the sixteen
     // quality ones, and it destroys and recreates the device *and the OS window*. Ours issues the
     // same counted request; here it is a re-assertion rather than a rebuild, but the call belongs.
-    lua.globals().set(
-        "RestoreVideoDefaults",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            for name in VIDEO_DEFAULT_CVARS {
-                let Some(default) = model
-                    .cvars
-                    .get(&name.to_ascii_lowercase())
-                    .map(|slot| slot.default.clone())
-                else {
-                    // A bare VM with no host behind it registers none of these; there is nothing to
-                    // restore and nothing to warn about, exactly as `set_from_engine` reasons.
-                    continue;
-                };
-                set_from_engine(&mut model, name, default);
-            }
-            model.restart_gx_asks += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RestoreVideoDefaults", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        for name in VIDEO_DEFAULT_CVARS {
+            let Some(default) = model
+                .cvars
+                .get(&name.to_ascii_lowercase())
+                .map(|slot| slot.default.clone())
+            else {
+                // A bare VM with no host behind it registers none of these; there is nothing to
+                // restore and nothing to warn about, exactly as `set_from_engine` reasons.
+                continue;
+            };
+            set_from_engine(&mut model, name, default);
+        }
+        model.restart_gx_asks += 1;
+        Ok(())
+    })?;
     // ── GetGamma / SetGamma ──────────────────────────────────────────────────────────────────
     // **The display-brightness pair** (2182) — `GetGamma 0x4891c0` and `SetGamma 0x4891f0`, carved
     // end to end in wow-re `ui/scratch/video-options-verbs.md` §3.
@@ -961,10 +829,10 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
     // out-of-`[0,1]` with `al = 0`. `SetGamma(5)` is accepted and writes `gamma = "-4.000000"`.
     // benilla's clamp is at the consumer (`ui_gamma::GAMMA_RANGE`), which is this crate's standing
     // posture and leaves the store's truth alone.
-    lua.globals().set(
+    lua.register_function(
         "GetGamma",
         // No argument is read (the getter never calls `lua_gettop`), and one number comes back.
-        lua.create_function(|lua, _: mlua::MultiValue| {
+        |lua, _: MultiValue| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let gamma = model
                 .cvars
@@ -976,36 +844,31 @@ fn install_video_verbs(lua: &Lua) -> mlua::Result<()> {
                 // so `[eax+0x24]` is always readable.
                 .unwrap_or(1.0);
             Ok(1.0 - gamma)
-        })?,
+        },
     )?;
-    lua.globals().set(
-        "SetGamma",
-        lua.create_function(|lua, value: Value| {
-            // `lua_isnumber` (`0x4891fe`): a number, or a string Lua can convert to one. Anything
-            // else raises through `0x6f4940`, which does not return — the trailing `xor eax,eax`
-            // at `0x489215` is dead code.
-            let v = match &value {
-                Value::Integer(i) => *i as f64,
-                Value::Number(n) => *n,
-                Value::String(s) => {
-                    match s.to_str().ok().and_then(|s| s.trim().parse::<f64>().ok()) {
-                        Some(n) => n,
-                        None => return Err(mlua::Error::runtime(USAGE_SET_GAMMA)),
-                    }
-                }
-                _ => return Err(mlua::Error::runtime(USAGE_SET_GAMMA)),
-            };
-            // `SStrPrintf(buf, 0x10, "%f", 1.0 - v)` — six decimals into a SIXTEEN-byte buffer, so
-            // a long value is truncated to 15 characters rather than rejected. Reproduced because
-            // the truncated string is what the CVar then holds and what `GetCVar("gamma")` answers.
-            let mut written = format!("{:.6}", 1.0 - v);
-            written.truncate(15);
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            write_cvar(&mut model, CVAR_GAMMA, written, None);
-            // Zero return values, not nil (`eax = 0` at every `ret`).
-            Ok(mlua::MultiValue::new())
-        })?,
-    )?;
+    lua.register_function("SetGamma", |lua, value: Value| {
+        // `lua_isnumber` (`0x4891fe`): a number, or a string Lua can convert to one. Anything
+        // else raises through `0x6f4940`, which does not return — the trailing `xor eax,eax`
+        // at `0x489215` is dead code.
+        let v = match &value {
+            Value::Integer(i) => *i as f64,
+            Value::Number(n) => *n,
+            Value::String(s) => match s.as_str().ok().and_then(|s| s.trim().parse::<f64>().ok()) {
+                Some(n) => n,
+                None => return Err(benilla_lua::Error::runtime(USAGE_SET_GAMMA)),
+            },
+            _ => return Err(benilla_lua::Error::runtime(USAGE_SET_GAMMA)),
+        };
+        // `SStrPrintf(buf, 0x10, "%f", 1.0 - v)` — six decimals into a SIXTEEN-byte buffer, so
+        // a long value is truncated to 15 characters rather than rejected. Reproduced because
+        // the truncated string is what the CVar then holds and what `GetCVar("gamma")` answers.
+        let mut written = format!("{:.6}", 1.0 - v);
+        written.truncate(15);
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        write_cvar(&mut model, CVAR_GAMMA, written, None);
+        // Zero return values, not nil (`eax = 0` at every `ret`).
+        Ok(MultiValue::new())
+    })?;
     Ok(())
 }
 
@@ -1085,58 +948,52 @@ pub const WORLD_DETAIL_STOPS: [u32; 3] = [16, 32, 48];
 /// which there leaves the getter on the stale stop and here moves it; pfUI's `hdgraphic` is the
 /// only known caller and its own replacement short-circuits above 48, so it never reaches the
 /// difference.
-fn install_world_detail_verbs(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-    g.set(
-        "SetWorldDetail",
-        lua.create_function(|lua, value: Value| {
-            // `lua_isnumber`: a number, or a string Lua can convert to one. Anything else is the
-            // usage error — NOT a silent no-op.
-            let n = match &value {
-                Value::Integer(i) => *i as f64,
-                Value::Number(n) => *n,
-                Value::String(s) => {
-                    match s.to_str().ok().and_then(|s| s.trim().parse::<f64>().ok()) {
-                        Some(n) => n,
-                        None => return Err(mlua::Error::runtime(USAGE_SET_WORLD_DETAIL)),
-                    }
-                }
-                _ => return Err(mlua::Error::runtime(USAGE_SET_WORLD_DETAIL)),
-            };
-            // Truncate toward zero (`0x40a2b0`'s chop), then the reference's own two bounds. NaN
-            // has no truncation — the reference's `fistp` yields the integer indefinite, which is
-            // negative and raises, so raising here is the same answer by the same door.
-            if n.is_nan() {
-                return Err(mlua::Error::runtime(RANGE_SET_WORLD_DETAIL));
-            }
-            let stop = n.trunc();
-            if !(0.0..3.0).contains(&stop) {
-                return Err(mlua::Error::runtime(RANGE_SET_WORLD_DETAIL));
-            }
-            let stop = stop as usize;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // TWO CVars per stop, as `0x488dd0` writes two: there it is `frillDensity` + the dead
-            // `smallCull`; here it is `frillDensity` + the stop the panel keeps. Both land on one
-            // clutter knob in the host, so applying both is idempotent — and writing only one
-            // would leave the other stale for a `GetWorldDetail` in the same Lua tick, since the
-            // host does not drain the change queue until the end of the frame.
-            write_cvar(
-                &mut model,
-                CVAR_FRILL_DENSITY,
-                WORLD_DETAIL_STOPS[stop].to_string(),
-                None,
-            );
-            write_cvar(&mut model, CVAR_WORLD_DETAIL, stop.to_string(), None);
-            // Zero return values, not nil (`eax = 0` at every `ret`).
-            Ok(mlua::MultiValue::new())
-        })?,
-    )?;
-    g.set(
+fn install_world_detail_verbs(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("SetWorldDetail", |lua, value: Value| {
+        // `lua_isnumber`: a number, or a string Lua can convert to one. Anything else is the
+        // usage error — NOT a silent no-op.
+        let n = match &value {
+            Value::Integer(i) => *i as f64,
+            Value::Number(n) => *n,
+            Value::String(s) => match s.as_str().ok().and_then(|s| s.trim().parse::<f64>().ok()) {
+                Some(n) => n,
+                None => return Err(benilla_lua::Error::runtime(USAGE_SET_WORLD_DETAIL)),
+            },
+            _ => return Err(benilla_lua::Error::runtime(USAGE_SET_WORLD_DETAIL)),
+        };
+        // Truncate toward zero (`0x40a2b0`'s chop), then the reference's own two bounds. NaN
+        // has no truncation — the reference's `fistp` yields the integer indefinite, which is
+        // negative and raises, so raising here is the same answer by the same door.
+        if n.is_nan() {
+            return Err(benilla_lua::Error::runtime(RANGE_SET_WORLD_DETAIL));
+        }
+        let stop = n.trunc();
+        if !(0.0..3.0).contains(&stop) {
+            return Err(benilla_lua::Error::runtime(RANGE_SET_WORLD_DETAIL));
+        }
+        let stop = stop as usize;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // TWO CVars per stop, as `0x488dd0` writes two: there it is `frillDensity` + the dead
+        // `smallCull`; here it is `frillDensity` + the stop the panel keeps. Both land on one
+        // clutter knob in the host, so applying both is idempotent — and writing only one
+        // would leave the other stale for a `GetWorldDetail` in the same Lua tick, since the
+        // host does not drain the change queue until the end of the frame.
+        write_cvar(
+            &mut model,
+            CVAR_FRILL_DENSITY,
+            WORLD_DETAIL_STOPS[stop].to_string(),
+            None,
+        );
+        write_cvar(&mut model, CVAR_WORLD_DETAIL, stop.to_string(), None);
+        // Zero return values, not nil (`eax = 0` at every `ret`).
+        Ok(MultiValue::new())
+    })?;
+    lua.register_function(
         "GetWorldDetail",
         // `MultiValue` in: the reference reads argument 1 for the SETTER only; the getter never
         // calls `lua_gettop`, so an argument is accepted and ignored — and pfUI's replacement is
         // declared `function _G.GetWorldDetail(arg)`, so it is passed one in practice.
-        lua.create_function(|lua, _: mlua::MultiValue| {
+        |lua, _: MultiValue| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let stop = model
                 .cvars
@@ -1148,7 +1005,7 @@ fn install_world_detail_verbs(lua: &Lua) -> mlua::Result<()> {
                 // number no caller has a branch for.
                 .map_or(0, |v| v.round().clamp(0.0, 2.0) as i64);
             Ok(stop)
-        })?,
+        },
     )?;
     Ok(())
 }
@@ -1187,20 +1044,19 @@ const RANGE_SET_WORLD_DETAIL: &str = "value must be in the range 0, 2";
 /// replay*, not the engine's state model: a benilla player's plates survive a zone-in because the
 /// CVar store outlives it. That is a divergence in favour of the player, recorded here rather than
 /// mistaken for fidelity.
-fn install_nameplate_verbs(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
+fn install_nameplate_verbs(lua: &mut Vm) -> benilla_lua::Result<()> {
     for (name, cvar, on) in [
         ("ShowNameplates", CVAR_NAMEPLATE_ENEMIES, true),
         ("HideNameplates", CVAR_NAMEPLATE_ENEMIES, false),
         ("ShowFriendNameplates", CVAR_NAMEPLATE_FRIENDS, true),
         ("HideFriendNameplates", CVAR_NAMEPLATE_FRIENDS, false),
     ] {
-        g.set(
+        lua.register_function(
             name,
             // `MultiValue` and not `()`: mlua would otherwise reject a call that passes anything,
             // and the reference accepts and ignores every argument. Returning `MultiValue::new()`
             // is the zero-value return, which is NOT the same as pushing nil.
-            lua.create_function(move |lua, _: mlua::MultiValue| {
+            move |lua, _: MultiValue| {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                 let key = cvar.to_ascii_lowercase();
                 if let Some(slot) = model.cvars.get_mut(&key) {
@@ -1211,8 +1067,8 @@ fn install_nameplate_verbs(lua: &Lua) -> mlua::Result<()> {
                         model.cvar_changes.push((reg_name, value.to_string()));
                     }
                 }
-                Ok(mlua::MultiValue::new())
-            })?,
+                Ok(MultiValue::new())
+            },
         )?;
     }
     Ok(())
@@ -1224,7 +1080,7 @@ mod tests {
     use crate::script::UiScript;
 
     fn script_with_volume() -> UiScript {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.register_cvars([("MusicVolume", "0.4"), ("MasterVolume", "1.0")]);
         s
     }
@@ -1523,7 +1379,7 @@ mod tests {
         ]);
 
         // Flat triples, in order — the shape `for i=1, arg.n, 3` walks.
-        let flat: Vec<f64> = s.eval(r#"return { GetMultisampleFormats() }"#).unwrap();
+        let flat: Vec<f64> = s.eval_sequence(r#"return { GetMultisampleFormats() }"#).unwrap();
         assert_eq!(
             flat,
             vec![32.0, 32.0, 1.0, 32.0, 32.0, 2.0, 32.0, 32.0, 4.0],

@@ -215,7 +215,7 @@ const NAME_PLACEHOLDER: &str = "...";
 /// entry still exists, which is what `GetNumQuestLeaderBoards` counts.
 fn leaderboard_text(
     // The VM's own `GlobalStrings.lua` (decision 2045).
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
     key: &str,
     name: &str,
     cur: u32,
@@ -242,7 +242,7 @@ fn creature_line(
     obj: &QuestObjective,
     counter: u8,
     creature_name: Option<&str>,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<QuestLogObjectiveView> {
     if obj.creature_or_go == 0 {
         return None;
@@ -289,7 +289,7 @@ fn item_line(
     src_item_id: u32,
     item_name: Option<&str>,
     bag_count: u32,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<QuestLogObjectiveView> {
     if obj.item_id == 0 || obj.item_id == src_item_id {
         return None;
@@ -380,7 +380,7 @@ fn build_objectives(
     names: &NameCache,
     commands: &NetCommands,
     // The VM's own `GlobalStrings.lua`, for the leaderboard's three format keys.
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Vec<QuestLogObjectiveView> {
     let mut objectives = Vec::with_capacity(template.objectives.len());
     // Pass 2 — creature/GameObject. The counter index is this array index (1156: the reference
@@ -581,7 +581,7 @@ fn feed_quest_log(
     script: Option<NonSendMut<UiScript>>,
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
     mut quest_log: ResMut<QuestLog>,
-    names: Res<NameCache>,
+    names: (Res<NameCache>, crate::npc_text::MacroNames),
     items: Res<Items>,
     icons: Option<Res<ItemDisplays>>,
     commands: Res<NetCommands>,
@@ -595,6 +595,7 @@ fn feed_quest_log(
     mut last: Local<crate::ui_script::VmMemo<QuestLogState>>,
     mut prior_quest_ids: Local<crate::ui_script::VmMemo<Option<HashSet<u32>>>>,
 ) {
+    let (names, labels) = names;
     let Some(mut script) = script else {
         return;
     };
@@ -637,13 +638,8 @@ fn feed_quest_log(
 
     // The player's own `GlobalStrings.lua`, for the leaderboard's three format keys (2045). Taken
     // here, above the build, because everything between this and the push below reads the VM only.
-    let get = |key: &str| {
-        script
-            .lua()
-            .globals()
-            .get::<String>(key)
-            .ok()
-            .filter(|t| !t.is_empty())
+    let mut get = |key: &str| {
+        benilla_ui::strings::global_context(script.vm_mut(), key).filter(|t| !t.is_empty())
     };
 
     // ── The IN-FLIGHT SKIP — the cached rows, and only those ────────────────────────────────────
@@ -724,7 +720,7 @@ fn feed_quest_log(
 
     // Above the row loop because every row's detail substitutes through it now (the chat macros
     // in a quest's description/objectives paragraph), not just the selection's.
-    let player = crate::npc_text::player_identity(&self_q, &names, &commands);
+    let player = crate::npc_text::player_identity(&self_q, &names, &commands, &labels);
     let macros = crate::npc_text::MacroContext {
         subject: player.as_ref(),
         states: &states,
@@ -775,7 +771,15 @@ fn feed_quest_log(
                         // button we wrongly enabled would push, and the party would get a detail panel
                         // for a quest the server then refuses (decision 1733).
                         t.flags & quest_flags::SHARABLE != 0,
-                        build_objectives(t, &r.log_slot, &store.0, &items, &names, &commands, &get),
+                        build_objectives(
+                            t,
+                            &r.log_slot,
+                            &store.0,
+                            &items,
+                            &names,
+                            &commands,
+                            &mut get,
+                        ),
                         // Every row, not just the selection (decision 2247) — the detail bindings
                         // resolve the live selection against these at call time, the way the
                         // reference peeks its quest cache inside the call.
@@ -880,10 +884,10 @@ fn feed_quest_log(
                 // Both are catalog rows, so the surface and the sound come from there rather than
                 // from a hand-picked `fire_event` here (decisions 1770/1815).
                 let line = if quest.title.is_empty() {
-                    crate::ui_action::keyed_line(&script, "ERR_QUEST_UNKNOWN_COMPLETE")
+                    crate::ui_action::keyed_line(&mut script, "ERR_QUEST_UNKNOWN_COMPLETE")
                 } else {
                     crate::ui_action::keyed_line_s(
-                        &script,
+                        &mut script,
                         "ERR_QUEST_OBJECTIVE_COMPLETE_S",
                         &[&quest.title],
                     )
@@ -1003,7 +1007,7 @@ fn load_quest_header_names(
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_quest_header_names(&mut chain)
+        benilla_formats::load_quest_header_names(&mut *chain)
     };
     match loaded {
         Ok(names) => commands.insert_resource(QuestHeaderNamesRes(names)),
@@ -1024,7 +1028,7 @@ fn load_quest_tag_names(mut commands: Commands, assets: Option<Res<benilla_asset
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_quest_tag_names(&mut chain)
+        benilla_formats::load_quest_tag_names(&mut *chain)
     };
     match loaded {
         Ok(names) => commands.insert_resource(QuestTagNamesRes(names)),
@@ -1286,7 +1290,7 @@ mod tests {
     #[test]
     fn creature_objective_with_resolved_name() {
         let o = obj(100, 10, 0, 0, "");
-        let line = creature_line(&o, 3, Some("Kobold Vermin"), &probe_strings).unwrap();
+        let line = creature_line(&o, 3, Some("Kobold Vermin"), &mut probe_strings).unwrap();
         assert_eq!(line.text, "<KILLED Kobold Vermin 3 of 10>");
         assert_eq!(line.kind, "monster");
         assert!(!line.finished);
@@ -1295,7 +1299,7 @@ mod tests {
     #[test]
     fn creature_objective_in_flight_shows_a_placeholder() {
         let o = obj(100, 10, 0, 0, "");
-        let line = creature_line(&o, 0, None, &probe_strings).unwrap();
+        let line = creature_line(&o, 0, None, &mut probe_strings).unwrap();
         assert_eq!(line.text, "<KILLED ... 0 of 10>");
     }
 
@@ -1307,7 +1311,7 @@ mod tests {
     fn go_objective_falls_back_without_a_name_cache() {
         let go_id = ((-57i32) as u32) | 0x8000_0000;
         let o = obj(go_id, 1, 0, 0, "");
-        let line = creature_line(&o, 1, None, &probe_strings).unwrap();
+        let line = creature_line(&o, 1, None, &mut probe_strings).unwrap();
         assert_eq!(line.text, "<FOUND ... 1 of 1>");
         assert_eq!(line.kind, "object");
         assert!(line.finished); // cur (1) >= req (1)
@@ -1317,7 +1321,7 @@ mod tests {
     fn go_objective_prefers_its_custom_text_over_the_fallback() {
         let go_id = ((-57i32) as u32) | 0x8000_0000;
         let o = obj(go_id, 4, 0, 0, "Destroy the barricade");
-        let line = creature_line(&o, 1, None, &probe_strings).unwrap();
+        let line = creature_line(&o, 1, None, &mut probe_strings).unwrap();
         assert_eq!(line.text, "<FOUND Destroy the barricade 1 of 4>");
         assert_eq!(line.kind, "object");
     }
@@ -1326,7 +1330,7 @@ mod tests {
     fn item_objective_counts_bags_and_clamps_to_required() {
         let o = obj(0, 0, 2000, 5, "");
         // 8 in the bags, but required is only 5 — the line clamps, doesn't overshoot.
-        let line = item_line(&o, 0, Some("Kobold Ear"), 8, &probe_strings).unwrap();
+        let line = item_line(&o, 0, Some("Kobold Ear"), 8, &mut probe_strings).unwrap();
         assert_eq!(line.text, "<NEEDED Kobold Ear 5 of 5>");
         assert_eq!(line.kind, "item");
         assert!(line.finished);
@@ -1335,7 +1339,7 @@ mod tests {
     #[test]
     fn item_objective_in_flight_shows_a_placeholder() {
         let o = obj(0, 0, 2000, 5, "");
-        let line = item_line(&o, 0, None, 2, &probe_strings).unwrap();
+        let line = item_line(&o, 0, None, 2, &mut probe_strings).unwrap();
         assert_eq!(line.text, "<NEEDED ... 2 of 5>");
     }
 
@@ -1347,7 +1351,7 @@ mod tests {
     #[test]
     fn custom_text_overrides_the_creature_auto_line() {
         let o = obj(100, 10, 0, 0, "Slay the vermin");
-        let line = creature_line(&o, 4, Some("Kobold Vermin"), &probe_strings).unwrap();
+        let line = creature_line(&o, 4, Some("Kobold Vermin"), &mut probe_strings).unwrap();
         assert_eq!(line.text, "<FOUND Slay the vermin 4 of 10>");
         assert_eq!(line.kind, "monster");
     }
@@ -1362,15 +1366,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let vm = UiScript::new().expect("VM");
+        let mut vm = UiScript::new().expect("VM");
         vm.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let get = |key: &str| {
-            vm.lua()
-                .globals()
-                .get::<String>(key)
-                .ok()
-                .filter(|t| !t.is_empty())
-        };
+        let mut get = |key: &str| vm.global_string(key).filter(|t| !t.is_empty());
         for key in [
             "QUEST_MONSTERS_KILLED",
             "QUEST_OBJECTS_FOUND",
@@ -1379,7 +1377,7 @@ mod tests {
             assert!(get(key).is_some(), "{key} missing");
         }
         let o = obj(100, 10, 0, 0, "");
-        let line = creature_line(&o, 3, Some("Kobold Vermin"), &get).unwrap();
+        let line = creature_line(&o, 3, Some("Kobold Vermin"), &mut get).unwrap();
         assert_eq!(line.text, "Kobold Vermin slain: 3/10");
     }
 
@@ -1393,7 +1391,7 @@ mod tests {
         let o = obj(100, 10, 0, 0, "");
         // The counter (1) is well short of required (10). Whatever the quest's state byte says,
         // THIS line is not finished.
-        let line = creature_line(&o, 1, Some("Kobold"), &probe_strings).unwrap();
+        let line = creature_line(&o, 1, Some("Kobold"), &mut probe_strings).unwrap();
         assert_eq!(line.text, "<KILLED Kobold 1 of 10>");
         assert!(!line.finished);
     }
@@ -1401,8 +1399,8 @@ mod tests {
     #[test]
     fn empty_objective_slot_emits_no_line() {
         let o = obj(0, 0, 0, 0, "");
-        assert!(creature_line(&o, 0, None, &probe_strings).is_none());
-        assert!(item_line(&o, 0, None, 0, &probe_strings).is_none());
+        assert!(creature_line(&o, 0, None, &mut probe_strings).is_none());
+        assert!(item_line(&o, 0, None, 0, &mut probe_strings).is_none());
     }
 
     // ── build_objectives: every occupied slot gets its own lines, not just the selection ────────────
@@ -1465,7 +1463,7 @@ mod tests {
             &items,
             &names,
             &commands,
-            &probe_strings,
+            &mut probe_strings,
         );
 
         // The two unused quads emit nothing; the two real ones resolve in order — creature/item
@@ -1515,7 +1513,7 @@ mod tests {
             &items,
             &names,
             &commands,
-            &probe_strings,
+            &mut probe_strings,
         );
 
         // Three lines, in the reference's pass order: both creatures, THEN the item — not the
@@ -1557,7 +1555,7 @@ mod tests {
             &items,
             &names,
             &commands,
-            &probe_strings,
+            &mut probe_strings,
         );
         assert_eq!(objectives.len(), 2);
         // The override IS the creature's name, and flips its key to QUEST_OBJECTS_FOUND (§5).
@@ -1596,7 +1594,7 @@ mod tests {
             &items,
             &names,
             &commands,
-            &probe_strings,
+            &mut probe_strings,
         );
         assert!(objectives.is_empty(), "{objectives:#?}");
     }
@@ -1631,7 +1629,7 @@ mod tests {
             &items,
             &names,
             &commands,
-            &probe_strings,
+            &mut probe_strings,
         );
         assert_eq!(objectives.len(), 1);
         assert!(

@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -389,7 +388,7 @@ fn resolve_model(dbc_name: &str) -> String {
 /// the neighbouring species (e.g. the main Elwynn grass effect resolves a *flower* into slot 0 and
 /// shifts the grass). `false` reproduces that old bug for A/B comparison only.
 pub fn load_ground_effect_catalog(
-    chain: &mut Chain,
+    chain: &mut impl crate::FileSource,
     key_by_internal_id: bool,
 ) -> Result<GroundEffectCatalog> {
     // doodadId (an internalId) → resolved model path. Keyed by GroundEffectDoodad.internalId (field 1)

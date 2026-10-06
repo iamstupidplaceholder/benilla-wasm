@@ -70,7 +70,7 @@ mod death;
 pub mod diagnostics;
 mod editbox;
 pub mod instance;
-pub(crate) use editbox::{adopt_text_region, editbox_text_region_wrapper};
+pub(crate) use editbox::{adopt_text_region_context, editbox_text_region_wrapper_context};
 pub(crate) mod addon;
 pub mod addon_gate;
 mod client;
@@ -111,6 +111,7 @@ mod merchant;
 mod messageframe;
 mod minimap;
 pub mod nameplate;
+mod presentation;
 pub use nameplate::{PlateGeometry, PlateState};
 mod model;
 mod modelframe;
@@ -156,7 +157,14 @@ pub use tooltip_unit::TooltipTint;
 mod trade;
 mod tradeskill;
 mod trainer;
-mod types;
+mod types {
+    pub use crate::script_types::{
+        BlendMode, EditAction, EditBoxAdvanceRequest, EditBoxTextUi, EditOutcome, EditUnit,
+        ExtractedQuad, FontObject, FontShadow, Gradient, JustifyH, JustifyV, LineMeasureRequest,
+        MeasureRequest, Outline, QuadContent, ScriptValue, TexCoords,
+    };
+    pub(crate) use crate::script_types::{FontExplicit, MeasuredText, RegionData};
+}
 mod unit;
 mod weapon_enchant;
 /// The `/who` list's seven-key sort chain and its comparator — its header is the whole
@@ -226,7 +234,7 @@ pub use tabard::{
 };
 pub use worldmap_arrow::ARROW_MODEL;
 
-pub(crate) use button::{set_label_font_justify_h_lua, LabelFont};
+pub(crate) use button::{set_label_font_justify_h_context, LabelFont};
 pub use inspect::{InspectView, UnitReach};
 pub use item_stats::{item_usable, ItemSetView, ItemTemplateView, PlayerReqState};
 pub use item_text::ItemTextState;
@@ -236,8 +244,8 @@ pub use loot_roll::{LootRollEntry, LootRollsState};
 pub use macros::{MacroState, MacroView, MAX_MACROS, MAX_MACRO_BODY, MAX_MACRO_NAME};
 pub use mail::{MailInboxRow, MailInvoice, MailSendRequest, MailState, StationeryView};
 pub use measure::TextMeasure;
-pub use merchant::{ItemStatsHead, MerchantItem, MerchantState};
-pub(crate) use minimap::apply_model_attrs as apply_minimap_model_attrs;
+pub use merchant::{ItemStatsHead, MerchantItem, MerchantState, RepairCostCatalog};
+pub(crate) use minimap::apply_model_attrs_context as apply_minimap_model_attrs_context;
 pub(crate) use model::Model;
 pub use model::{FontProbe, TextureProbe, TextureSizeProbe};
 pub use party::{PartyMemberInfo, PartyRequest, PartyState, RaidMemberInfo, SavedInstanceInfo};
@@ -247,12 +255,11 @@ pub use quest::{
     QuestAction, QuestItemView, QuestPanel, QuestRewardSpell, QuestSelect, QuestState,
 };
 pub use quest_log::{QuestLogDetail, QuestLogEntryView, QuestLogObjectiveView, QuestLogState};
-pub(crate) use region::{apply_font_parts, implicit_creation_anchor_lua};
 pub use reputation::{FactionEntry, ReputationSend, ReputationState};
 pub use session::SessionRequest;
 pub use shapeshift::ShapeshiftFormView;
 pub(crate) use simplehtml::{
-    apply_element_font_parts as apply_simplehtml_font_parts,
+    apply_element_font_parts_context as apply_simplehtml_font_parts_context,
     element_of_xml_tag as simplehtml_element_of_xml_tag,
 };
 pub use skills::{SkillEntry, SkillsState};
@@ -291,35 +298,25 @@ pub use worldmap::{
 pub use worldstate::WorldStateUiView;
 pub use worn_display::WornDisplay;
 
-use mlua::Lua;
+use benilla_lua::{
+    AppDataRef, AppDataRefMut, FromLua, FromLuaMulti, Function, LuaContext, Table, Value, Vm,
+};
 
 use crate::layout::Rect;
 use crate::order::ZTarget;
 use crate::widget::{FrameHandle, KindState};
 
-// Registry key names — the only place Lua-side roots are kept alive (the MAXCSTACK discipline).
-const REG_FRAME_META: &str = "__benilla_frame_meta";
-const REG_REGION_META: &str = "__benilla_region_meta";
-const REG_FRAME_METHODS: &str = "__benilla_frame_methods";
-const REG_REGION_METHODS: &str = "__benilla_region_methods";
+// Registry key names — shared with the neutral object/event runtime. Lua-side roots remain the
+// only persistent handles (the MAXCSTACK discipline).
+pub(crate) use crate::script_runtime::{
+    REG_DEFAULT_ERRORHANDLER, REG_FONTSTRING_META, REG_FONTSTRING_METHODS, REG_FRAME_META,
+    REG_FRAME_METHODS, REG_REGION_META, REG_REGION_METHODS, REG_SCRIPTS, REG_TEXTURE_META,
+    REG_TEXTURE_METHODS, REG_TITLE_META, REG_TITLE_METHODS, REG_WRAPPERS,
+};
 /// The full table's registry key, exposed for the exhaustiveness gate in `tests::reference_surface`
 /// — the split's correctness is a property of what the VM HOLDS, not of the source that builds it.
 #[cfg(test)]
 pub(crate) const REG_REGION_METHODS_FOR_TEST: &str = REG_REGION_METHODS;
-/// The **title region's** method table + metatable — the 19 Region methods and nothing else.
-const REG_TITLE_METHODS: &str = "__benilla_title_methods";
-const REG_TITLE_META: &str = "__benilla_title_meta";
-/// The two region LEAF tables + metatables — Texture and FontString each answer their own map.
-const REG_TEXTURE_METHODS: &str = "__benilla_texture_methods";
-const REG_TEXTURE_META: &str = "__benilla_texture_meta";
-const REG_FONTSTRING_METHODS: &str = "__benilla_fontstring_methods";
-const REG_FONTSTRING_META: &str = "__benilla_fontstring_meta";
-/// The stdlib's out-of-the-box error handler, kept by identity so
-/// [`UiScript::dispatch_script_errors_to_handler`] can tell "nobody chose a handler" (skip — the
-/// default already reports into the host channel) from "FrameXML or an addon installed one"
-/// (dispatch — that is what the pair exists for). Stored at [`stdlib::install`] time, the one
-/// moment the default is known to be what `geterrorhandler()` answers.
-const REG_DEFAULT_ERRORHANDLER: &str = "__benilla_default_errorhandler";
 
 /// The **Region method map** (`0xcf54b4`) — the 19 names every region leaf reaches through its own
 /// lookup's fallback, carved in wow-re `system/ui/scratch/font-object-lua-surface.md` and asserted
@@ -429,9 +426,6 @@ pub(crate) const REGION_MAP_METHODS: [&str; 19] = [
     "SetAllPoints",
     "ClearAllPoints",
 ];
-const REG_WRAPPERS: &str = "__benilla_wrappers";
-const REG_SCRIPTS: &str = "__benilla_scripts";
-
 /// The reserved layout [`crate::layout::Handle`] of the screen root (the client's `CSimpleTop` /
 /// `UIParent`), whose rect is the physical screen. Top-level frames whose `SetPoint` omits a
 /// `relativeTo` anchor to it. Real frame ids are minted from `1` upward so they never collide.
@@ -551,8 +545,10 @@ const SCRIPT_KINDS: [&str; 39] = [
 // UiScript — the public host
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The Lua scripting host. Owns the mlua VM; the frame arena, layout store, and event registry live
-/// inside it (in `lua.app_data`, per the MAXCSTACK discipline) and are driven through this API.
+/// The Lua scripting host. Owns the neutral VM; the frame arena, layout store, and event registry
+/// live inside its backend state (in app-data, per the MAXCSTACK discipline) and are driven through
+/// this API. During the native migration the backend is the same mlua state the original modules
+/// already use; browser builds select rilua behind the same owner.
 ///
 /// Construction sandboxes the VM (removes `io`/`os`/`package`/`require`/`dofile`/`loadfile`/`debug`,
 /// text-only chunk loading — see [`stdlib`]), installs the WoW stdlib layer (the global aliases, the
@@ -564,11 +560,16 @@ const SCRIPT_KINDS: [&str; 39] = [
 /// seam in [`editbox::seam`], the layout resolve in [`layout`], and the pointer/hit-test in
 /// [`pointer`]. What stays here is construction and the small host-facing state pushes/queries.
 pub struct UiScript {
-    lua: Lua,
-    /// VM instructions executed, counted only while a budget is installed
-    /// ([`UiScript::set_instruction_budget`]). `Arc` because the hook callback outlives this
-    /// borrow; `Relaxed` because nothing orders against it — it is a bound, not a clock.
-    instructions: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    lua: Vm,
+    /// The `GetTime()` session clock (seconds) — the host-side store behind the
+    /// `__benilla_now` Lua global. A plain field rather than a VM read because the
+    /// neutral VM needs `&mut` to execute even a global lookup, while `now()` serves
+    /// shared-reference host paths (extract, aura expiry stamps, pointer); `tick` and
+    /// `set_now` mirror every change into the VM, so Lua's `GetTime()` and this agree.
+    /// The VM global is the Lua-visible mirror, never an independent writer — the one
+    /// out-of-band write that existed (a capture fixture parking the clock through
+    /// `run`) goes through `set_now` now.
+    clock: f64,
     /// **This VM's identity** — see [`UiScript::session`].
     session: u64,
 }
@@ -604,119 +605,127 @@ pub fn addon_chunk_name(folder: &str, file: &str) -> String {
 
 impl UiScript {
     /// Build a fully sandboxed, stdlib- and object-model-equipped host.
-    pub fn new() -> mlua::Result<UiScript> {
-        let lua = Lua::new();
+    pub fn new() -> benilla_lua::Result<UiScript> {
+        // The neutral VM owns the one Lua state every module below shares — ported and
+        // (until this hub) unported modules met at one state and one app-data store, and
+        // now there is only the one door. Backend selection stays inside `benilla-lua`.
+        let mut lua = Vm::new()?;
         lua.set_app_data(Model::new());
         // Before anything can fire a handler, and while nothing holds an app-data borrow — the two
         // conditions the profiler's slot has to be installed under (decision 1395).
-        handler_prof::install(&lua);
+        handler_prof::install(&mut lua);
 
-        addon::install(&lua)?;
-        addon_message::install(&lua)?;
-        chat_send::install(&lua)?;
-        chat_types::install(&lua)?;
-        chat_misc::install(&lua)?;
-        channel::install(&lua)?;
-        chat_window::install(&lua)?;
-        client::install(&lua)?;
-        screenshot::install(&lua)?;
-        stdlib::sandbox(&lua)?;
+        addon::install(&mut lua)?;
+        addon_message::install(&mut lua)?;
+        chat_send::install(&mut lua)?;
+        chat_types::install(&mut lua)?;
+        chat_misc::install(&mut lua)?;
+        channel::install(&mut lua)?;
+        chat_window::install(&mut lua)?;
+        client::install(&mut lua)?;
+        screenshot::install(&mut lua)?;
+        stdlib::sandbox(&mut lua)?;
         // Before the stdlib layer, so its aliases bind the 5.0-shaped functions (decision 1194).
-        lua50::install(&lua)?;
-        stdlib::install(&lua)?;
-        object::install(&lua)?;
+        lua50::install(&mut lua)?;
+        stdlib::install(&mut lua)?;
+        object::install(&mut lua)?;
         // After `object` (it reuses the frame side's `publish_global`), before any FrameXML is
         // loaded — `Loader::do_font` publishes into the tables this builds.
-        font::install(&lua)?;
-        unit::install(&lua)?;
-        party::install(&lua)?;
-        social::install(&lua)?;
-        guild::install(&lua)?;
-        petition::install(&lua)?;
-        binder::install(&lua)?;
-        summon::install(&lua)?;
-        bind_confirm::install(&lua)?;
-        instance::install(&lua)?;
-        gm_ticket::install(&lua)?;
-        duel::install(&lua)?;
-        follow::install(&lua)?;
-        camera_view::install(&lua)?;
-        session::install(&lua)?;
-        pvp::install(&lua)?;
-        worn_display::install(&lua)?;
-        death::install(&lua)?;
-        aura::install(&lua)?;
-        cvars::install(&lua)?;
-        saved::install(&lua)?;
-        keybind::install(&lua)?;
-        sound::install(&lua)?;
-        ui_errors::install(&lua)?;
-        pointer::install(&lua)?;
-        action::install(&lua)?;
-        action_bar_toggles::install(&lua)?;
-        container::install(&lua)?;
-        cursor::install(&lua)?;
-        spellbook::install(&lua)?;
-        macros::install(&lua)?;
-        talent::install(&lua)?;
-        dialog_verbs::install(&lua)?;
-        battlefield_score::install(&lua)?;
-        battlefield_queue::install(&lua)?;
-        battlefield_positions::install(&lua)?;
-        tutorial::install(&lua)?;
-        worldmap_arrow::install(&lua)?;
-        shapeshift::install(&lua)?;
-        pet::install(&lua)?;
-        gossip::install(&lua)?;
-        merchant::install(&lua)?;
-        bank::install(&lua)?;
-        stable::install(&lua)?;
-        item_text::install(&lua)?;
-        mail::install(&lua)?;
-        auction::install(&lua)?;
-        trainer::install(&lua)?;
-        taxi::install(&lua)?;
-        trade::install(&lua)?;
-        inspect::install(&lua)?;
-        dressup::install(&lua)?;
-        tabard::install(&lua)?;
-        tradeskill::install(&lua)?;
-        craft::install(&lua)?;
-        reputation::install(&lua)?;
-        skills::install(&lua)?;
-        item_stats::install(&lua)?;
-        char_stats::install(&lua)?;
-        weapon_enchant::install(&lua)?;
-        loot::install(&lua)?;
-        loot_roll::install(&lua)?;
-        quest::install(&lua)?;
-        quest_log::install(&lua)?;
-        messageframe::install(&lua)?;
-        scrollframe::install(&lua)?;
-        simplehtml::install(&lua)?;
-        slider::install(&lua)?;
-        colorselect::install(&lua)?;
-        minimap::install(&lua)?;
-        modelframe::install(&lua)?;
-        tooltip::install(&lua)?;
-        worldmap::install(&lua)?;
-        worldstate::install(&lua)?;
-        net_stats::install(&lua)?;
-        diagnostics::install(&lua)?;
+        font::install(&mut lua)?;
+        unit::install(&mut lua)?;
+        party::install(&mut lua)?;
+        social::install(&mut lua)?;
+        guild::install(&mut lua)?;
+        petition::install(&mut lua)?;
+        binder::install(&mut lua)?;
+        summon::install(&mut lua)?;
+        bind_confirm::install(&mut lua)?;
+        instance::install(&mut lua)?;
+        gm_ticket::install(&mut lua)?;
+        duel::install(&mut lua)?;
+        follow::install(&mut lua)?;
+        camera_view::install(&mut lua)?;
+        session::install(&mut lua)?;
+        pvp::install(&mut lua)?;
+        worn_display::install(&mut lua)?;
+        death::install(&mut lua)?;
+        aura::install(&mut lua)?;
+        cvars::install(&mut lua)?;
+        saved::install(&mut lua)?;
+        keybind::install(&mut lua)?;
+        sound::install(&mut lua)?;
+        ui_errors::install(&mut lua)?;
+        pointer::install(&mut lua)?;
+        action::install(&mut lua)?;
+        action_bar_toggles::install(&mut lua)?;
+        container::install(&mut lua)?;
+        cursor::install(&mut lua)?;
+        spellbook::install(&mut lua)?;
+        macros::install(&mut lua)?;
+        talent::install(&mut lua)?;
+        dialog_verbs::install(&mut lua)?;
+        battlefield_score::install(&mut lua)?;
+        battlefield_queue::install(&mut lua)?;
+        battlefield_positions::install(&mut lua)?;
+        tutorial::install(&mut lua)?;
+        worldmap_arrow::install(&mut lua)?;
+        shapeshift::install(&mut lua)?;
+        pet::install(&mut lua)?;
+        gossip::install(&mut lua)?;
+        merchant::install(&mut lua)?;
+        bank::install(&mut lua)?;
+        stable::install(&mut lua)?;
+        item_text::install(&mut lua)?;
+        mail::install(&mut lua)?;
+        auction::install(&mut lua)?;
+        trainer::install(&mut lua)?;
+        taxi::install(&mut lua)?;
+        trade::install(&mut lua)?;
+        inspect::install(&mut lua)?;
+        dressup::install(&mut lua)?;
+        tabard::install(&mut lua)?;
+        tradeskill::install(&mut lua)?;
+        craft::install(&mut lua)?;
+        reputation::install(&mut lua)?;
+        skills::install(&mut lua)?;
+        item_stats::install(&mut lua)?;
+        char_stats::install(&mut lua)?;
+        weapon_enchant::install(&mut lua)?;
+        loot::install(&mut lua)?;
+        loot_roll::install(&mut lua)?;
+        quest::install(&mut lua)?;
+        quest_log::install(&mut lua)?;
+        messageframe::install(&mut lua)?;
+        scrollframe::install(&mut lua)?;
+        simplehtml::install(&mut lua)?;
+        slider::install(&mut lua)?;
+        colorselect::install(&mut lua)?;
+        minimap::install(&mut lua)?;
+        modelframe::install(&mut lua)?;
+        tooltip::install(&mut lua)?;
+        worldmap::install(&mut lua)?;
+        worldstate::install(&mut lua)?;
+        net_stats::install(&mut lua)?;
+        diagnostics::install(&mut lua)?;
 
         let s = UiScript {
             lua,
-            instructions: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            clock: 0.0,
             session: NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         };
         Ok(s)
     }
 
-    /// The embedded VM — for the Bevy plugin / TOC-XML loader to add the game-state API bindings
-    /// (decision 0068 §1: "the Bevy side owns … the API bindings that touch ECS/net") on top of the
-    /// object model this crate installs.
-    pub fn lua(&self) -> &Lua {
+    /// The embedded VM, read-only door — for host code that only inspects state
+    /// (model reads, global peeks) without running anything.
+    pub fn vm(&self) -> &Vm {
         &self.lua
+    }
+
+    /// The embedded VM, running door — for the TOC-XML loader and any host code that
+    /// installs bindings or runs chunks on top of the object model this crate installs.
+    pub fn vm_mut(&mut self) -> &mut Vm {
+        &mut self.lua
     }
 
     /// **Which VM this is** — a fresh number for every [`UiScript::new`], never reused.
@@ -772,36 +781,18 @@ impl UiScript {
     /// The hook fires every [`INSTRUCTION_HOOK_STEP`] instructions rather than every instruction:
     /// mlua's own docs warn that a low value "can incur a very high overhead", and the step is the
     /// resolution of the bound, which nothing here needs to be precise.
-    pub fn set_instruction_budget(&self, budget: u64) {
-        let used = self.instructions.clone();
-        used.store(0, std::sync::atomic::Ordering::Relaxed);
-        let _ = self.lua.set_hook(
-            mlua::HookTriggers {
-                every_nth_instruction: Some(INSTRUCTION_HOOK_STEP),
-                ..Default::default()
-            },
-            move |_, _| {
-                let n = used.fetch_add(
-                    u64::from(INSTRUCTION_HOOK_STEP),
-                    std::sync::atomic::Ordering::Relaxed,
-                ) + u64::from(INSTRUCTION_HOOK_STEP);
-                if n > budget {
-                    return Err(mlua::Error::runtime(format!(
-                        "benilla: instruction budget exhausted after {n} VM instructions — \
-                         treating this as a non-terminating loop"
-                    )));
-                }
-                Ok(mlua::VmState::Continue)
-            },
-        );
+    pub fn set_instruction_budget(&mut self, budget: u64) {
+        self.lua
+            .set_instruction_budget(INSTRUCTION_HOOK_STEP, budget)
+            .expect("nonzero hook step");
     }
 
     /// Remove an installed instruction budget — the load edge's disarm (decision 1306): the bound
     /// covers the world-entry walk, and a session's steady state runs unhooked exactly as before.
     /// The counter keeps its last value, so [`Self::instructions_used`] still answers for the
     /// phase that just ended.
-    pub fn clear_instruction_budget(&self) {
-        self.lua.remove_hook();
+    pub fn clear_instruction_budget(&mut self) {
+        self.lua.clear_instruction_budget();
     }
 
     /// VM instructions executed since the last [`Self::set_instruction_budget`], to the resolution
@@ -810,7 +801,7 @@ impl UiScript {
     /// Reported rather than merely used, because the budget has to be CHOSEN from the corpus and a
     /// number nobody can read is a number nobody can revisit.
     pub fn instructions_used(&self) -> u64 {
-        self.instructions.load(std::sync::atomic::Ordering::Relaxed)
+        self.lua.instructions_used()
     }
 
     /// Set the screen-root rect from a pixel size (`[0,0]` origin, y-up). Top-level frames anchor to
@@ -969,8 +960,33 @@ impl UiScript {
     /// Load and run a Lua chunk (text-only; the sandbox rejects bytecode). Errors propagate to the
     /// caller (a *load-time* error is the caller's to see; *handler* errors during events go to
     /// [`UiScript::errors`]).
-    pub fn run(&self, chunk: &str) -> mlua::Result<()> {
+    pub fn run(&mut self, chunk: &str) -> benilla_lua::Result<()> {
         self.run_chunk(chunk.as_bytes())
+    }
+
+    /// Read a string from the FrameScript global table without exposing the VM backend.
+    pub fn global_string(&mut self, name: &str) -> Option<String> {
+        match self.lua.global(name).ok()? {
+            benilla_lua::Value::String(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        }
+    }
+
+    /// Run a chunk with one temporary string global and restore its previous string/nil value.
+    pub fn run_with_string_global(
+        &mut self,
+        name: &str,
+        value: &str,
+        chunk: &str,
+    ) -> benilla_lua::Result<()> {
+        let previous = match self.lua.global(name).ok() {
+            Some(benilla_lua::Value::String(s)) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        };
+        self.lua.set_global(name, value)?;
+        let result = self.run(chunk);
+        let restore = self.lua.set_global(name, previous);
+        result.and(restore)
     }
 
     /// [`UiScript::run`] over a chunk that came off disk, which is **bytes** (decision 1193).
@@ -981,7 +997,7 @@ impl UiScript {
     /// what made 76 of a real corpus's `.lua` files read as *absent* rather than as text with an
     /// odd glyph. The two front-door transforms the reference's own compiler applies — the UTF-8
     /// BOM strip and the `#`-line skip — are applied here ([`crate::source::chunk`]).
-    pub fn run_chunk(&self, chunk: &[u8]) -> mlua::Result<()> {
+    pub fn run_chunk(&mut self, chunk: &[u8]) -> benilla_lua::Result<()> {
         self.run_chunk_named(chunk, "(chunk)")
     }
 
@@ -993,17 +1009,15 @@ impl UiScript {
     /// — wrong in any error an addon shows a player, and load-bearing for the addons that PARSE a
     /// traceback. `FuBarPlugin-2.0.lua:752` derives a plugin's own folder with
     /// `string.find(debugstack(6, 1, 0), "\\AddOns\\(.*)\\")`, which cannot match a Rust path.
-    pub fn run_chunk_named(&self, chunk: &[u8], name: &str) -> mlua::Result<()> {
-        self.lua
-            .load(crate::source::chunk(chunk))
-            .set_name(name)
-            .set_mode(mlua::ChunkMode::Text)
-            .exec()
+    pub fn run_chunk_named(&mut self, chunk: &[u8], name: &str) -> benilla_lua::Result<()> {
+        self.lua.exec_named_text(crate::source::chunk(chunk), name)
     }
 
     /// Load and evaluate a Lua chunk, returning its result. Primarily for tests / one-shot queries.
-    pub fn eval<T: mlua::FromLuaMulti>(&self, chunk: &str) -> mlua::Result<T> {
-        self.lua.load(chunk).set_mode(mlua::ChunkMode::Text).eval()
+    pub fn eval<T: FromLuaMulti>(&mut self, chunk: &str) -> benilla_lua::Result<T> {
+        let function = self.lua.load_function(chunk.as_bytes(), "(eval)")?;
+        let values = self.lua.call_function_values(&function, Vec::new())?;
+        T::from_lua_multi(values)
     }
 
     /// **How many values does `expr` return?** — the return-shape question, asked at the host
@@ -1023,8 +1037,54 @@ impl UiScript {
     /// The one place this cannot serve is a probe that has to hold the count *inside* Lua (a
     /// `pcall` loop over generated calls, as `shape_gate` runs). There the 5.0 spelling is 1.12's
     /// own and reads the same: `(function(...) return arg.n end)(expr)`.
-    pub fn arity(&self, expr: &str) -> mlua::Result<usize> {
-        let values: mlua::Variadic<mlua::Value> = self.eval(&format!("return {expr}"))?;
+    /// Evaluate a chunk that answers a Lua array table and drain its sequence part.
+    ///
+    /// The host-side shape `eval::<Vec<T>>` used to serve through mlua's table-to-`Vec`
+    /// conversion. The neutral [`FromLua`] is a pure value-to-value map with no VM access,
+    /// so it deliberately does not cover table drains; this door does, with explicit
+    /// integer-key ordering (index `>= 1`, ascending) rather than whatever order either
+    /// backend's entry walk happens to produce.
+    pub fn eval_sequence<T: FromLua>(&mut self, chunk: &str) -> benilla_lua::Result<Vec<T>> {
+        let table: Table = self.eval(chunk)?;
+        let mut pairs: Vec<(i64, Value)> = Vec::new();
+        for (key, value) in self.lua.table_entries(&table)? {
+            // Lua 5.1 has ONE number type, and the two backends report a whole
+            // value differently across it (mlua: `Integer`, rilua: `Number`),
+            // so the sequence drain accepts both spellings of an index.
+            let index = match key {
+                Value::Integer(index) => Some(index),
+                Value::Number(index)
+                    if index.fract() == 0.0 && index >= 1.0 && index <= i64::MAX as f64 =>
+                {
+                    Some(index as i64)
+                }
+                _ => None,
+            };
+            if let Some(index) = index.filter(|index| *index >= 1) {
+                pairs.push((index, value));
+            }
+        }
+        pairs.sort_by_key(|(index, _)| *index);
+        pairs
+            .into_iter()
+            .map(|(_, value)| T::from_lua(value))
+            .collect()
+    }
+
+    /// Evaluate an expression for Lua truthiness — `nil` and `false` read false,
+    /// everything else reads true.
+    ///
+    /// The host-side half of what `if expr then` does inside the VM. `eval::<bool>`
+    /// is strict (a real boolean or nothing) and rejects the number `1` the `1`/`nil`
+    /// predicates answer, which is what most of these probes read — so a truthiness
+    /// question goes through here, never through a strict read.
+    pub fn eval_truthy(&mut self, chunk: &str) -> benilla_lua::Result<bool> {
+        let value: Value = self.eval(chunk)?;
+        Ok(!matches!(value, Value::Nil | Value::Boolean(false)))
+    }
+
+    pub fn arity(&mut self, expr: &str) -> benilla_lua::Result<usize> {
+        let values: benilla_lua::MultiValue = self.eval(&format!("return {expr}"))?;
         Ok(values.len())
     }
 
@@ -1134,6 +1194,18 @@ impl UiScript {
             .any(|(_, f)| f.name.as_deref() == Some(name) && f.effective_visible)
     }
 
+    /// The live handle behind a global frame name, if any. The host-side read half of
+    /// [`Self::frame_visible`]: a probe that drives named windows (`Show`/`Hide`/`Click`
+    /// by name) resolves once and hands the handle back to the same narrow doors, instead
+    /// of forging handles or re-scanning per call. A linear scan, like its neighbors.
+    pub fn frame_handle(&self, name: &str) -> Option<FrameHandle> {
+        self.model_ref()
+            .arena
+            .iter_frames()
+            .find(|(_, f)| f.name.as_deref() == Some(name))
+            .map(|(h, _)| h)
+    }
+
     /// The effective alpha of the frame with this global name while it is effectively visible,
     /// `None` when it is hidden or no live frame carries the name. The read side of a frame whose
     /// pixels a host draws for the engine: the stock `MiniMapPing` is a `<Model>` this engine
@@ -1152,7 +1224,7 @@ impl UiScript {
     /// input, run the [`crate::layout`] graph (screen root as the external base), and cache the
     /// resolved rects. `GetWidth`/`GetHeight`/`extract` read this cache.
     /// Frames whose size moved fire `OnSizeChanged` here, once the borrow is released
-    /// ([`event::fire_size_changes`]) — this is the drain the resolver's queue exists for, and the
+    /// ([`event::fire_size_changes_context`]) — this is the drain the resolver's queue exists for, and the
     /// one every per-frame host tick runs.
     pub fn resolve(&mut self) {
         {
@@ -1168,7 +1240,7 @@ impl UiScript {
             let mut model = self.model_mut();
             Self::resolve_layout(&mut model);
         }
-        event::fire_size_changes(&self.lua);
+        event::fire_size_changes_context(&mut self.lua);
     }
 
     /// Store host measurements for [`MeasureRequest`]s (`(id, w, h, natural_w, key)` — id/key
@@ -1310,6 +1382,8 @@ impl UiScript {
         let mut model = self.model_mut();
         let held: Vec<crate::widget::FrameHandle> = model.mouse_down_on.values().copied().collect();
         model.mouse_down_on.clear();
+        model.repair_cancel_right = false;
+        model.repair_cancel_right_press = false;
         // Every button that capture was holding down goes back to NORMAL — the release edge the
         // OS never fed us (`0x7793de`), without which a button walked off the window edge
         // mid-press keeps its pushed art for the rest of the session.
@@ -1348,7 +1422,7 @@ impl UiScript {
         // strata/level, so this is not "frames before boxes" — it is the reference's one dispatcher
         // in the reference's order. An event no frame consumed still falls through to the box
         // routing, which owns focus acquisition (`autoFocus` self-acquire and kin).
-        keyboard::char_input(&self.lua, text) || editbox::char_input(&self.lua, text)
+        keyboard::char_input(&mut self.lua, text) || editbox::char_input(&mut self.lua, text)
     }
 
     /// Paste text from the host OS clipboard into the focused EditBox. The engine-free runtime can't
@@ -1356,7 +1430,7 @@ impl UiScript {
     /// the string here; newlines survive only in a `multiLine` box, other control chars are dropped,
     /// and the remainder inserts as one edit. Returns `true` if a box consumed it.
     pub fn paste(&mut self, text: &str) -> bool {
-        editbox::paste(&self.lua, text)
+        editbox::paste(&mut self.lua, text)
     }
 
     /// A non-character key press arriving from the host, by name — the three *box-event* keys
@@ -1366,7 +1440,7 @@ impl UiScript {
     /// it does nothing with it. Returns `true` if consumed.
     pub fn key_input(&mut self, key: &str) -> bool {
         // Same two-stage shape as `char_input` — see its note.
-        keyboard::key_input(&self.lua, key) || editbox::key_input(&self.lua, key)
+        keyboard::key_input(&mut self.lua, key) || editbox::key_input(&mut self.lua, key)
     }
 
     /// A key the host delivers to a focused EditBox as an [`EditAction`] chord rather than by name
@@ -1378,14 +1452,14 @@ impl UiScript {
     /// exactly as it did before this entry point existed. See [`keyboard::frame_key_input`] for
     /// why declining at the box is the faithful answer rather than skipping it.
     pub fn frame_key_input(&mut self, key: &str) -> bool {
-        keyboard::frame_key_input(&self.lua, key)
+        keyboard::frame_key_input(&mut self.lua, key)
     }
 
     /// One semantic text-editing operation on the focused EditBox — the output of the host's
     /// per-OS keymap (decision 0301). Same routing/consumption law as [`Self::key_input`].
     /// Returns `true` if consumed.
     pub fn editbox_action(&mut self, action: EditAction) -> bool {
-        editbox::action(&self.lua, action)
+        editbox::action(&mut self.lua, action)
     }
 
     /// Is the focused EditBox in **alt-arrow mode** — the flag the XML spells `ignoreArrows` and
@@ -1403,6 +1477,9 @@ impl UiScript {
     pub fn editbox_alt_arrow_mode(&self) -> bool {
         let model = self.model_ref();
         model.focused_editbox.is_some_and(|h| {
+            if !model.input_presented(h) {
+                return false;
+            }
             model.arena.frame(h).is_some_and(|f| {
                 f.effective_visible
                     && matches!(&f.kind_state,
@@ -1415,9 +1492,9 @@ impl UiScript {
     /// world/player key input on this, matching the client's `DAT_00cf4dc8 != 0` test (RF-0082 §1).
     pub fn has_keyboard_focus(&self) -> bool {
         let model = self.model_ref();
-        model
-            .focused_editbox
-            .is_some_and(|h| model.arena.frame(h).is_some_and(|f| f.effective_visible))
+        model.focused_editbox.is_some_and(|h| {
+            model.input_presented(h) && model.arena.frame(h).is_some_and(|f| f.effective_visible)
+        })
     }
 
     /// **Which** EditBox holds the focus, by name — [`Self::has_keyboard_focus`] answers
@@ -1594,13 +1671,13 @@ impl UiScript {
     ///
     /// Its silent sibling is [`Self::report_load_failure`] (decision 1495) — same retention, no
     /// dispatch, for the load failures that never raise at all.
-    pub fn report_script_error(&self, msg: &str) {
+    pub fn report_script_error(&mut self, msg: &str) {
         // Retained as a **Load** row, not an Error one (decision 1495): every caller of this is
         // the load walk, and from the player's side "the addon's file scope raised" and "the
         // addon's file was missing" are the same fact — the addon is not running. The retention
         // half is `diagnostics::record_load_failure`, shared with the demand-load path so the
         // rule has one implementation (2107); the dispatch is what makes this the loud sibling.
-        diagnostics::record_load_failure(&self.lua, msg);
+        diagnostics::record_load_failure(&mut self.lua, msg);
         self.model_mut()
             .pending_error_dispatch
             .push(msg.to_string());
@@ -1626,23 +1703,27 @@ impl UiScript {
         if pending.is_empty() {
             return;
         }
-        let handler: Option<mlua::Function> = self
-            .lua
-            .globals()
-            .get::<mlua::Function>("geterrorhandler")
-            .ok()
-            .and_then(|g| g.call::<mlua::Function>(()).ok());
+        // Fully qualified: the inherent `call_function` takes a `MultiValue`, so the
+        // generic trait door needs its full path here.
+        let handler: Option<Function> = match self.lua.global("geterrorhandler").ok() {
+            Some(benilla_lua::Value::Function(get)) => {
+                LuaContext::call_function::<(), Function>(&mut self.lua, &get, ()).ok()
+            }
+            _ => None,
+        };
         let Some(handler) = handler else { return };
         if let Ok(default) = self
             .lua
-            .named_registry_value::<mlua::Function>(REG_DEFAULT_ERRORHANDLER)
+            .named_registry_value::<Function>(REG_DEFAULT_ERRORHANDLER)
         {
             if handler == default {
                 return;
             }
         }
         for msg in pending {
-            if let Err(e) = handler.call::<()>(msg) {
+            if let Err(e) =
+                LuaContext::call_function::<(String,), ()>(&mut self.lua, &handler, (msg,))
+            {
                 self.model_mut()
                     .errors
                     .push(format!("error handler itself failed: {e}"));
@@ -1656,13 +1737,13 @@ impl UiScript {
     /// `Loader::do_font` performs, so a font registered from Rust is addressable from Lua exactly
     /// like one declared in XML (`fs:SetFontObject(Name)`, `Name:GetFont()`). One registration act,
     /// one outcome: the two paths cannot drift.
-    pub fn register_font_object(&self, name: &str, font: FontObject) {
+    pub fn register_font_object(&mut self, name: &str, font: FontObject) {
         self.model_mut()
             .font_objects_by_lower
             .insert(name.to_ascii_lowercase(), font);
         // Publishing cannot fail for a fresh table + a string key; a registry hiccup is not worth
         // an unwrap in a host-facing setter, and the record is already in place either way.
-        let _ = font::publish(&self.lua, name);
+        let _ = font::publish_context(&mut self.lua, name);
     }
 
     /// Look up a registered [`FontObject`] by name (the resolved paint), if any. Used by tests and by
@@ -1685,19 +1766,19 @@ impl UiScript {
 
     // ── internals ────────────────────────────────────────────────────────────────────────────
 
-    fn model_ref(&self) -> mlua::AppDataRef<'_, Model> {
+    fn model_ref(&self) -> AppDataRef<'_, Model> {
         self.lua
             .app_data_ref::<Model>()
             .expect("model app_data set")
     }
 
-    fn model_mut(&self) -> mlua::AppDataRefMut<'_, Model> {
+    fn model_mut(&mut self) -> AppDataRefMut<'_, Model> {
         self.lua
             .app_data_mut::<Model>()
             .expect("model app_data set")
     }
 
-    fn push_error(&self, e: mlua::Error) {
+    fn push_error(&mut self, e: impl std::fmt::Display) {
         self.model_mut().record_script_error(e.to_string());
     }
 }

@@ -14,12 +14,12 @@
 //!   into `CMSG_SET_ACTION_BUTTON`, one send per queued entry (0218 §4: a drag-swap is two sends,
 //!   never atomic — this module never coalesces them).
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use crate::script::action::{ACTION_KIND_ITEM, ACTION_KIND_MACRO, ACTION_KIND_SPELL};
 use crate::script::{ActionSlot, Model};
 
-use super::{queue_cursor_update, CursorAction, CursorPayload};
+use super::{queue_cursor_update, queue_lock_changed, CursorAction, CursorPayload};
 
 /// The GlobalStrings key the reference's passive-spell refusal shows — errorId `0x9e`'s entry in
 /// the errorId→key table (`0xb4b498 + 0x9e*0x14 = 0xb4c0f0` ← key ptr `0x84133c`), i.e.
@@ -161,29 +161,27 @@ pub(crate) fn place_action(model: &mut Model, id: u32) -> bool {
         })
     });
     queue_cursor_update(model);
+    // A bag item stays in its slot: the bar consumed only the held reference,
+    // so no inventory field update will arrive to repaint its cursor-held lock.
+    // This also unlocks the item source when an occupied action hops onto the cursor.
+    if let CursorPayload::Item(item) = held {
+        queue_lock_changed(model, item.bag, item.slot);
+    }
     true
 }
 
 /// Register the action-bar's cursor globals — top-level, matching the reference
 /// (`PickupAction`/`PlaceAction` are not namespaced any more than `PickupContainerItem`'s cursor
 /// siblings are).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    g.set(
-        "PickupAction",
-        lua.create_function(|lua, id: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(pickup_action(&mut model, id))
-        })?,
-    )?;
-    g.set(
-        "PlaceAction",
-        lua.create_function(|lua, id: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(place_action(&mut model, id))
-        })?,
-    )?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("PickupAction", |lua, id: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(pickup_action(&mut model, id))
+    })?;
+    lua.register_function("PlaceAction", |lua, id: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(place_action(&mut model, id))
+    })?;
 
     Ok(())
 }
@@ -208,9 +206,9 @@ mod tests {
         let mut s = UiScript::new().unwrap();
         s.set_action(1, Some(action_slot("Interface\\Icons\\Spell_A", 0x00, 133)));
 
-        assert!(s.eval::<bool>("return PickupAction(1)").unwrap());
+        assert!(s.eval_truthy("return PickupAction(1)").unwrap());
         assert!(
-            !s.eval::<bool>("return HasAction(1)").unwrap(),
+            !s.eval_truthy("return HasAction(1)").unwrap(),
             "removed from the engine's optimistic mirror"
         );
         let (kind, id) = s
@@ -238,9 +236,9 @@ mod tests {
             texture: Some("Interface\\Icons\\Spell_A".into()),
         }));
 
-        assert!(s.eval::<bool>("return PlaceAction(7)").unwrap());
+        assert!(s.eval_truthy("return PlaceAction(7)").unwrap());
         assert!(s.cursor_payload().is_none(), "empty destination clears");
-        assert!(s.eval::<bool>("return HasAction(7)").unwrap());
+        assert!(s.eval_truthy("return HasAction(7)").unwrap());
         assert_eq!(
             s.eval::<String>("return GetActionTexture(7)").unwrap(),
             "Interface\\Icons\\Spell_A"
@@ -331,8 +329,8 @@ mod tests {
     fn place_action_with_an_empty_cursor_is_a_no_op() {
         let mut s = UiScript::new().unwrap();
         s.set_action(1, Some(action_slot("Interface\\Icons\\Spell_A", 0x00, 111)));
-        assert!(!s.eval::<bool>("return PlaceAction(1)").unwrap());
-        assert!(s.eval::<bool>("return HasAction(1)").unwrap(), "untouched");
+        assert!(!s.eval_truthy("return PlaceAction(1)").unwrap());
+        assert!(s.eval_truthy("return HasAction(1)").unwrap(), "untouched");
         assert!(s.take_action_sets().is_empty());
     }
 
@@ -347,9 +345,9 @@ mod tests {
             action: 111,
             texture: Some("Interface\\Icons\\Spell_A".into()),
         }));
-        assert!(s.eval::<bool>("return PickupAction(5)").unwrap());
+        assert!(s.eval_truthy("return PickupAction(5)").unwrap());
         assert!(s.cursor_payload().is_none(), "placed onto the empty slot 5");
-        assert!(s.eval::<bool>("return HasAction(5)").unwrap());
+        assert!(s.eval_truthy("return HasAction(5)").unwrap());
         assert_eq!(s.take_action_sets(), vec![(5, 111)]);
     }
 
@@ -409,8 +407,8 @@ mod tests {
             equip_slots: Vec::new(),
         }));
 
-        assert!(!s.eval::<bool>("return PlaceAction(4)").unwrap());
-        assert!(!s.eval::<bool>("return HasAction(4)").unwrap(), "no store");
+        assert!(!s.eval_truthy("return PlaceAction(4)").unwrap());
+        assert!(!s.eval_truthy("return HasAction(4)").unwrap(), "no store");
         assert!(s.take_action_sets().is_empty(), "no packet");
         assert!(
             matches!(s.cursor_payload(), Some(CursorPayload::Item(_))),
@@ -438,8 +436,8 @@ mod tests {
             passive: true,
         }));
 
-        assert!(!s.eval::<bool>("return PlaceAction(4)").unwrap());
-        assert!(!s.eval::<bool>("return HasAction(4)").unwrap());
+        assert!(!s.eval_truthy("return PlaceAction(4)").unwrap());
+        assert!(!s.eval_truthy("return HasAction(4)").unwrap());
         assert!(s.take_action_sets().is_empty());
         assert!(matches!(s.cursor_payload(), Some(CursorPayload::Spell(_))));
         assert_eq!(
@@ -466,8 +464,8 @@ mod tests {
             passive: false,
         }));
 
-        assert!(s.eval::<bool>("return PlaceAction(4)").unwrap());
-        assert!(s.eval::<bool>("return HasAction(4)").unwrap());
+        assert!(s.eval_truthy("return PlaceAction(4)").unwrap());
+        assert!(s.eval_truthy("return HasAction(4)").unwrap());
         assert!(s.take_ui_errors().is_empty());
     }
 

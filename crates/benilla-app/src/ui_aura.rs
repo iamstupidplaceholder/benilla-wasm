@@ -269,7 +269,7 @@ fn trace_period() -> Option<f64> {
 ///
 /// The button a given aura lands on is its index *within its own filter* (the bar's ids are
 /// 1-based per filter): helpful auras fill `BuffButton0..15`, harmful `BuffButton16..23`.
-fn trace_timers(script: &UiScript, cache: &[CachedAura], list: &[AuraState], bevy_now: f64) {
+fn trace_timers(script: &mut UiScript, cache: &[CachedAura], list: &[AuraState], bevy_now: f64) {
     let script_now = script.now();
     info!(
         "aura trace: {} aura(s), GetTime()={script_now:.2} app clock={bevy_now:.2} (skew {:+.2})",
@@ -351,7 +351,7 @@ fn other_unit_auras(
                 count: a.stacks,
                 debuff_type: display
                     .zip(catalog)
-                    .and_then(|(d, cat)| cat.dispel_name(d))
+                    .and_then(|(d, cat)| cat.dispel_key(d))
                     .map(str::to_string),
                 // No duration for any unit but yourself — the 1.12 wire carries none (byte-verified,
                 // 0257 B6); the reference's target and pet frames show no timers.
@@ -613,7 +613,7 @@ fn feed_auras(
                 count: c.stacks,
                 debuff_type: display
                     .zip(catalog)
-                    .and_then(|(d, cat)| cat.dispel_name(d))
+                    .and_then(|(d, cat)| cat.dispel_key(d))
                     .map(str::to_string),
                 duration,
                 expiration_time,
@@ -644,7 +644,7 @@ fn feed_auras(
     if let Some(period) = trace_period() {
         if bevy_now - mem.traced_at >= period {
             mem.traced_at = bevy_now;
-            trace_timers(&script, &cache.auras, &list, bevy_now);
+            trace_timers(&mut script, &cache.auras, &list, bevy_now);
         }
     }
 

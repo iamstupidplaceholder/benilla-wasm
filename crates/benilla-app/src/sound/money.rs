@@ -18,7 +18,10 @@
 
 use bevy::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::net::{ObjectStore, SelfPlayer};
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::WorldAssets;
 
 use super::kit::{self, KitRef, SoundKits};

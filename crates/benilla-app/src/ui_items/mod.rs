@@ -1100,35 +1100,35 @@ fn load_item_dbcs(mut commands: Commands, world_assets: Option<Res<benilla_asset
         return;
     };
     let mut chain = world_assets.chain.lock_recover();
-    match benilla_formats::load_item_sets(&mut chain) {
+    match benilla_formats::load_item_sets(&mut *chain) {
         Ok(cat) => {
             info!("ui_items: ItemSet.dbc loaded ({} sets)", cat.len());
             commands.insert_resource(ItemSets(cat));
         }
         Err(e) => warn!("ui_items: ItemSet.dbc failed to load: {e:#}"),
     }
-    match benilla_formats::load_item_sub_classes(&mut chain) {
+    match benilla_formats::load_item_sub_classes(&mut *chain) {
         Ok(cat) => {
             info!("ui_items: ItemSubClass.dbc loaded ({} rows)", cat.len());
             commands.insert_resource(ItemSubClasses(cat));
         }
         Err(e) => warn!("ui_items: ItemSubClass.dbc failed to load: {e:#}"),
     }
-    match benilla_formats::load_item_classes(&mut chain) {
+    match benilla_formats::load_item_classes(&mut *chain) {
         Ok(cat) => {
             info!("ui_items: ItemClass.dbc loaded ({} classes)", cat.len());
             commands.insert_resource(ItemClasses(cat));
         }
         Err(e) => warn!("ui_items: ItemClass.dbc failed to load: {e:#}"),
     }
-    match benilla_formats::load_auction_houses(&mut chain) {
+    match benilla_formats::load_auction_houses(&mut *chain) {
         Ok(cat) => {
             info!("ui_items: AuctionHouse.dbc loaded ({} houses)", cat.len());
             commands.insert_resource(crate::ui_auction::AuctionHouses(cat));
         }
         Err(e) => warn!("ui_items: AuctionHouse.dbc failed to load: {e:#}"),
     }
-    match benilla_formats::load_item_bag_families(&mut chain) {
+    match benilla_formats::load_item_bag_families(&mut *chain) {
         Ok(cat) => {
             info!(
                 "ui_items: ItemBagFamily.dbc loaded ({} families)",

@@ -33,16 +33,17 @@
 //! ## What it costs when off
 //!
 //! One relaxed atomic load and a not-taken branch per handler fire ([`armed`]). The state lives in
-//! its own `app_data` slot rather than in [`super::Model`]: mlua keys `app_data` by `TypeId` with a
-//! **`RefCell` per entry** (`mlua-0.11.6`, `types/app_data.rs`), so the profiler's borrow can never
+//! its own `app_data` slot rather than in [`super::Model`]: app-data keys entries by `TypeId` with
+//! an independent runtime borrow per entry, so the profiler's borrow can never
 //! collide with a model borrow held across a fire — a hazard that would otherwise be a panic in the
 //! hottest path in the client, armed only in the sessions where we are already chasing something.
 
 use std::collections::HashMap;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
-use mlua::Lua;
+use benilla_lua::{Function, LuaContext, Table, Vm};
+use benilla_time::Instant;
 
 use super::UiScript;
 
@@ -105,12 +106,10 @@ pub(crate) struct HandlerProf {
     rows: HashMap<u32, Vec<Slot>>,
 }
 
-/// An open fire, closed by its `Drop` — the balance of the nesting stack is then a property of the
-/// borrow checker rather than of the call site remembering to close what it opened. It also holds
-/// under an unwind, which a hand-written enter/exit pair does not: a panic through a handler would
-/// otherwise leak a stack level and silently inflate every parent attribution after it.
+/// One open handler measurement. [`measure`] owns its open/close sequence and closes it after both
+/// a normal return and an unwind, so a panic cannot leak a nesting level and silently inflate every
+/// parent attribution after it.
 pub(super) struct Fire<'a> {
-    lua: &'a Lua,
     id: u32,
     script: &'a str,
     /// `None` while this VM is not recording — the whole guard is then a no-op.
@@ -119,7 +118,7 @@ pub(super) struct Fire<'a> {
 
 impl<'a> Fire<'a> {
     /// Open a fire on `(id, script)`. Cheap and inert unless this VM is recording.
-    pub(super) fn open(lua: &'a Lua, id: u32, script: &'a str) -> Fire<'a> {
+    fn open(lua: &impl LuaContext, id: u32, script: &'a str) -> Fire<'a> {
         let started = match lua.app_data_mut::<HandlerProf>() {
             Some(mut prof) if prof.on => {
                 prof.stack.push(0);
@@ -128,23 +127,20 @@ impl<'a> Fire<'a> {
             _ => None,
         };
         Fire {
-            lua,
             id,
             script,
             started,
         }
     }
-}
 
-impl Drop for Fire<'_> {
     /// Charge `total` to `(id, script)`, `total - children` to its self time, and hand `total` up
     /// to the enclosing fire as *its* child time.
-    fn drop(&mut self) {
+    fn close(self, lua: &impl LuaContext) {
         let Some(started) = self.started else {
             return;
         };
         let total = started.elapsed().as_nanos() as u64;
-        let Some(mut prof) = self.lua.app_data_mut::<HandlerProf>() else {
+        let Some(mut prof) = lua.app_data_mut::<HandlerProf>() else {
             return;
         };
         let children = prof.stack.pop().unwrap_or(0);
@@ -177,6 +173,28 @@ impl Drop for Fire<'_> {
     }
 }
 
+/// Run one handler with the attribution stack balanced even if a host callback panics.
+///
+/// Taking the active [`LuaContext`] only for the short open/close borrows leaves the same context
+/// available to the handler itself. This is the neutral counterpart of the old guard holding an
+/// a native VM handle; no backend handle is needed by the profiler.
+pub(super) fn measure<C: LuaContext, R>(
+    lua: &mut C,
+    id: u32,
+    script: &str,
+    callback: impl FnOnce(&mut C) -> R,
+) -> R {
+    let fire = armed().then(|| Fire::open(lua, id, script));
+    let outcome = catch_unwind(AssertUnwindSafe(|| callback(lua)));
+    if let Some(fire) = fire {
+        fire.close(lua);
+    }
+    match outcome {
+        Ok(value) => value,
+        Err(payload) => resume_unwind(payload),
+    }
+}
+
 /// One `(frame, script)` pair's cost over the profiler's current window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HandlerRow {
@@ -194,9 +212,9 @@ impl UiScript {
     /// Arm or disarm handler attribution for this VM, reporting every `period_secs` (`0.0` records
     /// with no periodic report — read it with [`UiScript::handler_profile`] instead).
     ///
-    /// Call it between ticks. An open [`Fire`] is inert either way (it decided once, at `open`),
-    /// but this clears the nesting stack, so a disarm from *inside* a handler would drop a level
-    /// its enclosing fires are still counting on.
+    /// Call it between ticks. An open [`Fire`] is inert either way (it decided once at entry), but
+    /// this clears the nesting stack, so a disarm from *inside* a handler would drop a level its
+    /// enclosing fires are still counting on.
     pub fn profile_handlers(&self, on: bool, period_secs: f32) {
         if on {
             ARMED.store(true, Ordering::Relaxed);
@@ -217,7 +235,7 @@ impl UiScript {
     ///
     /// Window totals, not per-frame rates — the frame count is [`UiScript::handler_profile_frames`],
     /// so a caller that wants a rate divides by the number it also has to report.
-    pub fn handler_profile(&self) -> Vec<HandlerRow> {
+    pub fn handler_profile(&mut self) -> Vec<HandlerRow> {
         // Snapshot under the profiler's borrow and then let it go: labelling reaches into the model
         // *and* back into Lua, neither of which may be touched with a borrow of anything open.
         let raw: Vec<(u32, String, u32, u64, u64)> = match self.lua.app_data_ref::<HandlerProf>() {
@@ -238,16 +256,16 @@ impl UiScript {
                 .collect(),
             None => return Vec::new(),
         };
-        let mut rows: Vec<HandlerRow> = raw
-            .into_iter()
-            .map(|(id, script, calls, self_ns, total_ns)| HandlerRow {
+        let mut rows = Vec::with_capacity(raw.len());
+        for (id, script, calls, self_ns, total_ns) in raw {
+            rows.push(HandlerRow {
                 frame: self.handler_label(id, &script),
                 script,
                 calls,
                 self_us: self_ns as f64 / 1000.0,
                 total_us: total_ns as f64 / 1000.0,
-            })
-            .collect();
+            });
+        }
         rows.sort_by(|a, b| {
             b.self_us
                 .total_cmp(&a.self_us)
@@ -305,7 +323,7 @@ impl UiScript {
     /// act on. `Function::info()` hands back the chunk and line, and every addon chunk is named
     /// `@Interface\AddOns\<Folder>\<File>` (see [`super::addon_chunk_name`]), so the label reads as
     /// the addon and the line to open.
-    fn handler_label(&self, id: u32, script: &str) -> String {
+    fn handler_label(&mut self, id: u32, script: &str) -> String {
         let named = {
             let model = self.model_ref();
             model
@@ -321,14 +339,18 @@ impl UiScript {
 
     /// `<short_src>:<line>` for the function bound at `(id, script)`, or `None` if there is no such
     /// binding or the VM cannot say (a C function, a stripped chunk).
-    fn handler_defined_at(&self, id: u32, script: &str) -> Option<String> {
+    fn handler_defined_at(&mut self, id: u32, script: &str) -> Option<String> {
         // `raw_get` throughout: the registry's script tables are plain data, and a report must not
         // be able to run a metamethod — that would re-enter Lua from inside an instrument.
-        let scripts: mlua::Table = self.lua.named_registry_value(super::REG_SCRIPTS).ok()?;
-        let per: mlua::Table = scripts.raw_get(id).ok()?;
-        let func: mlua::Function = per.raw_get(script).ok()?;
-        let info = func.info();
-        Some(format!("{}:{}", info.short_src?, info.line_defined?))
+        let lua = &mut self.lua;
+        let scripts: Table = lua.get_registry(super::REG_SCRIPTS).ok()?;
+        let per: Table = LuaContext::table_get_raw(lua, &scripts, id).ok()?;
+        let function: Function = LuaContext::table_get_raw(lua, &per, script).ok()?;
+        let (source, line) = lua.function_source_location(&function)?;
+        Some(format!(
+            "{}:{line}",
+            source.strip_prefix('@').unwrap_or(&source)
+        ))
     }
 }
 
@@ -381,10 +403,10 @@ fn print_report(rows: &[HandlerRow], window: f32, frames: u32, nested: u32) {
 
 /// Install the profiler's `app_data` slot, and arm it from the environment.
 ///
-/// Unconditional (an empty `HandlerProf` is a few words) because mlua refuses to *insert* app data
-/// while any app data is borrowed — so the slot has to exist before the VM starts running, or
+/// Unconditional (an empty `HandlerProf` is a few words) because a VM cannot insert app data while
+/// that app-data store is borrowed — so the slot has to exist before the VM starts running, or
 /// [`UiScript::profile_handlers`] would carry a panic that only fires in the sessions using it.
-pub(super) fn install(lua: &Lua) {
+pub(super) fn install(lua: &mut Vm) {
     let period = env_period();
     lua.set_app_data(HandlerProf {
         on: period.is_some(),

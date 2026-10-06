@@ -49,7 +49,7 @@ fn harness() -> UiScript {
         "Interface\\FrameXML\\BonusActionBarFrame.xml",
         r"Interface\FrameXML\MainMenuBarMicroButtons.xml",
     ] {
-        super::test_ui::load_ui(&s, file);
+        super::test_ui::load_ui(&mut s, file);
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s
@@ -68,7 +68,7 @@ fn set_player_level(s: &mut UiScript, level: u32) {
     s.fire_event("UNIT_LEVEL", vec![ScriptValue::Str("player".into())]);
 }
 
-fn left_of(s: &UiScript, name: &str) -> f64 {
+fn left_of(s: &mut UiScript, name: &str) -> f64 {
     s.eval::<f64>(&format!("return {name}:GetLeft()"))
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
@@ -109,7 +109,7 @@ fn the_micro_row_sits_where_the_reference_puts_it() {
     s.resolve();
     for (i, name) in ROW.iter().enumerate().skip(3) {
         assert_eq!(
-            left_of(&s, name),
+            left_of(&mut s, name),
             553.0 + 26.0 * i as f64,
             "{name} after the talent gate's own −2"
         );
@@ -217,9 +217,9 @@ fn the_talent_button_appears_at_level_ten_and_the_row_closes_up_below_it() {
         "no talents before 10"
     );
     // The quest log button takes the talent button's own seat — slot 3, not slot 4.
-    assert_eq!(left_of(&s, "QuestLogMicroButton"), 552.0 + 26.0 * 2.0);
+    assert_eq!(left_of(&mut s, "QuestLogMicroButton"), 552.0 + 26.0 * 2.0);
     assert_eq!(
-        left_of(&s, "HelpMicroButton"),
+        left_of(&mut s, "HelpMicroButton"),
         552.0 + 26.0 * 6.0,
         "the whole tail moves up one slot with it"
     );
@@ -232,7 +232,7 @@ fn the_talent_button_appears_at_level_ten_and_the_row_closes_up_below_it() {
         "the button returns at 10"
     );
     assert_eq!(
-        left_of(&s, "QuestLogMicroButton"),
+        left_of(&mut s, "QuestLogMicroButton"),
         553.0 + 26.0 * 3.0,
         "…and the tail goes back out, at the gate's own −2"
     );
@@ -378,42 +378,42 @@ fn a_micro_button_pushes_while_its_panel_is_open_and_the_talent_button_pulses_on
     );
     // The reference's strings, which the app runs ahead of the manifest (lifecycle.rs) — the
     // ding's chat lines below format `SPELL_STAT0_NAME`..`4` through them.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    assert!(super::load_default_ui(&s).is_empty());
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    assert!(super::load_default_ui(&mut s).is_empty());
     s.resolve();
 
-    let state = |s: &UiScript, button: &str| {
+    let state = |s: &mut UiScript, button: &str| {
         s.eval::<String>(&format!("return {button}:GetButtonState()"))
             .unwrap()
     };
-    let face = |s: &UiScript| {
+    let face = |s: &mut UiScript| {
         s.eval::<f64>("return MicroButtonPortrait:GetAlpha()")
             .unwrap()
     };
 
-    assert_eq!(state(&s, "CharacterMicroButton"), "NORMAL");
-    assert_eq!(face(&s), 1.0);
+    assert_eq!(state(&mut s, "CharacterMicroButton"), "NORMAL");
+    assert_eq!(face(&mut s), 1.0);
     // The button's own click (its OnClick, l.49-51) — the sheet's OnShow calls back.
     s.run("ToggleCharacter(\"PaperDollFrame\")").unwrap();
     assert_eq!(
-        state(&s, "CharacterMicroButton"),
+        state(&mut s, "CharacterMicroButton"),
         "PUSHED",
         "open sheet ⇒ button held down"
     );
     assert_eq!(
-        face(&s),
+        face(&mut s),
         0.5,
         "…and the face dims (CharacterMicroButton_SetPushed)"
     );
     s.run("ToggleCharacter(\"PaperDollFrame\")").unwrap();
-    assert_eq!(state(&s, "CharacterMicroButton"), "NORMAL");
-    assert_eq!(face(&s), 1.0);
+    assert_eq!(state(&mut s, "CharacterMicroButton"), "NORMAL");
+    assert_eq!(face(&mut s), 1.0);
 
     // The reference's own full-screen panel; its OnShow/OnHide call back the same way.
     s.run("ToggleWorldMap()").unwrap();
-    assert_eq!(state(&s, "WorldMapMicroButton"), "PUSHED");
+    assert_eq!(state(&mut s, "WorldMapMicroButton"), "PUSHED");
     s.run("ToggleWorldMap()").unwrap();
-    assert_eq!(state(&s, "WorldMapMicroButton"), "NORMAL");
+    assert_eq!(state(&mut s, "WorldMapMicroButton"), "NORMAL");
 
     // A ding with the sheet closed: sixty seconds on the pulse list (UiPanels.xml's
     // SetButtonPulse, the reference's UIParent.lua machinery). The nine args are the ones

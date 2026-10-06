@@ -37,10 +37,12 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use mlua::{Lua, Value};
+use benilla_lua::{Error, LuaContext, Value, Vm};
 
 use super::char_stats::InventorySlots;
 use super::Model;
+
+pub use crate::script_data::UnitReach;
 
 /// The `CheckInteractDistance` threshold table — `{10², 11.1111², 10², 30²}` for the live API's
 /// `type ∈ 1..4`, read straight out of the binary (wow-re §5-VERIFIED
@@ -63,22 +65,6 @@ pub const CAN_INSPECT_DIST_SQ: f64 = 100.0;
 /// manager for it, and a NULL there is answered `nil` without any distance being computed. A party
 /// member outside the local area is exactly that case — `0x4e81a0` reads their GUID straight out of
 /// the roster array, so the GUID is non-zero and the object lookup misses silently.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UnitReach {
-    /// Squared distance from the player, in the binary's own accumulation shape.
-    pub dist_sq: f64,
-    /// The unit passes the two NON-distance refusals vmangos makes for an inspect
-    /// (`sObjectMgr.GetPlayer` and `!IsValidAttackTarget`, `MiscHandler.cpp:945-956`) — consulted
-    /// by `CanInspect` alone. `CheckInteractDistance` is a pure distance test in the binary and
-    /// must not read this, or following an enemy player would gray a row the reference leaves live.
-    ///
-    /// `sObjectMgr.GetPlayer` is the whole is-it-a-player leg, and it lives **here** rather than in
-    /// the map's membership: the map is fed for every held unit, creature included (B304), so a
-    /// boar 3 yards away is `inspectable: false` while still answering `CheckInteractDistance`
-    /// truthfully.
-    pub inspectable: bool,
-}
-
 /// What the app has resolved for the unit currently being inspected (decision 0631).
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectView {
@@ -155,7 +141,7 @@ impl super::UiScript {
 /// predicates reach the unit through the one resolver `0x515970`, whose nine compares are
 /// `_strnicmp` (1247), so `CheckInteractDistance("Target", 4)` is the same question as
 /// `CheckInteractDistance("target", 4)`.
-fn reach(lua: &Lua, token: &Option<String>) -> Option<UnitReach> {
+fn reach(lua: &impl LuaContext, token: &Option<String>) -> Option<UnitReach> {
     let token = token.as_deref()?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     if token.bytes().any(|b| b.is_ascii_uppercase()) {
@@ -165,9 +151,7 @@ fn reach(lua: &Lua, token: &Option<String>) -> Option<UnitReach> {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // CanInspect(unit) → 1/nil: the gate the ref's `InspectFrame_Show` opens on
     // (`Blizzard_InspectUI.lua:8`). The real client's `0x48a1b0` is a d² range test — wow-re
     // §5-VERIFIED `PRIMITIVE:caninspect_dist2`: **out of range iff `threshold < d²`**, where
@@ -179,25 +163,22 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // ([`UnitReach::inspectable`]) — not by keeping the token out of the map, which is the map's
     // own law (a creature `"target"` is in it, at its real distance, and is not inspectable).
     // Decision 0631.
-    g.set(
-        "CanInspect",
-        lua.create_function(|lua, unit: Option<String>| {
-            let ok = match reach(lua, &unit) {
-                Some(r) => {
-                    r.inspectable
-                        && matches!(
-                            r.dist_sq.partial_cmp(&CAN_INSPECT_DIST_SQ),
-                            Some(Ordering::Less | Ordering::Equal) | None
-                        )
-                }
-                // No live unit object: the binary reaches its `lua_pushnil` tail through
-                // `0x4944a0`'s null-`this` guard rather than an early return, but the value it
-                // pushes is the same one — nothing to inspect.
-                None => false,
-            };
-            Ok(if ok { Value::Integer(1) } else { Value::Nil })
-        })?,
-    )?;
+    lua.register_function("CanInspect", |lua, unit: Option<String>| {
+        let ok = match reach(lua, &unit) {
+            Some(r) => {
+                r.inspectable
+                    && matches!(
+                        r.dist_sq.partial_cmp(&CAN_INSPECT_DIST_SQ),
+                        Some(Ordering::Less | Ordering::Equal) | None
+                    )
+            }
+            // No live unit object: the binary reaches its `lua_pushnil` tail through
+            // `0x4944a0`'s null-`this` guard rather than an early return, but the value it
+            // pushes is the same one — nothing to inspect.
+            None => false,
+        };
+        Ok(if ok { Value::Integer(1) } else { Value::Nil })
+    })?;
 
     // CheckInteractDistance(unit, type) → 1/nil, `type ∈ 1..4` (wow-re §5-VERIFIED
     // `PRIMITIVE:check_interact_dist2` @ `0x48ba00`): **in range iff `d² < table[type-1]`** —
@@ -217,12 +198,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //   (`0x48bb48 call luaL_error`, which longjmps and never returns). Same for a non-string
     //   unit. A caller that passes neither argument is not asking a question the reference
     //   answers.
-    g.set(
+    lua.register_function(
         "CheckInteractDistance",
-        lua.create_function(|lua, (unit, kind): (Option<String>, Option<f64>)| {
+        |lua, (unit, kind): (Option<String>, Option<f64>)| {
             let Some(kind) = kind else {
-                return Err(mlua::Error::RuntimeError(
-                    "Usage: CheckInteractDistance(\"unit\", distIndex)".into(),
+                return Err(Error::runtime(
+                    "Usage: CheckInteractDistance(\"unit\", distIndex)",
                 ));
             };
             // `__ftol` chops toward zero; the index is then compared UNSIGNED, so anything that
@@ -236,34 +217,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 _ => false,
             };
             Ok(if ok { Value::Integer(1) } else { Value::Nil })
-        })?,
+        },
     )?;
 
     // NotifyInspect(unit) — the ref's request verb (`Blizzard_InspectUI.lua:9`). Queues the token;
     // the app resolves it → guid → CMSG_INSPECT. The window does NOT wait on the reply (see the
     // module doc), so this is fire-and-forget by design, not an unfinished handshake.
-    g.set(
-        "NotifyInspect",
-        lua.create_function(|lua, unit: String| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .inspect_notifies
-                .push(unit);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("NotifyInspect", |lua, unit: String| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .inspect_notifies
+            .push(unit);
+        Ok(())
+    })?;
 
     // ClearInspectPlayer() — the ref calls it from `InspectFrame_OnHide` (l.58) to drop the
     // engine's inspected-player state. Ours stops the app's per-frame slot resolve.
-    g.set(
-        "ClearInspectPlayer",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .inspect_clear = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ClearInspectPlayer", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .inspect_clear = true;
+        Ok(())
+    })?;
 
     Ok(())
 }

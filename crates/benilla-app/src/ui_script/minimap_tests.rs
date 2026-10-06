@@ -7,7 +7,7 @@ use benilla_ui::script::UiScript;
 
 use super::test_ui::load_ui as load_xml;
 
-fn enabled(s: &UiScript, button: &str) -> bool {
+fn enabled(s: &mut UiScript, button: &str) -> bool {
     s.eval::<bool>(&format!("return {button}:IsEnabled() ~= 0"))
         .unwrap()
 }
@@ -21,29 +21,29 @@ fn minimap_zoom_buttons_resync_when_switching_inside_and_outside() {
     s.run("function GetMinimapZoneText() return '' end")
         .unwrap();
     s.run("function PlaySound() end").unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // The shipped load order provides GameTooltip before the cluster; Minimap_Update's tooltip
     // half (the PVP tint slice, decision 0287) touches it from OnLoad on.
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BattlefieldFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Minimap.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BattlefieldFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Minimap.xml");
 
     // OnLoad seeds the +/- state from the live zoom. The CVar default is 3 — a middle level, so
     // BOTH buttons start enabled (the old hardcoded `MinimapZoomOut:Disable()` assumed zoom 0).
     assert_eq!(s.eval::<u8>("return Minimap:GetZoom()").unwrap(), 3);
-    assert!(enabled(&s, "MinimapZoomIn"));
-    assert!(enabled(&s, "MinimapZoomOut"));
+    assert!(enabled(&mut s, "MinimapZoomIn"));
+    assert!(enabled(&mut s, "MinimapZoomOut"));
 
     // Outdoors, zoom fully in (index 5 = max): the click handler greys ZoomIn.
     s.run("Minimap:SetZoom(5)").unwrap();
     s.fire_event("MINIMAP_UPDATE_ZOOM", vec![]);
-    assert!(!enabled(&s, "MinimapZoomIn"), "at max zoom ZoomIn disables");
-    assert!(enabled(&s, "MinimapZoomOut"));
+    assert!(!enabled(&mut s, "MinimapZoomIn"), "at max zoom ZoomIn disables");
+    assert!(enabled(&mut s, "MinimapZoomOut"));
 
     // Step INSIDE: the API now routes to the indoor index, still at its own untouched default 3.
     // The app fires MINIMAP_UPDATE_ZOOM on the transition; the cluster must re-sync to the new level.
@@ -55,27 +55,27 @@ fn minimap_zoom_buttons_resync_when_switching_inside_and_outside() {
         "indoors reads the separate indoor index"
     );
     assert!(
-        enabled(&s, "MinimapZoomIn"),
+        enabled(&mut s, "MinimapZoomIn"),
         "the stale outdoor max-zoom greying must clear — this is the reported bug"
     );
-    assert!(enabled(&s, "MinimapZoomOut"));
+    assert!(enabled(&mut s, "MinimapZoomOut"));
 
     // Indoors, zoom fully out (index 0 = widest): ZoomOut greys.
     s.run("Minimap:SetZoom(0)").unwrap();
     s.fire_event("MINIMAP_UPDATE_ZOOM", vec![]);
     assert!(
-        !enabled(&s, "MinimapZoomOut"),
+        !enabled(&mut s, "MinimapZoomOut"),
         "at min zoom ZoomOut disables"
     );
-    assert!(enabled(&s, "MinimapZoomIn"));
+    assert!(enabled(&mut s, "MinimapZoomIn"));
 
     // Step back OUTSIDE: the outdoor index is exactly where we left it (5 = max), so ZoomIn is
     // greyed again and the indoor min-zoom greying of ZoomOut is gone.
     s.set_minimap_inside(false);
     s.fire_event("MINIMAP_UPDATE_ZOOM", vec![]);
     assert_eq!(s.eval::<u8>("return Minimap:GetZoom()").unwrap(), 5);
-    assert!(!enabled(&s, "MinimapZoomIn"), "outdoor max-zoom survived");
-    assert!(enabled(&s, "MinimapZoomOut"));
+    assert!(!enabled(&mut s, "MinimapZoomIn"), "outdoor max-zoom survived");
+    assert!(enabled(&mut s, "MinimapZoomOut"));
 }
 
 /// The tracking icon (ref-Minimap.xml l.109-174, transcribed verbatim): hidden at load, and the
@@ -92,21 +92,21 @@ fn tracking_frame_follows_get_tracking_texture_across_player_auras_changed() {
     s.run("function GetMinimapZoneText() return '' end")
         .unwrap();
     s.run("function PlaySound() end").unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BattlefieldFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Minimap.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BattlefieldFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Minimap.xml");
 
-    let vis = |s: &UiScript| {
+    let vis = |s: &mut UiScript| {
         s.eval::<bool>("return MiniMapTrackingFrame:IsVisible()")
             .unwrap()
     };
-    assert!(!vis(&s), "no tracking at load — the frame starts hidden");
+    assert!(!vis(&mut s), "no tracking at load — the frame starts hidden");
 
     // The feed pushes a tracking aura (a miner's Find Minerals) and fires the rebuild event.
     s.set_tracking(Some(TrackingState {
@@ -116,12 +116,12 @@ fn tracking_frame_follows_get_tracking_texture_across_player_auras_changed() {
         cancelable: true,
     }));
     s.fire_event("PLAYER_AURAS_CHANGED", vec![]);
-    assert!(vis(&s), "a live tracking texture shows the icon");
+    assert!(vis(&mut s), "a live tracking texture shows the icon");
 
     // Tracking cancelled/expired: the same event path hides it.
     s.set_tracking(None);
     s.fire_event("PLAYER_AURAS_CHANGED", vec![]);
-    assert!(!vis(&s), "no tracking texture hides the frame again");
+    assert!(!vis(&mut s), "no tracking texture hides the frame again");
 }
 
 /// A session with the minimap cluster + the time-of-day indicator (`GameTime.xml`) loaded, the
@@ -141,21 +141,21 @@ fn game_time_session(hour: u32, minute: u32) -> UiScript {
     // `TwentyFourHourTime` are exactly what it reads. `Localization.xml` only DEFINES
     // `LocalizeFrames`; the reference calls it from `UIParent_OnEvent`'s VARIABLES_LOADED arm, and
     // this session has no UIParent, so it calls it directly.
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\Localization.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Localization.xml");
     s.run("LocalizeFrames()").unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // `TEXT()`, which the reference's own tooltip and label formatting passes every string through.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BattlefieldFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Minimap.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTime.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BattlefieldFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Minimap.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTime.xml");
     s
 }
 
@@ -165,7 +165,7 @@ fn game_time_session(hour: u32, minute: u32) -> UiScript {
 /// `GetTexCoord` answers EIGHT values since decision 1840 — `ULx, ULy, LLx, LLy, URx, URy, LRx,
 /// LRy` — so the rect is positions 1, 5, 2, 4. Folded here rather than at each call site because
 /// the window really is axis-aligned and every assertion below is about its edges.
-fn tod_window(s: &UiScript) -> (f64, f64, f64, f64) {
+fn tod_window(s: &mut UiScript) -> (f64, f64, f64, f64) {
     let (ulx, uly, _, lly, urx, ..): (f64, f64, f64, f64, f64, f64, f64, f64) =
         s.eval("return GameTimeTexture:GetTexCoord()").unwrap();
     (ulx, urx, uly, lly)
@@ -182,14 +182,14 @@ fn game_time_frame_slides_the_sun_moon_window_on_the_game_clock() {
     // OnLoad seeded `timeOfDay = 0` and 10:30 ≠ 0, so the very first update already seated the
     // window — no OnUpdate tick needed for the initial state.
     let day = (0.0, 50.0 / 128.0, 0.0, 50.0 / 64.0);
-    assert_eq!(tod_window(&s), day, "mid-morning shows the sun half");
+    assert_eq!(tod_window(&mut s), day, "mid-morning shows the sun half");
 
     // 21:00 exactly is night (`>= DUSK`): the OnUpdate re-read slides the window +0.5.
     s.run("__benilla_game_hour = 21; __benilla_game_minute = 0")
         .unwrap();
     s.tick(0.016);
     assert_eq!(
-        tod_window(&s),
+        tod_window(&mut s),
         (0.5, 0.5 + 50.0 / 128.0, 0.0, 50.0 / 64.0),
         "9:00 PM sharp is the moon half"
     );
@@ -198,10 +198,10 @@ fn game_time_frame_slides_the_sun_moon_window_on_the_game_clock() {
     s.run("__benilla_game_hour = 5; __benilla_game_minute = 29")
         .unwrap();
     s.tick(0.016);
-    assert_eq!(tod_window(&s).0, 0.5, "5:29 AM is still the moon");
+    assert_eq!(tod_window(&mut s).0, 0.5, "5:29 AM is still the moon");
     s.run("__benilla_game_minute = 30").unwrap();
     s.tick(0.016);
-    assert_eq!(tod_window(&s), day, "5:30 AM sharp flips to the sun");
+    assert_eq!(tod_window(&mut s), day, "5:30 AM sharp flips to the sun");
 }
 
 /// Hovering the indicator through the REAL pointer path (hit-test → OnEnter) shows the game-time
@@ -229,16 +229,16 @@ fn hovering_the_indicator_shows_and_live_updates_the_game_time_tooltip() {
         "OnEnter owns the tooltip (the Scripts-walker auto-enable capturing at {x},{y})"
     );
     // TwentyFourHourTime = 1 (enGB LocalizeFrames, per GameTime.xml's header): 21:07, not 9:07 PM.
-    let text = |s: &UiScript| {
+    let text = |s: &mut UiScript| {
         s.eval::<String>("return GameTooltipTextLeft1:GetText()")
             .unwrap()
     };
-    assert_eq!(text(&s), "21:07");
+    assert_eq!(text(&mut s), "21:07");
 
     // The minute ticks while hovered: GameTimeFrame_Update's IsOwned branch refreshes in place.
     s.run("__benilla_game_minute = 8").unwrap();
     s.tick(0.016);
-    assert_eq!(text(&s), "21:08", "the owned tooltip follows the clock");
+    assert_eq!(text(&mut s), "21:08", "the owned tooltip follows the clock");
 
     // Leave: a point past the left inset — outside the hit hull but still inside the raw 50×50
     // rect — must ALSO leave; the insets are part of the reference geometry.
@@ -263,15 +263,15 @@ fn a_click_on_the_minimap_parks_a_centre_relative_ping_request() {
     s.run("function GetMinimapZoneText() return '' end")
         .unwrap();
     s.run("function PlaySound() end").unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BattlefieldFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Minimap.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BattlefieldFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Minimap.xml");
     s.resolve();
 
     let cx = s
@@ -316,15 +316,15 @@ fn get_ping_position_answers_two_numbers_always() {
     s.run("function GetMinimapZoneText() return '' end")
         .unwrap();
     s.run("function PlaySound() end").unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BattlefieldFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Minimap.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BattlefieldFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Minimap.xml");
 
     assert_eq!(s.arity("Minimap:GetPingPosition()").unwrap(), 2);
     assert_eq!(
@@ -410,18 +410,18 @@ fn the_meeting_stone_icon_follows_the_queue_across_meetingstone_changed() {
         "Interface\\FrameXML\\BattlefieldFrame.xml",
         "Interface\\FrameXML\\Minimap.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s.resolve();
-    let vis = |s: &UiScript| {
+    let vis = |s: &mut UiScript| {
         s.eval::<bool>("return MiniMapMeetingStoneFrame:IsVisible()")
             .unwrap()
     };
-    assert!(!vis(&s), "hidden at load");
+    assert!(!vis(&mut s), "hidden at load");
 
     s.set_meeting_stone(1519, Some("Looking for more for Stormwind City".into()));
     s.fire_event("MEETINGSTONE_CHANGED", vec![]);
-    assert!(vis(&s), "a queued area shows the icon");
+    assert!(vis(&mut s), "a queued area shows the icon");
     s.run("this = MiniMapMeetingStoneFrame; MiniMapMeetingStoneFrame:GetScript('OnEnter')()")
         .unwrap();
     assert_eq!(
@@ -443,7 +443,7 @@ fn the_meeting_stone_icon_follows_the_queue_across_meetingstone_changed() {
 
     s.set_meeting_stone(0, Some("Looking for more for Unknown".into()));
     s.fire_event("MEETINGSTONE_CHANGED", vec![]);
-    assert!(!vis(&s), "area 0 hides it again");
+    assert!(!vis(&mut s), "area 0 hides it again");
 }
 
 /// **The ping's pixels are the stock `<Model>`'s own file** (decision 2008): shown by
@@ -472,15 +472,15 @@ fn a_shown_ping_pane_asks_for_a_tile_and_draws_its_cell() {
     s.run("function GetMinimapZoneText() return '' end")
         .unwrap();
     s.run("function PlaySound() end").unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BattlefieldFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Minimap.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BattlefieldFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Minimap.xml");
 
     // The file's facts, as `benilla-extract m2seq` reads them off the install: the ping's
     // `SetSequence(0)` from its OnLoad was queued behind them and replays now.

@@ -19,9 +19,26 @@
 //! answering `nil` would make that a `table index is nil` error one call deeper — the failure mode
 //! we have been paying for all arc.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{FromLua, MultiValue, Value, Vm};
 
-use super::Model;
+use super::{Model, UiScript};
+
+impl UiScript {
+    pub fn set_damage_school_names(&mut self, names: &std::collections::HashMap<u8, String>) {
+        let mut model = self.model_mut();
+        if model.damage_school_names != *names {
+            model.damage_school_names.clone_from(names);
+        }
+    }
+
+    pub fn damage_school_name(&mut self, school: u8) -> Option<String> {
+        self.model_mut().damage_school_names.get(&school).cloned()
+    }
+    /// Engine-owned identity; set before any installed FrameXML/addon executes.
+    pub fn set_locale(&mut self, locale: &str) {
+        self.model_mut().locale = locale.to_owned();
+    }
+}
 
 /// The 1.12.1 client's own build identity, read out of `WoW.exe`'s string table rather than
 /// remembered: `5875` and `1.12.1` sit adjacent in the binary, and `Sep 19 2006` is its only
@@ -39,9 +56,7 @@ const BUILD_DATE: &str = "Sep 19 2006";
 // in-game registrar pushes three (decision 1842); the interface number is a later expansion's
 // return, and `benilla.toc`'s own `## Interface` line is where that number belongs.
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `GetLocale()` -> one string, and `IsMacClient()` -> nil, both ARITY-EXACT in the reference's
     // own shape table (`re/audit/binding-shapes.tsv`: `GetLocale 0x46ce40`/`0x48d8b0` is
     // `0 -> 1 (string?)`, `IsMacClient 0x48c980` is `0 -> 1 (nil)`, both `exact`/`agree`).
@@ -52,14 +67,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // labels; nil takes the PC arm, which is the arm this client wants.
     //
     // `GetLocale` is the two-registration case the shape gate warns about (1843): a glue copy and
-    // an in-game copy, same shape. Ours answers the one locale this client ships against — the
-    // enUS `GlobalStrings.lua` the manifest loads and 1804's reference defaults are read from.
-    // Decision 1880.
-    g.set(
-        "GetLocale",
-        lua.create_function(|lua, ()| lua.create_string("enUS"))?,
-    )?;
-    g.set("IsMacClient", lua.create_function(|_, ()| Ok(Value::Nil))?)?;
+    // an in-game copy, same shape. The host sets this before installed UI executes;
+    // a fresh/native VM defaults to enUS. Resource delivery must use that same locale.
+    lua.register_function("GetLocale", |lua, ()| {
+        Ok(lua
+            .app_data_ref::<Model>()
+            .expect("model app_data")
+            .locale
+            .clone())
+    })?;
+    lua.register_function("IsMacClient", |_, ()| Ok(Value::Nil))?;
 
     // **`FrameXML_Debug([v])` — the XML loader's own trace switch, get-or-set** (decision 2160,
     // wow-re `ui/scratch/framexml-debug-trace-flag.md`). `0x488440` reads the global `[0xceea30]`
@@ -78,37 +95,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // corpus's consumer is `ImprovedErrorFrame`, which drives it off a saved `XMLDebug` CVar at
     // its OnLoad and died on the missing global. What it gates is
     // [`crate::loader::LoadReport::traces`].
-    g.set(
-        "FrameXML_Debug",
-        lua.create_function(|lua, v: Value| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let truthy = !matches!(v, Value::Nil | Value::Boolean(false));
-            if truthy {
-                // `lua_tonumber`'s coercion, then truncate toward zero. Anything that will not
-                // coerce is 0 — the same answer `0x6f3620` gives for a non-numeric argument.
-                let n = lua.coerce_number(v)?.unwrap_or(0.0);
-                model.framexml_debug.set(n.trunc() as i32);
-            }
-            Ok(model.framexml_debug.get())
-        })?,
-    )?;
+    lua.register_function("FrameXML_Debug", |lua, v: Value| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let truthy = !matches!(v, Value::Nil | Value::Boolean(false));
+        if truthy {
+            // `lua_tonumber`'s coercion, then truncate toward zero. Anything that will not
+            // coerce is 0 — the same answer `0x6f3620` gives for a non-numeric argument.
+            let n = f64::from_lua(v).unwrap_or(0.0);
+            model.framexml_debug.set(n.trunc() as i32);
+        }
+        Ok(model.framexml_debug.get())
+    })?;
 
     // version, build, date — three, and no fourth (decision 1842)
-    g.set(
-        "GetBuildInfo",
-        lua.create_function(|lua, ()| {
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(VERSION)?),
-                Value::String(lua.create_string(BUILD)?),
-                Value::String(lua.create_string(BUILD_DATE)?),
-                // **THREE, not four.** The reference's in-game `GetBuildInfo 0x4884a0` pushes
-                // `(string, string, string)`; the interface/TOC number is a later-expansion return
-                // and 1.12 has no fourth value here. (Its GLUE twin `0x46cd70` pushes five — the
-                // same name with a different shape per registrar table, which is why 1842's gate
-                // keys on the table and not the name.) Decision 1842.
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetBuildInfo", |_, ()| {
+        Ok(MultiValue::from([
+            Value::from(VERSION),
+            Value::from(BUILD),
+            Value::from(BUILD_DATE),
+            // **THREE, not four.** The reference's in-game `GetBuildInfo 0x4884a0` pushes
+            // `(string, string, string)`; the interface/TOC number is a later-expansion return
+            // and 1.12 has no fourth value here. (Its GLUE twin `0x46cd70` pushes five — the
+            // same name with a different shape per registrar table, which is why 1842's gate
+            // keys on the table and not the name.) Decision 1842.
+        ]))
+    })?;
 
     // `RunScript(text)` — compile and run a chunk in the shared global state.
     //
@@ -145,47 +156,38 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // it.
     //
     // **4 · It answers zero values on every path** (`xor eax,eax` at both exits).
-    g.set(
-        "RunScript",
-        lua.create_function(|lua, text: Value| {
-            // `lua_isstring` + `lua_tostring`, in one: strings and numbers coerce, everything
-            // else is `None` — and `None` is the silent return, per fact 2.
-            let Some(s) = lua.coerce_string(text)? else {
-                return Ok(());
-            };
-            let raw = s.as_bytes();
-            if raw.is_empty() {
-                return Ok(());
-            }
-            // The name is the source bytes as given. Same rule as `loadstring`'s default
-            // (`stdlib::loadstring`), and for the same reason: the image passes one pointer twice.
-            let name = String::from_utf8_lossy(&raw).into_owned();
-            if let Err(e) = lua
-                .load(&*raw)
-                .set_name(name)
-                .set_mode(mlua::ChunkMode::Text)
-                .exec()
-            {
-                lua.app_data_mut::<crate::script::Model>()
-                    .expect("model")
-                    .record_script_error(super::stdlib::lua_message(&e));
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RunScript", |lua, text: Value| {
+        // `lua_isstring` + `lua_tostring`, in one: strings and numbers coerce, everything
+        // else is `None` — and `None` is the silent return, per fact 2.
+        let raw = match text {
+            Value::String(text) => text.as_bytes().to_vec(),
+            Value::Integer(number) => number.to_string().into_bytes(),
+            Value::Number(number) => super::binding_abi::lua_number_text(number).into_bytes(),
+            _ => return Ok(()),
+        };
+        if raw.is_empty() {
+            return Ok(());
+        }
+        // The name is the source bytes as given. Same rule as `loadstring`'s default
+        // (`stdlib::loadstring`), and for the same reason: the image passes one pointer twice.
+        let name = String::from_utf8_lossy(&raw).into_owned();
+        if let Err(error) = lua.exec_named_text(&raw, &name) {
+            lua.app_data_mut::<crate::script::Model>()
+                .expect("model")
+                .record_script_error(error.to_string());
+        }
+        Ok(())
+    })?;
 
     // `GetRealmName()` — the realm this session is on, as the realm list spells it.
     //
     // The corpus's most-wanted engine verb after the dialect fix: 24 addons stop on it, and they
     // stop *at file scope*, because the idiom is `MyAddonDB[GetRealmName()] = …` in a chunk's
     // opening lines. `""` until the app pushes one (the glue screen's own answer), never `nil`.
-    g.set(
-        "GetRealmName",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            lua.create_string(&model.realm_name)
-        })?,
-    )?;
+    lua.register_function("GetRealmName", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.realm_name.clone())
+    })?;
 
     // `RequestTimePlayed()` — ask the server for /played, answered by `TIME_PLAYED_MSG`.
     //
@@ -196,15 +198,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `attempt to call global` it gets today.
     //
     // It returns nothing — the answer arrives as an event, never as a return value.
-    g.set(
-        "RequestTimePlayed",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .played_time_asks += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RequestTimePlayed", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .played_time_asks += 1;
+        Ok(())
+    })?;
 
     // `GetBindLocation()` — the hearthstone's bind location NAME, as the reference's own hearth
     // confirmation prints it (`StaticPopup.lua:1742` formats it straight into the dialog text).
@@ -218,13 +217,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `SMSG_BINDPOINTUPDATE` lands, and no logged-in character is ever without a bind point, so the
     // empty window is ours alone. Conflating "not yet known" with "bound nowhere" is the price, and
     // it is the price the neighbouring verb already pays deliberately.
-    g.set(
-        "GetBindLocation",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            lua.create_string(&model.bind_location)
-        })?,
-    )?;
+    lua.register_function("GetBindLocation", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.bind_location.clone())
+    })?;
 
     // `GetFramerate()` — frames per second, as a number.
     //
@@ -232,13 +228,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // panels is this one verb. The app pushes a smoothed value each tick
     // ([`super::UiScript::set_framerate`]); 0 before the first push, which is what an addon's
     // `format("%.1f", GetFramerate())` needs to not error.
-    g.set(
-        "GetFramerate",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.framerate)
-        })?,
-    )?;
+    lua.register_function("GetFramerate", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.framerate)
+    })?;
 
     Ok(())
 }
@@ -346,9 +339,10 @@ mod tests {
     /// This VM is the in-game one. That pair is why 1842's gate keys on the table, not the name.
     #[test]
     fn get_build_info_answers_as_the_1_12_1_client() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
-            s.eval::<Vec<String>>("return { GetBuildInfo() }").unwrap(),
+            s.eval_sequence::<String>("return { GetBuildInfo() }")
+                .unwrap(),
             vec!["1.12.1", "5875", "Sep 19 2006"]
         );
         assert_eq!(
@@ -425,7 +419,7 @@ mod tests {
     /// (`binding-shapes.tsv`, both `exact`/`agree`), and the arity is the half a caller branches on.
     #[test]
     fn the_client_identity_pair_answers_its_reference_arity() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.arity("GetLocale()").unwrap(),
             1,

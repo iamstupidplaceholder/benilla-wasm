@@ -19,7 +19,14 @@ use benilla_dbc::{DbcParser, FieldType, Schema, SchemaField};
 pub use benilla_blp::BlpTexels;
 
 mod chain;
-pub use chain::{Chain, ChainEntry};
+pub mod locales;
+mod presence;
+mod resistances;
+pub use chain::{Chain, ChainEntry, FileSource};
+pub use presence::ChainPresenceIndex;
+pub use resistances::{load_resistance_catalog, ResistanceCatalog};
+mod memory_source;
+pub use memory_source::MemoryFileSource;
 /// The UI texture table's other half — loose `.tga` art (addon folders; decision 1322).
 mod tga;
 pub use tga::tga_to_rgba;
@@ -70,6 +77,8 @@ pub use factions::{
 };
 mod creature_types;
 pub use creature_types::{load_creature_type_flags, CreatureTypeFlags};
+mod unit_names;
+pub use unit_names::{load_unit_names, UnitNames};
 /// The chat language scramble — the reference's `0x49b560` (B262). Reads [`LanguageWords`].
 mod garble;
 pub use garble::{garble, garble_chat, Garble, FLUENT_SKILL};
@@ -333,6 +342,8 @@ mod taxi_nodes;
 pub use taxi_nodes::{load_taxi_nodes, TaxiNode, TaxiNodes};
 mod taxi_path;
 pub use taxi_path::{load_taxi_paths, TaxiPath, TaxiPaths};
+mod logical_path;
+pub use logical_path::normalize_client_path;
 
 /// The ten vanilla base content archives, **lowest priority first** — the reference mounter's
 /// table (`0x82e12c`) at its carved fixed priorities (`dbc.MPQ` = 0x36 … `model.MPQ` = 0x3f),
@@ -560,8 +571,16 @@ impl BlpMipChain {
 /// further processing (concatenation, upload, BCn re-encode). The mip pyramid is the BLP's own,
 /// not regenerated — the C2-faithful behaviour.
 pub fn read_texture_mip_chain(chain: &mut Chain, path: &str) -> Result<BlpMipChain> {
+    read_texture_mip_chain_from(chain, path)
+}
+
+/// [`read_texture_mip_chain`] over the narrow source boundary used by asynchronous hosts.
+pub fn read_texture_mip_chain_from(
+    source: &mut impl FileSource,
+    path: &str,
+) -> Result<BlpMipChain> {
     let name = path.replace('/', "\\");
-    let bytes = chain
+    let bytes = source
         .read_file(&name)
         .with_context(|| format!("reading texture '{name}'"))?;
     blp_bytes_to_mip_chain(&bytes).with_context(|| format!("decoding texture '{name}'"))

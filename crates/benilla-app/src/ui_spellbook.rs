@@ -114,7 +114,7 @@ fn load_skill_lines(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_skill_line_catalog(&mut chain)
+        benilla_formats::load_skill_line_catalog(&mut *chain)
     };
     match loaded {
         Ok(catalog) => {

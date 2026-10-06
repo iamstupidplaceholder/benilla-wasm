@@ -53,7 +53,6 @@ use bevy::prelude::*;
 use crate::creature_anim::{Engaged, SwingMessage};
 use crate::names::NameCache;
 use crate::net::{ClientCommand, Guid, GuidIndex, NetEntity, ObjectStore, Reputations, SelfPlayer};
-use benilla_assets::{LockRecover, WorldAssets};
 
 use super::relations::{can_assist, can_attack};
 use super::ring::reaction_from_player;
@@ -232,22 +231,7 @@ fn combat_with_me(store: &ObjectStore, me: Option<u64>) -> bool {
 /// against the file; the code was always reading the flag rather than a type list, so only the
 /// words were wrong.
 #[derive(Resource)]
-pub(crate) struct CreatureTypes(CreatureTypeFlags);
-
-/// Startup (after the MPQ chain opens): load CreatureType.dbc for the critter TAB filter.
-pub(super) fn load_creature_types(mut commands: Commands, world_assets: Option<Res<WorldAssets>>) {
-    let Some(world_assets) = world_assets else {
-        return;
-    };
-    let mut chain = world_assets.chain.lock_recover();
-    match benilla_formats::load_creature_type_flags(&mut chain) {
-        Ok(flags) => {
-            info!("creature types: {} rows", flags.len());
-            commands.insert_resource(CreatureTypes(flags));
-        }
-        Err(e) => warn!("CreatureType.dbc unavailable, critters stay TAB-able: {e:#}"),
-    }
-}
+pub(crate) struct CreatureTypes(pub(super) CreatureTypeFlags);
 
 /// Everything the scan core reads, bundled (the TAB and attack-acquire systems share it).
 ///

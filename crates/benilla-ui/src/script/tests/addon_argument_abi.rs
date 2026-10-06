@@ -40,7 +40,7 @@ fn seeded() -> UiScript {
 }
 
 /// The message of a raise, or `"<no raise>"` if the call completed.
-fn raised(s: &UiScript, call: &str) -> String {
+fn raised(s: &mut UiScript, call: &str) -> String {
     s.eval::<String>(&format!(
         "local ok, e = pcall(function() {call} end) \
          if ok then return \"<no raise>\" end return tostring(e)"
@@ -53,7 +53,7 @@ fn raised(s: &UiScript, call: &str) -> String {
 /// error handler, so the spelling is the contract.
 #[test]
 fn a_bad_argument_type_raises_each_verbs_own_usage_string() {
-    let s = seeded();
+    let mut s = seeded();
     for (call, usage) in [
         ("GetAddOnInfo({})", "Usage: GetAddOnInfo(index or \"name\")"),
         (
@@ -76,7 +76,7 @@ fn a_bad_argument_type_raises_each_verbs_own_usage_string() {
         ),
         ("LoadAddOn({})", "Usage: LoadAddOn(index or \"name\")"),
     ] {
-        let got = raised(&s, call);
+        let got = raised(&mut s, call);
         assert!(
             got.contains(usage),
             "{call} must raise `{usage}`, got: {got}"
@@ -86,13 +86,13 @@ fn a_bad_argument_type_raises_each_verbs_own_usage_string() {
     // NULL past `L->top` as "not a number" — so they take the same raise.
     for call in ["LoadAddOn(nil)", "LoadAddOn()", "IsAddOnLoaded(true)"] {
         assert!(
-            raised(&s, call).contains("index or \"name\""),
+            raised(&mut s, call).contains("index or \"name\""),
             "{call}: {}",
-            raised(&s, call)
+            raised(&mut s, call)
         );
     }
     // The second argument has its own `lua_isstring` (`0x48e59c`) onto the SAME raise.
-    assert!(raised(&s, "GetAddOnMetadata(1)").contains("Usage: GetAddOnMetadata"));
+    assert!(raised(&mut s, "GetAddOnMetadata(1)").contains("Usage: GetAddOnMetadata"));
 }
 
 /// **An out-of-range numeric index raises, on every verb, with the count in the message** —
@@ -103,7 +103,7 @@ fn a_bad_argument_type_raises_each_verbs_own_usage_string() {
 /// all before this, and those three said something the image does not.
 #[test]
 fn an_out_of_range_index_raises_with_the_registrys_own_count() {
-    let s = seeded();
+    let mut s = seeded();
     let want = "AddOn index must be in the range of 1 to 2";
     for verb in [
         "GetAddOnInfo",
@@ -117,7 +117,7 @@ fn an_out_of_range_index_raises_with_the_registrys_own_count() {
         for arg in ["0", "3", "-1", "2.9"] {
             // 2.9 truncates toward zero (`_ftol 0x40a2b0` chops) to 2, which is IN range — the
             // one of the four that must NOT raise.
-            let got = raised(&s, &format!("{verb}({arg})"));
+            let got = raised(&mut s, &format!("{verb}({arg})"));
             if arg == "2.9" {
                 assert!(!got.contains("must be in the range"), "{verb}(2.9): {got}");
             } else {
@@ -125,20 +125,20 @@ fn an_out_of_range_index_raises_with_the_registrys_own_count() {
             }
         }
     }
-    assert!(raised(&s, "GetAddOnMetadata(3, \"Version\")").contains(want));
+    assert!(raised(&mut s, "GetAddOnMetadata(3, \"Version\")").contains(want));
 }
 
 /// **A numeric STRING is an index, not a name** — `lua_isnumber 0x6f34d0` coerces one, so the
 /// number arm claims it before `lua_isstring` is ever reached.
 #[test]
 fn a_numeric_string_takes_the_index_arm() {
-    let s = seeded();
+    let mut s = seeded();
     assert_eq!(
         s.eval::<String>(r#"return (GetAddOnInfo("2"))"#).unwrap(),
         "Beta",
         "\"2\" is the second addon, not an addon named `2`"
     );
-    assert!(raised(&s, r#"GetAddOnInfo("9")"#).contains("must be in the range"));
+    assert!(raised(&mut s, r#"GetAddOnInfo("9")"#).contains("must be in the range"));
 }
 
 /// **`GetAddOnInfo`'s string miss echoes the caller's own name back** (`0x48e401`, non-NULL by
@@ -148,9 +148,9 @@ fn a_numeric_string_takes_the_index_arm() {
 /// The name form is never existence-checked by the prologue; only the numeric one is.
 #[test]
 fn an_unknown_name_echoes_itself_rather_than_a_placeholder_literal() {
-    let s = seeded();
+    let mut s = seeded();
     assert_eq!(
-        s.eval::<Vec<String>>(
+        s.eval_sequence::<String>(
             r#"local n,t,no,e,l,r,sec = GetAddOnInfo("Nope")
                return { n, tostring(t), tostring(no), tostring(e), tostring(l), r, sec }"#
         )

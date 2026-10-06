@@ -36,6 +36,13 @@ pub use pose::{RigAnchor, RigFrame, RigPose};
 #[derive(Component)]
 pub struct AnimParked;
 
+/// Dominant weight for the persistent `HandsClosed` finger overlay.
+///
+/// World creatures and off-world model stages use the same rig evaluator, so
+/// the overlay weight is renderer/animation machinery rather than gameplay or
+/// portrait policy.
+pub const HAND_GRIP_WEIGHT: f32 = 8.0;
+
 /// Wire the rig machinery in. Registered by `WorldPlugins`, so a program with no game still poses
 /// and composes the rigs it spawns.
 pub fn plugin(app: &mut App) {

@@ -120,7 +120,7 @@ impl Plugin for AreaTriggerPlugin {
 fn load_area_triggers(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let mut chain = assets.chain.lock_recover();
-    match benilla_formats::load_area_trigger_catalog(&mut chain) {
+    match benilla_formats::load_area_trigger_catalog(&mut *chain) {
         Ok(cat) => {
             info!("area_trigger: {} triggers", cat.len());
             commands.insert_resource(AreaTriggers(cat));

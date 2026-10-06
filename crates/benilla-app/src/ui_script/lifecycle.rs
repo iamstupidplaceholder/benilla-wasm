@@ -10,7 +10,6 @@
 
 use bevy::prelude::*;
 
-use benilla_assets::LockRecover;
 use benilla_ui::script::UiScript;
 
 use super::{
@@ -18,6 +17,10 @@ use super::{
     UiKeyboardCapture,
 };
 use crate::ui_script::addons;
+
+#[cfg(feature = "port-gates")]
+#[path = "lifecycle_port_gates.rs"]
+pub(crate) mod port_gates;
 
 pub(crate) fn setup_script(world: &mut World) {
     install_boot_vm(world);
@@ -48,6 +51,12 @@ pub(crate) fn setup_script(world: &mut World) {
 /// dropped the VM and skipped index 0 on the in-game load would fail exactly there — verified in
 /// wow-re's §5 for this change (2277).
 fn install_boot_vm(world: &mut World) {
+    if !benilla_interface_files::ready() {
+        world.insert_resource(PendingBootUi);
+        return;
+    }
+    world.remove_resource::<PendingBootUi>();
+    let boot_started = benilla_time::Instant::now();
     let mut script = match UiScript::new() {
         Ok(s) => s,
         Err(e) => {
@@ -56,16 +65,41 @@ fn install_boot_vm(world: &mut World) {
             return;
         }
     };
+    #[cfg(target_arch = "wasm32")]
+    script.set_locale(&crate::web_config::active_locale());
     seed_vm_clock(world, &mut script);
+    if let Some(catalog) = world.get_resource::<crate::ui_chat::DamageSchools>() {
+        script.set_damage_school_names(&catalog.0.names);
+    }
     install_addon_asset_resolvers(world, &mut script);
-    load_global_strings(world, &script);
-    load_emote_tokens(world, &script);
+    load_global_strings(&mut script);
+    load_emote_tokens(&mut script);
     if ui_wanted(world) {
         // Errors are already logged per file as they happen; the returned list is the test-side
         // assertion (`shipped_xml_tests`), not a second reporting channel.
-        let _ = load_font_registry(&script);
+        let _ = load_font_registry(&mut script);
     }
     world.insert_non_send_resource(script);
+    #[cfg(target_arch = "wasm32")]
+    info!(
+        "startup cost: boot VM strings/fonts {:.1}ms",
+        boot_started.elapsed().as_secs_f64() * 1000.0
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = boot_started;
+}
+
+/// Host delivery may defer boot, but VM creation stays in the production installer.
+#[derive(Resource)]
+struct PendingBootUi;
+
+pub(crate) fn run_pending_boot(world: &mut World) {
+    if world.contains_resource::<PendingBootUi>() && benilla_interface_files::ready() {
+        world.remove_resource::<PendingBootUi>();
+        if !world.contains_resource::<PendingEntryUiLoad>() {
+            install_boot_vm(world);
+        }
+    }
 }
 
 /// **`GetTime()` is the PROCESS's clock, not the VM's** (decision 2116) — so a VM built now starts
@@ -95,7 +129,7 @@ fn seed_vm_clock(world: &mut World, script: &mut UiScript) {
     script.set_now(elapsed);
     if let Some(mut clock) = world.get_resource_mut::<UiClock>() {
         *clock = UiClock {
-            anchor: anchor.unwrap_or_else(std::time::Instant::now),
+            anchor: anchor.unwrap_or_else(benilla_time::Instant::now),
             ui_now: elapsed,
         };
     }
@@ -119,65 +153,18 @@ fn seed_vm_clock(world: &mut World, script: &mut UiScript) {
 /// is the number the screen shows, and memoises per texture key: the ask is per zero-size region
 /// per resolve, and the answer cannot change for a key that already read.
 ///
-/// No `WorldAssets` (no client data) means no backend: nothing to install, so `SetTexture`'s path
+/// Native: no `WorldAssets` (no client data) means no backend: nothing to install, so `SetTexture`'s path
 /// form keeps answering nil and `SetFont`'s keeps answering 1 — each store's own engine-less truth
 /// (`Model::texture_probe` / `Model::font_probe` carry why the two defaults differ).
 ///
 /// Both probes test **existence**, not decode success: a file that is there but will not decode
 /// answers 1 and draws nothing. That is 1322's stated approximation and it is unchanged here; the
 /// renderer's own `texture miss` / `font miss` WARN is what names such a file.
+/// Browser uses the admitted exact index for existence and the production sprite
+/// decoder through a pending-aware size broker. Size completion invalidates the
+/// existing layout; an early Lua size getter may still see 0 until bytes arrive.
 fn install_addon_asset_resolvers(world: &mut World, script: &mut UiScript) {
-    let root = addons::root();
-    let Some(mut assets) = world.get_resource_mut::<benilla_assets::WorldAssets>() else {
-        return;
-    };
-    assets.set_loose_addon_root(root.clone());
-    let chain = assets.chain.clone();
-    let size_chain = chain.clone();
-    let size_root = root.clone();
-    let font_chain = chain.clone();
-    let font_root = root.clone();
-    script.set_texture_probe(Box::new(move |path| {
-        benilla_assets::sprite_candidates(path).iter().any(|c| {
-            chain.lock_recover().contains(c)
-                || root
-                    .as_deref()
-                    .is_some_and(|r| benilla_assets::loose_addon_file(r, c).is_some())
-        })
-    }));
-    // Keyed by the reference string exactly as the region carries it, so the hit path allocates
-    // nothing: this is asked from inside the layout sweep, once per zero-size textured region per
-    // pass. Two spellings of one file (`Foo` and `Foo.blp`) cost two entries holding the same
-    // number, which is cheaper than normalising every ask to avoid it. Misses are cached too — a
-    // path that resolves to nothing measures nothing however often we look.
-    let sizes: std::cell::RefCell<std::collections::HashMap<String, Option<(u32, u32)>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-    script.set_texture_size_probe(Box::new(move |path| {
-        if let Some(cached) = sizes.borrow().get(path) {
-            return *cached;
-        }
-        let measured = benilla_assets::sprite_dimensions(&size_chain, size_root.as_deref(), path);
-        sizes.borrow_mut().insert(path.to_string(), measured);
-        measured
-    }));
-    // The font oracle. Existence over the same two stores, in the same order, that
-    // `ui_text::engine`'s face loader reads — a `SetFont` that answers 1 and then draws Friz
-    // because the two disagreed would be worse than no probe at all. Memoised for the same reason
-    // the size probe is: an addon can call `SetFont` per animated string per frame (MSBT does),
-    // and a path's answer cannot change mid-session.
-    let seen: std::cell::RefCell<std::collections::HashMap<String, bool>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-    script.set_font_probe(Box::new(move |path| {
-        if let Some(&cached) = seen.borrow().get(path) {
-            return cached;
-        }
-        let found = font_chain.lock_recover().contains(path)
-            || font_root.as_deref().is_some_and(|r| {
-                benilla_assets::loose_addon_file(r, &benilla_assets::normalize_path(path)).is_some()
-            });
-        seen.borrow_mut().insert(path.to_string(), found);
-        found
-    }));
+    crate::ui_asset_probes::install(world, script);
 }
 
 /// Does this run want the player UI at all? Captures stay pristine — their baselines regression-test
@@ -213,6 +200,45 @@ fn ui_wanted(world: &World) -> bool {
 #[derive(Resource, Default)]
 pub(crate) struct PendingEntryUiLoad;
 
+#[derive(Resource)]
+struct EntryUiWaitLog(f64);
+
+fn report_entry_ui_wait(
+    world: &mut World,
+    files_ready: bool,
+    data_ready: bool,
+    cover_presented: bool,
+) {
+    let now = world
+        .get_resource::<Time<bevy::time::Real>>()
+        .map_or(0.0, |t| t.elapsed_secs_f64());
+    let next = world.get_resource::<EntryUiWaitLog>().map(|r| r.0);
+    let Some(next) = next else {
+        world.insert_resource(EntryUiWaitLog(now + 3.0));
+        return;
+    };
+    if now < next {
+        return;
+    }
+    world.insert_resource(EntryUiWaitLog(now + 10.0));
+    warn!("ui entry waiting: interface_ready={files_ready}, game_data_ready={data_ready}, cover_presented={cover_presented}");
+    #[cfg(target_arch = "wasm32")]
+    {
+        if !files_ready {
+            warn!(
+                "ui entry files: {}",
+                crate::web_ui_files::entry_wait_status(world)
+            );
+        }
+        if !data_ready {
+            warn!(
+                "ui entry game data: {}",
+                crate::ui_game_data::entry_wait_status(world)
+            );
+        }
+    }
+}
+
 /// **The boot VM, parked for the deferral window** (decision 1978). Between the world-entry edge
 /// and the deferred entry load there is no VM in the world at all: the boot VM waits here, out of
 /// every feed's reach, and the load takes it back. Every feed takes the VM as an `Option` and
@@ -225,6 +251,7 @@ pub(crate) struct ParkedBootVm(UiScript);
 /// `OnEnter(InWorld)`: arm the deferred entry load and park the boot VM. The load itself runs a
 /// few frames later — see [`PendingEntryUiLoad`] and [`ParkedBootVm`].
 pub(crate) fn arm_entry_ui_load(world: &mut World) {
+    world.remove_resource::<EntryUiWaitLog>();
     world.insert_resource(PendingEntryUiLoad);
     if let Some(vm) = world.remove_non_send_resource::<UiScript>() {
         world.insert_non_send_resource(ParkedBootVm(vm));
@@ -331,6 +358,17 @@ pub(crate) fn run_pending_entry_load(world: &mut World) {
         unpark_boot_vm(world);
         return;
     }
+    let files_ready = benilla_interface_files::ready();
+    let data_ready = world
+        .get_resource::<crate::ui_game_data::UiGameDataReady>()
+        .is_none_or(|r| r.0);
+    let cover_presented = world
+        .get_resource::<crate::loading_screen::EntryCover>()
+        .is_none_or(|c| c.presented());
+    if !files_ready || !data_ready {
+        report_entry_ui_wait(world, files_ready, data_ready, cover_presented);
+        return;
+    }
     let covering = world
         .get_resource::<crate::loading_screen::LoadingScreen>()
         .is_some_and(|s| s.covering());
@@ -338,14 +376,13 @@ pub(crate) fn run_pending_entry_load(world: &mut World) {
     // (1345 wrote its own beside the warm pass's, and the third consumer — the world camera —
     // then had none at all). `presented()` is already true with no cover up, which is the
     // "nothing watching the previous present, load now" arm.
-    if !world
-        .get_resource::<crate::loading_screen::EntryCover>()
-        .is_none_or(|c| c.presented())
-    {
+    if !cover_presented {
+        report_entry_ui_wait(world, files_ready, data_ready, cover_presented);
         return;
     }
     world.remove_resource::<PendingEntryUiLoad>();
-    let start = std::time::Instant::now();
+    world.remove_resource::<EntryUiWaitLog>();
+    let start = benilla_time::Instant::now();
     load_ingame_ui_on_world_entry(world);
     // The standing instrument for this burst: the one number that says whether the cover is
     // still hiding it, on every entry, in every log — and, since 2226, WHICH VM it came up on.
@@ -441,6 +478,14 @@ fn seat_raster_seam_for_load(world: &mut World, script: &mut UiScript) {
 /// capture boots straight into `InWorld`, so before that this would have run ahead of
 /// [`benilla_assets::AssetSet::Open`] and loaded against no patch chain.
 pub(crate) fn load_ingame_ui_on_world_entry(world: &mut World) {
+    if !benilla_interface_files::ready()
+        || world
+            .get_resource::<crate::ui_game_data::UiGameDataReady>()
+            .is_some_and(|r| !r.0)
+    {
+        arm_entry_ui_load(world);
+        return;
+    }
     // The VM the entry edge parked (1978); the live slot is the fallback for a caller that did
     // not go through the arm. It goes back in the world because the fold below reads it there.
     unpark_boot_vm(world);
@@ -584,7 +629,15 @@ pub(crate) fn load_ingame_ui_on_world_entry(world: &mut World) {
     // through its whole load edge and only converged a frame later off whatever poll the caller
     // had written to survive it.
     seat_raster_seam_for_load(world, &mut script);
+    let interface_started = benilla_time::Instant::now();
     let _ = load_ingame_ui(&mut script, identity.as_ref(), &roster, version_check);
+    #[cfg(target_arch = "wasm32")]
+    info!(
+        "startup cost: in-world FrameXML/addon execution {:.1}ms",
+        interface_started.elapsed().as_secs_f64() * 1000.0
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = interface_started;
     // The Minimap widget was born a moment ago with `MinimapState::default()`; seed its two live
     // zoom indices from the persisted CVars now, before anything reads them — the reference's own
     // minimap reset path copying each CVar object's int into its live index (decision 1131). Once
@@ -661,7 +714,7 @@ pub(crate) fn load_ingame_ui_on_world_entry(world: &mut World) {
     // too, which here fires from [`crate::ui_unit`] when the self descriptor lands rather than
     // inside this call. Nothing in the corpus assigns a font that late, and moving the seat would
     // mean waiting on the wire for a value the whole load edge has already settled.
-    world.insert_resource(crate::combat_text::read_damage_text_font(&script));
+    world.insert_resource(crate::combat_text::read_damage_text_font(&mut script));
     // The load edge is over: disarm the instruction bound `load_ingame_ui` installed (decision
     // 1306). From here every OnUpdate and event handler runs unhooked — a session must not kill
     // a player's addon for being slow; only a load that never returns is fair game.
@@ -936,6 +989,8 @@ pub(crate) fn shutdown_ui_state(
 /// Exclusive rather than a `NonSendMut` system because it both drops and installs a `NonSend`, and
 /// because the shutdown writes must be ordered against each other — see [`shutdown_ui_state`].
 pub(crate) fn end_ui_session(world: &mut World) {
+    let started = benilla_time::Instant::now();
+    info!("ui shutdown: begin");
     // A VM still parked (the load never ran) goes back into the world first, so the tail below
     // runs against the same slot it always did (1978).
     unpark_boot_vm(world);
@@ -956,6 +1011,10 @@ pub(crate) fn end_ui_session(world: &mut World) {
             shutdown_ui_state(&mut script, identity.as_ref(), leaving_world);
         }
     }
+    info!(
+        "ui shutdown: logout events/saved variables finished ({:.1}ms)",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
     // The CVar bridge (decision 1291): the dying VM's table folds into the persist state — after
     // the shutdown events above (a `PLAYER_LOGOUT` handler may `SetCVar`, and in the reference
     // that lands in an engine-side store that survives), before the VM is replaced. The next
@@ -966,6 +1025,10 @@ pub(crate) fn end_ui_session(world: &mut World) {
     // its flush used to hang on — so a window moved in the last second before a reload was
     // written nowhere and re-read stale from disk.
     crate::ui_chat::settings::fold_dying_vm_chat_cache(world);
+    info!(
+        "ui shutdown: host state folded ({:.1}ms)",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
     world.insert_resource(AddOnIdentity(None));
 
     // **Everything the host is holding that came OUT of the dying VM goes with it.** A change memo
@@ -998,8 +1061,25 @@ pub(crate) fn end_ui_session(world: &mut World) {
     if let Some(mut minimap) = world.get_resource_mut::<crate::minimap::MinimapWidget>() {
         minimap.0 = None;
     }
+    if let Some(mut pending) = world.get_resource_mut::<super::UiArtPending>() {
+        pending.0 = false;
+    }
+    if let Some(mut pointer) = world.get_resource_mut::<super::PointerOverUi>() {
+        pointer.0 = false;
+    }
+    if let Some(mut click) = world.get_resource_mut::<super::PlayerUiClickConsumed>() {
+        click.0 = false;
+    }
 
+    info!(
+        "ui shutdown: replacing VM ({:.1}ms)",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
     install_boot_vm(world);
+    info!(
+        "ui shutdown: complete ({:.1}ms)",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
 }
 
 /// A `ReloadUI()` waiting to run — set when [`crate::ui_logout`] drains
@@ -1170,15 +1250,8 @@ pub(crate) fn finish_ui_load_with(
 /// Loaded before our own `assets/ui` files, matching the reference order. Failures are LOUD:
 /// a silently missing GlobalStrings once suppressed every red error line (the 0427 fold's
 /// absent-key face is faithful data suppression — but only when the file actually loaded).
-fn load_global_strings(world: &mut World, script: &UiScript) {
-    let Some(assets) = world.get_resource::<benilla_assets::WorldAssets>() else {
-        warn!("ui_script: no patch chain — GlobalStrings absent, error lines will be empty");
-        return;
-    };
-    let bytes = {
-        let mut chain = assets.chain.lock_recover();
-        chain.read_file("Interface\\FrameXML\\GlobalStrings.lua")
-    };
+fn load_global_strings(script: &mut UiScript) {
+    let bytes = benilla_interface_files::try_read("Interface\\FrameXML\\GlobalStrings.lua");
     let src = match bytes {
         Ok(b) => String::from_utf8_lossy(&b).into_owned(),
         Err(e) => {
@@ -1193,7 +1266,7 @@ fn load_global_strings(world: &mut World, script: &UiScript) {
     // The sentinel: the exact lookup the cast-fail drain performs. If this misses, every
     // message would silently vanish — turn that failure mode into a diagnosable line. Presence
     // only, not the enUS text: a non-enUS install is still a loaded GlobalStrings.
-    let sentinel: Option<String> = script.lua().globals().get("SPELL_FAILED_NO_AMMO").ok();
+    let sentinel: Option<String> = script.global_string("SPELL_FAILED_NO_AMMO");
     match sentinel {
         Some(s) if !s.is_empty() => info!("ui_script: GlobalStrings loaded"),
         other => {
@@ -1211,14 +1284,8 @@ fn load_global_strings(world: &mut World, script: &UiScript) {
 /// lines of frame logic never run. Reading the shipped table beats transcribing 170 tokens into
 /// Rust: a transcription can be wrong, and a hand-kept alias list is exactly what left 61 real
 /// commands (`/lol`, `/hi`, `/ty`, …) unresolvable before 0881.
-fn load_emote_tokens(world: &mut World, script: &UiScript) {
-    let Some(assets) = world.get_resource::<benilla_assets::WorldAssets>() else {
-        return; // already WARNed by load_global_strings
-    };
-    let bytes = {
-        let mut chain = assets.chain.lock_recover();
-        chain.read_file("Interface\\FrameXML\\ChatFrame.lua")
-    };
+fn load_emote_tokens(script: &mut UiScript) {
+    let bytes = benilla_interface_files::try_read("Interface\\FrameXML\\ChatFrame.lua");
     let src = match bytes {
         Ok(b) => String::from_utf8_lossy(&b).into_owned(),
         Err(e) => {
@@ -1237,7 +1304,7 @@ fn load_emote_tokens(world: &mut World, script: &UiScript) {
         return;
     }
     // The sentinel is the command this whole seam exists for: EMOTE87 is `/sit`.
-    let sentinel: Option<String> = script.lua().globals().get("EMOTE87_TOKEN").ok();
+    let sentinel: Option<String> = script.global_string("EMOTE87_TOKEN");
     match sentinel.as_deref() {
         Some("SIT") => info!("ui_script: {count} emote tokens loaded"),
         other => error!(
@@ -1376,7 +1443,7 @@ mod tests {
     /// -30000 ms; stock Cooldown.lua hides anything but `start > 0`"*.
     #[test]
     fn a_rebuilt_vm_inherits_the_running_gettime_clock() {
-        use std::time::{Duration, Instant};
+        use benilla_time::{Duration, Instant};
 
         let mut world = World::new();
         world.init_resource::<UiClock>();

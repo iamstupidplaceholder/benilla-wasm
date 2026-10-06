@@ -111,7 +111,7 @@ impl VocalUiSoundCatalog {
 
 /// Load `VocalUISounds.dbc` off the patch chain, dropping the rows the reference's builder drops
 /// (`VocalUIEnum >= 0x44`).
-pub fn load_vocal_ui_sounds(chain: &mut Chain) -> Result<VocalUiSoundCatalog> {
+pub fn load_vocal_ui_sounds(chain: &mut impl crate::FileSource) -> Result<VocalUiSoundCatalog> {
     let bytes = chain
         .read_file(VOCAL_UI_SOUNDS)
         .with_context(|| format!("reading {VOCAL_UI_SOUNDS}"))?;

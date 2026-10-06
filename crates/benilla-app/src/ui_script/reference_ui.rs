@@ -58,11 +58,7 @@
 //! most meaningful UI tests anyway — the art, fonts and MPQs come from the install too — so tests
 //! that need these files gate on the install like every other client-data test.
 
-use std::sync::OnceLock;
-
-use benilla_formats::Chain;
 use benilla_ui::toc::Toc;
-use bevy::prelude::*;
 
 use super::addons::{Addon, Source};
 
@@ -83,7 +79,7 @@ pub(super) const NAME: &str = "FrameXML";
 /// somebody adds a subdirectory to `assets/ui` is a failing test rather than a file that silently
 /// stops loading.
 pub(super) fn is_chain_entry(entry: &str) -> bool {
-    entry.contains('\\') || entry.contains('/')
+    benilla_interface_files::is_install_path(entry)
 }
 
 /// The reference interface as an [`Addon`] whose files come off the chain — the peer of
@@ -108,43 +104,7 @@ pub(super) fn addon(files: Vec<String>) -> Addon {
 /// XML parse decodes — a `read_to_string` here would not make a cp1252 file lose a glyph, it would
 /// make the file *not exist*.
 pub(super) fn read(req: &str) -> Option<Vec<u8>> {
-    let chain = chain()?;
-    match chain.read(req) {
-        Ok(bytes) => Some(bytes),
-        Err(e) => {
-            debug!("ui_script: {req} is not in the patch chain: {e:#}");
-            None
-        }
-    }
-}
-
-/// The player's patch chain, opened once per process and cached.
-///
-/// Cached because the addon survey stands up 218 VMs and this would otherwise be per-VM work. A
-/// process-local chain rather than the one [`benilla_assets`] holds: the interface loads from
-/// places that have no Bevy world to ask (the tests, the addon harness, a bare `UiScript`), and
-/// `Chain`'s reads are `&self` and lock-free, so a second handle costs the mount and nothing else.
-fn chain() -> Option<&'static Chain> {
-    static CHAIN: OnceLock<Option<Chain>> = OnceLock::new();
-    CHAIN
-        .get_or_init(|| {
-            let Some(data) = benilla_formats::wow_data() else {
-                warn!(
-                    "ui_script: no client data — every interface file this client SOURCES off the \
-                     player's install (benilla.toc's `Interface\\…` entries) is absent, so the \
-                     windows they build do not exist and addons that call their globals will raise"
-                );
-                return None;
-            };
-            match benilla_formats::open_chain(&data) {
-                Ok(chain) => Some(chain),
-                Err(e) => {
-                    error!("ui_script: opening the patch chain to source the reference UI: {e:#}");
-                    None
-                }
-            }
-        })
-        .as_ref()
+    benilla_interface_files::read(req)
 }
 
 #[cfg(test)]
@@ -222,7 +182,7 @@ mod tests {
         let mut s = UiScript::new().expect("VM");
         s.set_screen_size(1024.0, 768.0);
         seat_a_player(&mut s);
-        let failures = super::super::manifest::load_default_ui(&s);
+        let failures = super::super::manifest::load_default_ui(&mut s);
         assert!(failures.is_empty(), "the default UI: {failures:#?}");
 
         let (mut checked, mut uncovered, mut wrong) = (0usize, Vec::new(), Vec::new());
@@ -386,7 +346,7 @@ mod tests {
         s.set_screen_size(1024.0, 768.0);
 
         seat_a_player(&mut s);
-        let failures = super::super::manifest::load_default_ui(&s);
+        let failures = super::super::manifest::load_default_ui(&mut s);
         assert!(failures.is_empty(), "the default UI: {failures:#?}");
 
         // The item-button family the `ContainerFrame.lua` line is there for — nothing but the
@@ -550,14 +510,14 @@ mod tests {
             let mut s = UiScript::new().expect("VM");
             s.set_screen_size(1024.0, 768.0);
             seat_a_player(&mut s);
-            let base = super::super::manifest::load_default_ui(&s);
+            let base = super::super::manifest::load_default_ui(&mut s);
             assert!(base.is_empty(), "the shipped manifest itself: {base:#?}");
             s.resolve();
             let before = s.errors().len();
 
             let path = format!("Interface\\FrameXML\\{name}");
             let addon = super::addon(vec![path.clone()]);
-            let mut said = addon.load_files(&s, std::slice::from_ref(&path));
+            let mut said = addon.load_files(&mut s, std::slice::from_ref(&path));
             s.resolve();
             said.extend(s.errors().into_iter().skip(before));
 
@@ -704,10 +664,10 @@ mod tests {
         let mut s = UiScript::new().expect("VM");
         s.set_screen_size(1024.0, 768.0);
         seat_a_player(&mut s);
-        let failures = super::super::manifest::load_default_ui(&s);
+        let failures = super::super::manifest::load_default_ui(&mut s);
         assert!(failures.is_empty(), "the shipped manifest: {failures:#?}");
         let have: std::collections::HashSet<String> = s
-            .eval::<Vec<String>>(
+            .eval_sequence::<String>(
                 "local t = {} for k in pairs(_G) do table.insert(t, k) end return t",
             )
             .expect("dump _G")
@@ -746,13 +706,13 @@ mod tests {
         // only way to know is to look the name up on a real widget. Receiver-blind by design (a
         // `:Name(` site does not say what it is called on), so this answers "does ANY widget type
         // answer to this name", which is the question that catches a method we never built.
-        let answers = |s: &UiScript, names: &[String]| -> std::collections::HashSet<String> {
+        let answers = |s: &mut UiScript, names: &[String]| -> std::collections::HashSet<String> {
             let list = names
                 .iter()
                 .map(|n| format!("{n:?}"))
                 .collect::<Vec<_>>()
                 .join(",");
-            s.eval::<Vec<String>>(&format!(
+            s.eval_sequence::<String>(&format!(
                 r#"
                 local want = {{{list}}}
                 local probes = {{ GameTooltip }}
@@ -794,7 +754,7 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        let got = answers(&s, &control);
+        let got = answers(&mut s, &control);
         assert!(
             got.contains("SetPoint")
                 && got.contains("SetMerchantItem")
@@ -1023,13 +983,13 @@ mod tests {
                 let mut probe = UiScript::new().expect("VM");
                 probe.set_screen_size(1024.0, 768.0);
                 seat_a_player(&mut probe);
-                let base = super::super::manifest::load_default_ui(&probe);
+                let base = super::super::manifest::load_default_ui(&mut probe);
                 assert!(base.is_empty(), "the shipped manifest itself: {base:#?}");
                 probe.resolve();
                 let before = probe.errors().len();
                 let path = format!("Interface\\FrameXML\\{f}");
                 let addon = super::addon(vec![path.clone()]);
-                let mut said = addon.load_files(&probe, std::slice::from_ref(&path));
+                let mut said = addon.load_files(&mut probe, std::slice::from_ref(&path));
                 probe.resolve();
                 said.extend(probe.errors().into_iter().skip(before));
                 said
@@ -1037,7 +997,7 @@ mod tests {
 
             let mut asked: Vec<String> = called_methods(&text).into_iter().collect();
             asked.sort();
-            let known = answers(&s, &asked);
+            let known = answers(&mut s, &asked);
             let mut meth: Vec<String> = asked.into_iter().filter(|m| !known.contains(m)).collect();
             meth.sort();
             // A suspect LOAD line does not count as a blocker — it is a question, not an answer.
@@ -1479,7 +1439,7 @@ mod tests {
         let mut s = UiScript::new().expect("VM");
         s.set_screen_size(1024.0, 768.0);
         seat_a_player(&mut s);
-        let failures = super::super::manifest::load_default_ui(&s);
+        let failures = super::super::manifest::load_default_ui(&mut s);
         assert!(failures.is_empty(), "the shipped manifest: {failures:#?}");
         // The whole interface is the manifest AND every LoadOnDemand addon it reaches (1967):
         // what `MacroFrame_SaveMacro` answers to is `Blizzard_MacroUI.lua`, loaded on the first
@@ -1495,7 +1455,7 @@ mod tests {
             );
         }
         let have: std::collections::HashSet<String> = s
-            .eval::<Vec<String>>(
+            .eval_sequence::<String>(
                 "local t = {} for k in pairs(_G) do table.insert(t, k) end return t",
             )
             .expect("dump _G")

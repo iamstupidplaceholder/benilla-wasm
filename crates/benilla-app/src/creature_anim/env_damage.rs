@@ -40,7 +40,7 @@ pub(super) fn load_env_damage_table(mut commands: Commands, assets: Option<Res<W
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_environmental_damage(&mut chain)
+        benilla_formats::load_environmental_damage(&mut *chain)
     };
     match loaded {
         Ok(table) => commands.insert_resource(EnvDamageTable(table)),

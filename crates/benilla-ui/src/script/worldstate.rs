@@ -12,7 +12,7 @@
 //! no `hidden`** — those are a later expansion of the API, and a client that answered twelve values
 //! here would hand `WorldStateFrame` its icon path where it expects a number.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{Error, FromLua, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -72,18 +72,13 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumWorldStateUI() — how many always-up rows the current scope admits (`0x4c5a40`: pushes
     // the count, no validation, always one return).
-    g.set(
-        "GetNumWorldStateUI",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.worldstate.rows.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumWorldStateUI", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.worldstate.rows.len() as i64)
+    })?;
 
     // GetWorldStateUIInfo(index) — the i-th (1-based) row, ten values (`0x4c5a70`).
     //
@@ -100,45 +95,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // No string return is ever nil: an empty DBC column resolves to the string block's leading
     // NUL, so Lua gets `""`. The `__ftol` on the index truncates toward zero.
-    g.set(
-        "GetWorldStateUIInfo",
-        lua.create_function(|lua, index: Value| {
-            let index = match index {
-                Value::Integer(i) => i as f64,
-                Value::Number(n) => n,
-                // The reference accepts a numeric STRING too — `lua_isnumber` coerces.
-                Value::String(ref s) => match s.to_str().ok().and_then(|s| s.trim().parse().ok()) {
-                    Some(n) => n,
-                    None => return Err(mlua::Error::runtime("Usage: GetWorldStateUIInfo(index)")),
-                },
-                _ => return Err(mlua::Error::runtime("Usage: GetWorldStateUIInfo(index)")),
-            };
-            let row = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                // Truncate toward zero, then 1-based.
-                usize::try_from(index.trunc() as i64)
-                    .ok()
-                    .and_then(|i| i.checked_sub(1))
-                    .and_then(|i| model.worldstate.rows.get(i).cloned())
-            };
-            let Some(r) = row else {
-                return Ok(MultiValue::from_vec(vec![Value::Integer(0)]));
-            };
-            let s = |v: &str| -> mlua::Result<Value> { Ok(Value::String(lua.create_string(v)?)) };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(i64::from(r.ui_state)),
-                s(&r.text)?,
-                s(&r.icon)?,
-                s(&r.dynamic_icon)?,
-                s(&r.tooltip)?,
-                s(&r.dynamic_tooltip)?,
-                s(&r.extended_ui)?,
-                Value::Integer(i64::from(r.extended_ui_state[0])),
-                Value::Integer(i64::from(r.extended_ui_state[1])),
-                Value::Integer(i64::from(r.extended_ui_state[2])),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetWorldStateUIInfo", |lua, index: Value| {
+        // The reference accepts a numeric string too — `lua_isnumber` coerces.
+        let index = f64::from_lua(index)
+            .map_err(|_| Error::runtime("Usage: GetWorldStateUIInfo(index)"))?;
+        let row = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            // Truncate toward zero, then 1-based.
+            usize::try_from(index.trunc() as i64)
+                .ok()
+                .and_then(|i| i.checked_sub(1))
+                .and_then(|i| model.worldstate.rows.get(i).cloned())
+        };
+        let Some(r) = row else {
+            return Ok(MultiValue::from(vec![Value::Integer(0)]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::Integer(i64::from(r.ui_state)),
+            Value::from(r.text),
+            Value::from(r.icon),
+            Value::from(r.dynamic_icon),
+            Value::from(r.tooltip),
+            Value::from(r.dynamic_tooltip),
+            Value::from(r.extended_ui),
+            Value::Integer(i64::from(r.extended_ui_state[0])),
+            Value::Integer(i64::from(r.extended_ui_state[1])),
+            Value::Integer(i64::from(r.extended_ui_state[2])),
+        ]))
+    })?;
 
     Ok(())
 }

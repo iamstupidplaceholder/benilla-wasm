@@ -4,47 +4,43 @@
 //! dial. Every method routes through the mother module's primitives (`set_text`,
 //! `highlight_text`, …), so the byte-verified law lives exactly once.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use crate::script::object::frame_handle_of;
+use crate::script::object::frame_handle_of_context;
 use crate::widget::EditBoxState;
 
-use super::{
-    clear_focus_handle, highlight_text, insert, set_focus_handle, set_text, set_text_insets,
-    with_eb, REG_EDITBOX_METHODS,
-};
+use super::{clear_focus_handle_context, set_focus_handle_context, with_eb, REG_EDITBOX_METHODS};
 
 /// Run `f` over a frame's EditBox state for a Lua method call; errors if `this` is not a live EditBox.
 fn with_editbox<T>(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     f: impl FnOnce(&mut EditBoxState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
-    with_eb(lua, h, f).ok_or_else(|| mlua::Error::runtime("not an EditBox"))
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
+    with_eb(lua, h, f).ok_or_else(|| benilla_lua::Error::runtime("not an EditBox"))
 }
 
-pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+pub(in crate::script) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let m = vm.create_table()?;
 
-    m.set(
-        "SetText",
-        lua.create_function(|lua, (this, s): (Table, Option<mlua::Value>)| {
-            let s = crate::script::binding_abi::text_arg(lua, s)?;
-            let h = frame_handle_of(lua, &this)?;
+    let set_text =
+        vm.create_function("SetText", |lua, (this, s): (LuaTable, Option<LuaValue>)| {
+            let s = crate::script::binding_abi::neutral_text_arg(s)?;
+            let h = frame_handle_of_context(lua, &this)?;
             // Programmatic SetText KEEPS a history browse in progress: the chat live parse
             // rewrites the box on every recalled slash line ("/s hi" → Say + "hi"), and ending
             // the browse there reset every UP to the newest entry — "history only goes back 1"
             // (director's report, 2026-07-26). The browse ends on typed edits, AddHistoryLine,
             // and focus gain (`set_focus_handle`) — the fresh-session reset.
-            set_text(lua, h, &s.unwrap_or_default());
+            super::set_text(lua, h, &s.unwrap_or_default());
             Ok(())
-        })?,
-    )?;
-    m.set(
-        "GetText",
-        lua.create_function(|lua, this: Table| with_editbox(lua, &this, |eb| eb.text.clone()))?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetText", &set_text)?;
+    let get_text = vm.create_function("GetText", |lua, this: LuaTable| {
+        with_editbox(lua, &this, |eb| eb.text.clone())
+    })?;
+    vm.table_set_function(&m, "GetText", &get_text)?;
     // SetNumber(v) — **the same function as SetText**. `0x798690` and `0x7984c0` are byte-identical
     // (245 bytes each, zero differences after masking rel32 and absolute-VA operands; only the
     // usage string differs), so this does no numeric work of its own: it hands the argument to the
@@ -62,29 +58,30 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // EMPTY rather than partially filled, because the sign or the point fails the digit test after
     // the clear-all has already run. The money path only ever passes non-negative integers
     // (`floor`/`mod` results), so it never takes that branch.
-    m.set(
-        "SetNumber",
-        lua.create_function(|lua, (this, v): (Table, Value)| {
-            let text = match &v {
-                Value::Integer(i) => crate::script::binding_abi::lua_number_text(*i as f64),
-                Value::Number(n) => crate::script::binding_abi::lua_number_text(*n),
-                // A string is not parsed — it is the text.
-                Value::String(s) => s.to_str()?.to_string(),
-                _ => return Err(mlua::Error::runtime("Usage: EditBox:SetNumber(number)")),
-            };
-            let h = frame_handle_of(lua, &this)?;
-            set_text(lua, h, &text);
-            Ok(())
-        })?,
-    )?;
+    let set_number = vm.create_function("SetNumber", |lua, (this, v): (LuaTable, LuaValue)| {
+        let text = match &v {
+            LuaValue::Integer(i) => crate::script::binding_abi::lua_number_text(*i as f64),
+            LuaValue::Number(n) => crate::script::binding_abi::lua_number_text(*n),
+            // A string is not parsed — it is the text.
+            LuaValue::String(s) => s.to_string_lossy().into_owned(),
+            _ => {
+                return Err(benilla_lua::Error::runtime(
+                    "Usage: EditBox:SetNumber(number)",
+                ))
+            }
+        };
+        let h = frame_handle_of_context(lua, &this)?;
+        super::set_text(lua, h, &text);
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "SetNumber", &set_number)?;
+    vm.table_set_function(&m, "GetText", &get_text)?;
     // GetNumber: atof of the real text (0 on failure), matching `0x798790`.
-    m.set(
-        "GetNumber",
-        lua.create_function(|lua, this: Table| {
-            let text = with_editbox(lua, &this, |eb| eb.text.clone())?;
-            Ok(text.trim().parse::<f64>().unwrap_or(0.0))
-        })?,
-    )?;
+    let get_number = vm.create_function("GetNumber", |lua, this: LuaTable| {
+        let text = with_editbox(lua, &this, |eb| eb.text.clone())?;
+        Ok(text.trim().parse::<f64>().unwrap_or(0.0))
+    })?;
+    vm.table_set_function(&m, "GetNumber", &get_number)?;
     // Insert(text) — **a nil is a no-op, not an error.** The reference's C `Insert` reads its
     // argument through `lua_tostring`, which answers NULL for a nil and leaves the buffer alone;
     // stock FrameXML relies on that. `LootFrame.lua:152` is the plain case:
@@ -98,34 +95,28 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // A NUMBER still inserts its digits: `lua_tostring` converts one in place, and mlua's
     // `Option<String>` coercion follows it.
-    m.set(
-        "Insert",
-        lua.create_function(|lua, (this, s): (Table, Option<mlua::Value>)| {
-            let s = crate::script::binding_abi::text_arg(lua, s)?;
-            let h = frame_handle_of(lua, &this)?;
-            if let Some(s) = s {
-                insert(lua, h, &s, true);
-            }
-            Ok(())
-        })?,
-    )?;
+    let insert = vm.create_function("Insert", |lua, (this, s): (LuaTable, Option<LuaValue>)| {
+        let s = crate::script::binding_abi::neutral_text_arg(s)?;
+        let h = frame_handle_of_context(lua, &this)?;
+        if let Some(s) = s {
+            super::insert(lua, h, &s, true);
+        }
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "Insert", &insert)?;
 
-    m.set(
-        "SetFocus",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            set_focus_handle(lua, h);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "ClearFocus",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            clear_focus_handle(lua, h);
-            Ok(())
-        })?,
-    )?;
+    let set_focus = vm.create_function("SetFocus", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        set_focus_handle_context(lua, h);
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "SetFocus", &set_focus)?;
+    let clear_focus = vm.create_function("ClearFocus", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        clear_focus_handle_context(lua, h);
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "ClearFocus", &clear_focus)?;
     // **No `HasFocus`.** 1.12's EditBox table registers the two setters above and no getter at
     // all, and an addon that wants the answer keeps its own flag around `SetFocus`/`ClearFocus` —
     // `pfQuest/browser.lua:760` documents exactly that and ships the workaround. Ours was an
@@ -138,122 +129,116 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // `INPUT_<name>` on the box's language button, and the toggle is what a Korean client
     // flips between its two input modes. On a client with no IME the answer is the Roman
     // alphabet and the toggle moves nothing; benilla has no IME.
-    m.set(
-        "GetInputLanguage",
-        lua.create_function(|lua, this: Table| {
-            frame_handle_of(lua, &this)?;
-            Ok("ROMAN")
-        })?,
-    )?;
-    m.set(
-        "ToggleInputLanguage",
-        lua.create_function(|lua, this: Table| {
-            frame_handle_of(lua, &this)?;
+    let get_input_language = vm.create_function("GetInputLanguage", |lua, this: LuaTable| {
+        frame_handle_of_context(lua, &this)?;
+        Ok("ROMAN")
+    })?;
+    vm.table_set_function(&m, "GetInputLanguage", &get_input_language)?;
+    let toggle_input_language =
+        vm.create_function("ToggleInputLanguage", |lua, this: LuaTable| {
+            frame_handle_of_context(lua, &this)?;
             Ok(())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "ToggleInputLanguage", &toggle_input_language)?;
 
     // HighlightText([start [, end]]) — defaults (0, -1) = select-all.
-    m.set(
+    let highlight_text = vm.create_function(
         "HighlightText",
-        lua.create_function(
-            |lua, (this, start, end): (Table, Option<i64>, Option<i64>)| {
-                let h = frame_handle_of(lua, &this)?;
-                highlight_text(lua, h, start.unwrap_or(0), end.unwrap_or(-1));
-                Ok(())
-            },
-        )?,
+        |lua, (this, start, end): (LuaTable, Option<i64>, Option<i64>)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            super::highlight_text(lua, h, start.unwrap_or(0), end.unwrap_or(-1));
+            Ok(())
+        },
     )?;
+    vm.table_set_function(&m, "HighlightText", &highlight_text)?;
 
-    m.set(
-        // `GetMaxLetters 0x79929f` — the read half, which we were missing. Not published off the
-        // `strings` hit alone (that is what put `SetUnit` on the wrong widget earlier today):
-        // wow-re's numeric-arg round identified `0x79929f` as the GETTER of `[widget+0x340]`,
-        // the same field the setter below writes, which is table-level evidence rather than a
-        // name that happens to be in the image.
-        //
-        "GetMaxLetters",
-        lua.create_function(|lua, this: Table| {
-            with_editbox(lua, &this, |eb| eb.max_letters as i64)
-        })?,
-    )?;
-    m.set(
-        // `SetMaxBytes 0x798f30` — `SetMaxLetters`'s sibling in every respect but the sentinel:
-        // the same EXACT count gate (`0x798fbc cmp eax,2`, the second of the four `lua_gettop`
-        // callers), the same raw coerce of the value, and a field of its own at `+0x33c` whose
-        // no-limit value is **-1** where `maxLetters`'s is 0 (`0x799012 jle` → `0x799022`; the
-        // ctor writes -1 at `0x7799df`) — wow-re `numeric-arg-coercion-law.md` and `ui.md`'s
-        // CSimpleEditBox layout. So a non-positive argument is unlimited, a positive one caps
-        // the buffer's BYTES. The stock StaticPopup_Show calls it for any entry carrying
-        // `maxBytes` — none of the reference's own 76 does, so the reach is an addon's (1960).
+    // `GetMaxLetters 0x79929f` — the read half, which we were missing. Not published off the
+    // `strings` hit alone (that is what put `SetUnit` on the wrong widget earlier today):
+    // wow-re's numeric-arg round identified `0x79929f` as the GETTER of `[widget+0x340]`,
+    // the same field the setter below writes, which is table-level evidence rather than a
+    // name that happens to be in the image.
+    //
+    let get_max_letters = vm.create_function("GetMaxLetters", |lua, this: LuaTable| {
+        with_editbox(lua, &this, |eb| eb.max_letters as i64)
+    })?;
+    vm.table_set_function(&m, "GetMaxLetters", &get_max_letters)?;
+    // `SetMaxBytes 0x798f30` — `SetMaxLetters`'s sibling in every respect but the sentinel:
+    // the same EXACT count gate (`0x798fbc cmp eax,2`, the second of the four `lua_gettop`
+    // callers), the same raw coerce of the value, and a field of its own at `+0x33c` whose
+    // no-limit value is **-1** where `maxLetters`'s is 0 (`0x799012 jle` → `0x799022`; the
+    // ctor writes -1 at `0x7799df`) — wow-re `numeric-arg-coercion-law.md` and `ui.md`'s
+    // CSimpleEditBox layout. So a non-positive argument is unlimited, a positive one caps
+    // the buffer's BYTES. The stock StaticPopup_Show calls it for any entry carrying
+    // `maxBytes` — none of the reference's own 76 does, so the reach is an addon's (1960).
+    let set_max_bytes = vm.create_function(
         "SetMaxBytes",
-        lua.create_function(|lua, (this, args): (Table, mlua::MultiValue)| {
-            let args: Vec<Value> = args.into_iter().collect();
+        |lua, (this, args): (LuaTable, benilla_lua::MultiValue)| {
+            let args: Vec<LuaValue> = args.into_iter().collect();
             if args.len() != 1 {
-                return Err(mlua::Error::runtime(
+                return Err(benilla_lua::Error::runtime(
                     "Usage: <unnamed>:SetMaxBytes(maxBytes)",
                 ));
             }
-            let n = crate::script::binding_abi::coerced_number(lua, args.first().cloned());
+            let n = crate::script::binding_abi::neutral_coerced_number(args.first().cloned());
             let n = n as i64;
             with_editbox(lua, &this, |eb| {
                 eb.max_bytes = (n > 0).then_some(n as usize);
             })
-        })?,
+        },
     )?;
-    m.set(
-        // The read half: -1 while unlimited, the reference's own stored sentinel.
-        "GetMaxBytes",
-        lua.create_function(|lua, this: Table| {
-            with_editbox(lua, &this, |eb| eb.max_bytes.map_or(-1, |n| n as i64))
-        })?,
-    )?;
-    m.set(
-        // `SetMaxLetters 0x799110` — one of only FOUR widget bindings in the whole registrar that
-        // calls `lua_gettop` (wow-re `numeric-arg-coercion-law.md` Q3), and its gate is EXACT:
-        // `cmp eax,2`. So the count is checked and the type is not, which is the opposite of the
-        // usual pairing and the reason this needs its own body:
-        //
-        //   SetMaxLetters()           -> RAISES `Usage:` (too few)
-        //   SetMaxLetters(50, 60)     -> RAISES `Usage:` (too MANY — an exact gate, not a minimum)
-        //   SetMaxLetters(nil)        -> completes, stores 0
-        //   SetMaxLetters("12")       -> completes, stores 12 (a numeric string coerces)
-        //   SetMaxLetters({})         -> completes, stores 0
-        //
-        // and **0 is "no limit"**, not "no letters": the insert path's trim block is skipped
-        // whole on zero (`0x77c085 test edi,edi; je`), which is what `max_letters == 0` already
-        // means here. So `SetMaxLetters(nil)` is `SetMaxLetters(0)` is unlimited — aux-addon's
-        // `gui/core.lua:288` writes exactly that, and benilla raised on it and killed the addon at
-        // load. (Its neighbour `SetMaxBytes` uses **-1** for the same idea; two adjacent fields,
-        // two different sentinels.)
+    vm.table_set_function(&m, "SetMaxBytes", &set_max_bytes)?;
+    // The read half: -1 while unlimited, the reference's own stored sentinel.
+    let get_max_bytes = vm.create_function("GetMaxBytes", |lua, this: LuaTable| {
+        with_editbox(lua, &this, |eb| eb.max_bytes.map_or(-1, |n| n as i64))
+    })?;
+    vm.table_set_function(&m, "GetMaxBytes", &get_max_bytes)?;
+    // `SetMaxLetters 0x799110` — one of only FOUR widget bindings in the whole registrar that
+    // calls `lua_gettop` (wow-re `numeric-arg-coercion-law.md` Q3), and its gate is EXACT:
+    // `cmp eax,2`. So the count is checked and the type is not, which is the opposite of the
+    // usual pairing and the reason this needs its own body:
+    //
+    //   SetMaxLetters()           -> RAISES `Usage:` (too few)
+    //   SetMaxLetters(50, 60)     -> RAISES `Usage:` (too MANY — an exact gate, not a minimum)
+    //   SetMaxLetters(nil)        -> completes, stores 0
+    //   SetMaxLetters("12")       -> completes, stores 12 (a numeric string coerces)
+    //   SetMaxLetters({})         -> completes, stores 0
+    //
+    // and **0 is "no limit"**, not "no letters": the insert path's trim block is skipped
+    // whole on zero (`0x77c085 test edi,edi; je`), which is what `max_letters == 0` already
+    // means here. So `SetMaxLetters(nil)` is `SetMaxLetters(0)` is unlimited — aux-addon's
+    // `gui/core.lua:288` writes exactly that, and benilla raised on it and killed the addon at
+    // load. (Its neighbour `SetMaxBytes` uses **-1** for the same idea; two adjacent fields,
+    // two different sentinels.)
+    let set_max_letters = vm.create_function(
         "SetMaxLetters",
-        lua.create_function(|lua, (this, args): (Table, mlua::MultiValue)| {
-            let args: Vec<Value> = args.into_iter().collect();
+        |lua, (this, args): (LuaTable, benilla_lua::MultiValue)| {
+            let args: Vec<LuaValue> = args.into_iter().collect();
             if args.len() != 1 {
-                return Err(mlua::Error::runtime(
+                return Err(benilla_lua::Error::runtime(
                     "Usage: <unnamed>:SetMaxLetters(maxLetters)",
                 ));
             }
-            let n = crate::script::binding_abi::coerced_number(lua, args.first().cloned());
+            let n = crate::script::binding_abi::neutral_coerced_number(args.first().cloned());
             // `__ftol` truncates toward zero; a negative stores as itself there, but our field is
             // a `usize` and the trim only ever tests `> 0`, so the two agree on every value that
             // can change behaviour.
             with_editbox(lua, &this, |eb| eb.max_letters = (n as i64).max(0) as usize)
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetMaxLetters", &set_max_letters)?;
     // The submitted-line history (`historyLines`): FrameXML pushes each sent line
     // (ChatEdit_AddHistory), UP/DOWN recall it (see `key_input`).
-    m.set(
+    let add_history_line = vm.create_function(
         "AddHistoryLine",
-        lua.create_function(|lua, (this, line): (Table, Option<String>)| {
+        |lua, (this, line): (LuaTable, Option<String>)| {
             with_editbox(lua, &this, |eb| {
                 eb.add_history_line(line.as_deref().unwrap_or(""));
             })
-        })?,
+        },
     )?;
-    m.set(
-        "SetHistoryLines",
-        lua.create_function(|lua, (this, n): (Table, i64)| {
+    vm.table_set_function(&m, "AddHistoryLine", &add_history_line)?;
+    let set_history_lines =
+        vm.create_function("SetHistoryLines", |lua, (this, n): (LuaTable, i64)| {
             with_editbox(lua, &this, |eb| {
                 eb.history_max = n.max(0) as usize;
                 let over = eb.history.len().saturating_sub(eb.history_max);
@@ -261,38 +246,34 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                     eb.history.drain(..over);
                 }
             })
-        })?,
-    )?;
-    m.set(
-        "GetHistoryLines",
-        lua.create_function(|lua, this: Table| {
-            with_editbox(lua, &this, |eb| eb.history_max as i64)
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetHistoryLines", &set_history_lines)?;
+    let get_history_lines = vm.create_function("GetHistoryLines", |lua, this: LuaTable| {
+        with_editbox(lua, &this, |eb| eb.history_max as i64)
+    })?;
+    vm.table_set_function(&m, "GetHistoryLines", &get_history_lines)?;
     // SetBlinkSpeed/GetBlinkSpeed — the caret half-period (`E+0x370`, XML `blinkSpeed`; ctor 0.5).
-    m.set(
-        "SetBlinkSpeed",
-        lua.create_function(|lua, (this, s): (Table, f32)| {
+    let set_blink_speed = vm
+        .create_function("SetBlinkSpeed", |lua, (this, s): (LuaTable, f32)| {
             with_editbox(lua, &this, |eb| eb.blink_period = s)
-        })?,
-    )?;
-    m.set(
-        "GetBlinkSpeed",
-        lua.create_function(|lua, this: Table| with_editbox(lua, &this, |eb| eb.blink_period))?,
-    )?;
-    m.set(
+        })?;
+    vm.table_set_function(&m, "SetBlinkSpeed", &set_blink_speed)?;
+    let get_blink_speed = vm.create_function("GetBlinkSpeed", |lua, this: LuaTable| {
+        with_editbox(lua, &this, |eb| eb.blink_period)
+    })?;
+    vm.table_set_function(&m, "GetBlinkSpeed", &get_blink_speed)?;
+    let set_text_insets = vm.create_function(
         "SetTextInsets",
-        lua.create_function(
             |lua,
              (this, l, r, t, b): (
-                Table,
+                LuaTable,
                 Option<f32>,
                 Option<f32>,
                 Option<f32>,
                 Option<f32>,
             )| {
-                let h = frame_handle_of(lua, &this)?;
-                set_text_insets(
+                let h = frame_handle_of_context(lua, &this)?;
+                super::set_text_insets(
                     lua,
                     h,
                     l.unwrap_or(0.0),
@@ -302,26 +283,23 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 );
                 Ok(())
             },
-        )?,
-    )?;
-    m.set(
-        "GetTextInsets",
-        lua.create_function(|lua, this: Table| {
-            let ins = with_editbox(lua, &this, |eb| eb.text_insets)?;
-            Ok((ins[0], ins[1], ins[2], ins[3]))
-        })?,
-    )?;
+        )?;
+    vm.table_set_function(&m, "SetTextInsets", &set_text_insets)?;
+    let get_text_insets = vm.create_function("GetTextInsets", |lua, this: LuaTable| {
+        let ins = with_editbox(lua, &this, |eb| eb.text_insets)?;
+        Ok((ins[0], ins[1], ins[2], ins[3]))
+    })?;
+    vm.table_set_function(&m, "GetTextInsets", &get_text_insets)?;
+    vm.table_set_function(&m, "GetBlinkSpeed", &get_blink_speed)?;
     // GetNumLetters: the LETTER count — `0x7992c0` walks the class array (`0x77bc80`), which
     // counts classes 2, 3 and 6 only, so escapes are free and a 43-byte item link reports 9
     // (decision 1077). Not bytes, and not chars either.
-    m.set(
-        "GetNumLetters",
-        lua.create_function(|lua, this: Table| {
-            with_editbox(lua, &this, |eb| {
-                crate::markup::ClassMap::new(&eb.text).num_letters() as i64
-            })
-        })?,
-    )?;
+    let get_num_letters = vm.create_function("GetNumLetters", |lua, this: LuaTable| {
+        with_editbox(lua, &this, |eb| {
+            crate::markup::ClassMap::new(&eb.text).num_letters() as i64
+        })
+    })?;
+    vm.table_set_function(&m, "GetNumLetters", &get_num_letters)?;
 
     // The config flags. All four mirror the live API. The fifth flag — bit4, the XML's
     // `ignoreArrows` — is NOT here: its Lua surface is `SetAltArrowKeyMode`/`GetAltArrowKeyMode`
@@ -344,48 +322,50 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     // the double 1.0 via `0x6f3810`, the clear arm pushes nil via `0x6f37f0`) — the same idiom as
     // `IsShiftKeyDown`. An addon writing `if box:GetAltArrowKeyMode() then` reads either the same;
     // one writing `== 1` only reads the number.
-    m.set(
+    let set_alt_arrow_key_mode = vm.create_function(
         "SetAltArrowKeyMode",
-        lua.create_function(|lua, (this, args): (Table, mlua::MultiValue)| {
+        |lua, (this, args): (LuaTable, benilla_lua::MultiValue)| {
             // `MultiValue`, not `Value`, because the reference DISTINGUISHES absent from nil here
             // and mlua's `Value` cannot: `0x7996e0` pushes the default `1` before the call, so
             // `SetAltArrowKeyMode()` enables while `SetAltArrowKeyMode(nil)` disables.
-            let args: Vec<Value> = args.into_iter().collect();
+            let args: Vec<LuaValue> = args.into_iter().collect();
             let on = crate::script::binding_abi::bool_or_default(args.first(), true);
             with_editbox(lua, &this, |eb| eb.alt_arrow_key_mode = on)?;
             Ok(())
-        })?,
+        },
     )?;
-    m.set(
-        "GetAltArrowKeyMode",
-        lua.create_function(|lua, this: Table| {
+    vm.table_set_function(&m, "SetAltArrowKeyMode", &set_alt_arrow_key_mode)?;
+    let get_alt_arrow_key_mode =
+        vm.create_function("GetAltArrowKeyMode", |lua, this: LuaTable| {
             let on = with_editbox(lua, &this, |eb| eb.alt_arrow_key_mode)?;
-            Ok(if on { Value::Integer(1) } else { Value::Nil })
-        })?,
-    )?;
+            Ok(if on {
+                LuaValue::Integer(1)
+            } else {
+                LuaValue::Nil
+            })
+        })?;
+    vm.table_set_function(&m, "GetAltArrowKeyMode", &get_alt_arrow_key_mode)?;
 
     for (name, set) in flag_setters() {
         let refresh_justify = name == "SetMultiLine";
-        m.set(
-            name,
-            lua.create_function(move |lua, (this, v): (Table, Value)| {
-                let on = !matches!(v, Value::Nil | Value::Boolean(false));
-                with_editbox(lua, &this, |eb| set(eb, on))?;
-                if refresh_justify {
-                    // The text-anchoring law reads multiLine (TOP vs MIDDLE), and the loader
-                    // wires the declared `<FontString>` BEFORE the editbox flags (LoadXML order
-                    // 5·b vs 5b) — re-seat an already-wired region so `multiLine="true"` lands.
-                    super::refresh_text_region_justify(lua, &this)?;
-                }
-                Ok(())
-            })?,
-        )?;
+        let flag_fn = vm.create_function(name, move |lua, (this, v): (LuaTable, LuaValue)| {
+            let on = !matches!(v, LuaValue::Nil | LuaValue::Boolean(false));
+            with_editbox(lua, &this, |eb| set(eb, on))?;
+            if refresh_justify {
+                // The text-anchoring law reads multiLine (TOP vs MIDDLE), and the loader
+                // wires the declared `<FontString>` BEFORE the editbox flags (LoadXML order
+                // 5·b vs 5b) — re-seat an already-wired region so `multiLine="true"` lands.
+                super::refresh_text_region_justify(lua, &this)?;
+            }
+            Ok(())
+        })?;
+        vm.table_set_function(&m, name, &flag_fn)?;
     }
 
-    install_font_block(lua, &m)?;
+    install_justify(vm, &m)?;
 
-    lua.set_named_registry_value(REG_EDITBOX_METHODS, m)?;
-    Ok(())
+    vm.set_named_registry_value(REG_EDITBOX_METHODS, &m)?;
+    crate::script::font_block::install_context(vm, &m, super::font_region_callback, "EditBox")
 }
 
 /// **The font block — entries #0–#15 of the EditBox method table**, and the largest single gap the
@@ -421,20 +401,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
 /// - **The justify four (#12–#15) are installed here**, against the box's own
 ///   [`EditBoxState::justify`] word rather than its text region — the field's doc has the why (our
 ///   editbox draw law seats that region LEFT unconditionally) and states the divergence.
-fn install_font_block(lua: &Lua, m: &Table) -> mlua::Result<()> {
-    // Every font method acts on the box's implicit FontString: each binding's shim loads
-    // `[this+0x324]` and hands it to the shared implementation, and that offset is
-    // `EditBoxState::text_region`. Created on demand, exactly like every other text-touching path.
-    crate::script::font_block::install(
-        lua,
-        m,
-        |lua, this| {
-            let h = frame_handle_of(lua, this)?;
-            super::ensure_text_region(lua, h).ok_or_else(|| mlua::Error::runtime("not an EditBox"))
-        },
-        "EditBox",
-    )?;
-
+fn install_justify(vm: &mut Vm, m: &LuaTable) -> benilla_lua::Result<()> {
     // SetJustifyH("LEFT"|"CENTER"|"RIGHT") / SetJustifyV("TOP"|"MIDDLE"|"BOTTOM") → 0 values.
     //
     // Two verified traps, both of which a plausible implementation gets wrong. This table was the
@@ -451,15 +418,14 @@ fn install_font_block(lua: &Lua, m: &Table) -> mlua::Result<()> {
         ("SetJustifyH", EditBoxState::JUSTIFY_H_MASK),
         ("SetJustifyV", EditBoxState::JUSTIFY_V_MASK),
     ] {
-        m.set(
-            name,
-            lua.create_function(move |lua, (this, token): (Table, String)| {
+        let set_justify =
+            vm.create_function(name, move |lua, (this, token): (LuaTable, String)| {
                 let bits = EditBoxState::justify_bit(&token).ok_or_else(|| {
-                    mlua::Error::runtime(format!("Usage: <EditBox>:{name}(\"justify\")"))
+                    benilla_lua::Error::runtime(format!("Usage: <EditBox>:{name}(\"justify\")"))
                 })?;
                 with_editbox(lua, &this, |eb| eb.set_justify_axis(mask, bits))
-            })?,
-        )?;
+            })?;
+        vm.table_set_function(m, name, &set_justify)?;
     }
     // GetJustifyH()/GetJustifyV() → exactly 1 string, the first set bit's token in the reference's
     // own table order, or the literal "UNKNOWN".
@@ -467,12 +433,10 @@ fn install_font_block(lua: &Lua, m: &Table) -> mlua::Result<()> {
         ("GetJustifyH", EditBoxState::JUSTIFY_H_MASK),
         ("GetJustifyV", EditBoxState::JUSTIFY_V_MASK),
     ] {
-        m.set(
-            name,
-            lua.create_function(move |lua, this: Table| {
-                with_editbox(lua, &this, |eb| eb.justify_token(mask))
-            })?,
-        )?;
+        let get_justify = vm.create_function(name, move |lua, this: LuaTable| {
+            with_editbox(lua, &this, |eb| eb.justify_token(mask))
+        })?;
+        vm.table_set_function(m, name, &get_justify)?;
     }
     Ok(())
 }

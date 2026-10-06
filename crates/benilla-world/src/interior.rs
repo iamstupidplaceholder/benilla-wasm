@@ -40,6 +40,7 @@
 //! `unit-light-combine-storm.md`; a hand-anchored shield split from its body, director-caught,
 //! 2026-07-13).
 
+use benilla_time::Instant;
 use std::collections::HashSet;
 
 use benilla_assets::{cap96, floor168, AdtTile, WmoModel};
@@ -515,7 +516,7 @@ pub fn classify_entity_interior(
     // at the latch.
     mut parts: PartWrite,
 ) {
-    let _t0 = std::time::Instant::now();
+    let _t0 = Instant::now();
     let (mut n_anchors, mut n_resolved, mut n_written) = (0usize, 0usize, 0usize);
     // Anchors that wanted a resolve but had every part fade-excluded — the appear-fade lockout.
     let mut n_fade_blocked = 0usize;
@@ -613,7 +614,7 @@ pub fn classify_entity_interior(
         };
         let seated = seats.get(anchor).ok().map(|s| s.0);
         n_resolved += 1;
-        let _r = std::time::Instant::now();
+        let _r = Instant::now();
         let (attach, attach_at) = attach_anchor(containment, bake_center, anchor_t);
         let (law, room) = resolve_anchor_law(
             &mut commands,

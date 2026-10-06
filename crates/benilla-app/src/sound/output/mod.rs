@@ -74,7 +74,7 @@ mod device;
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use benilla_time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bevy::log::{debug, warn};

@@ -90,29 +90,29 @@ const HAMMER_LINK: &str = "|cffffffff|Hitem:2024:0:0:0|h[Militia Hammer]|h|r";
 #[test]
 fn shipped_questlog_frame_loads_clean() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = UiScript::new().unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    let mut s = UiScript::new().unwrap();
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 }
 
 /// The whole contract in one end-to-end drive: open plays the kit and renders row 1 + the count +
@@ -124,28 +124,28 @@ fn shipped_questlog_frame_drives_end_to_end() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(eight_entries());
 
@@ -333,36 +333,36 @@ fn shift_click_toggles_the_watch_checkbox_and_the_tracker_hud() {
     // Stock seats the watch check at update time off `questNormalText:GetWidth()` (QuestLogFrame.lua:205-215),
     // synchronously — the app's measure seam is synchronous too (measure.rs); its stand-in here.
     s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
     // A shift-click reaches stock QuestLogTitleButton_OnClick's unguarded `ChatFrameEditBox:IsVisible()`
     // (QuestLogFrame.lua:478) — the chat window is on the manifest long before the log (1944).
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(eight_entries());
     // The app fires QUEST_LOG_UPDATE when the log lands; stock QuestLog_OnEvent's arm runs the
@@ -479,37 +479,37 @@ fn watch_guards_no_op_without_erroring() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIErrorsFrame.xml"); // the guards' red-line surface
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIErrorsFrame.xml"); // the guards' red-line surface
                                                             // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
                                                             // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
                                                             // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
     // A shift-click reaches stock QuestLogTitleButton_OnClick's unguarded `ChatFrameEditBox:IsVisible()`
     // (QuestLogFrame.lua:478) — the chat window is on the manifest long before the log (1944).
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(eight_entries());
     s.run("ToggleQuestLog()").unwrap();
@@ -594,33 +594,33 @@ fn progress_auto_watches_for_five_minutes() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
     // AUTO_QUEST_WATCH is the options window's (UIOptionsFrame_Init in the reference; 1944), so the
     // auto-watch needs that window loaded, as the manifest has it long before the log.
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
     s.set_quest_log(eight_entries());
 
     // A kill credit lands: the engine fires the event with the quest's 1-based log index.
@@ -678,35 +678,35 @@ fn the_auto_watch_flag_is_the_references_uvar_and_gates_the_watch() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     // The flag is declared by the options window's init since 1944, as the reference declares it
     // in UIOptionsFrame_Init — so the window that owns it loads first, as in the manifest.
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // ScrollTemplates.xml + UIPanelTemplates.xml are NOT optional: the detail pane inherits
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
     s.set_quest_log(eight_entries());
     assert_eq!(s.eval::<String>("return AUTO_QUEST_WATCH").unwrap(), "1");
 
@@ -741,28 +741,28 @@ fn the_row_tag_is_its_own_right_flush_string_and_the_state_word_wins() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // The state word comes from the reference's OWN globals (`COMPLETE`/`FAILED`) as of this row's
     // ref-verbatim tag handling — the app loads GlobalStrings.lua as `benilla.toc`'s second entry,
     // so this harness must too or the override silently reads nil.
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     let mut state = eight_entries();
     // Row 1: a plain elite quest. Row 2: an elite quest that is COMPLETE — the state word wins.
@@ -829,28 +829,28 @@ fn empty_quest_log_hides_rows_and_disables_abandon() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(QuestLogState::default());
     s.run("ToggleQuestLog()").unwrap();
@@ -897,28 +897,28 @@ fn reward_rows_follow_the_refs_two_per_row_layout() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     let mut state = eight_entries();
     // The detail hangs on the rows now (2247), so override every row's — the window paints
@@ -1104,28 +1104,28 @@ fn overflowing_detail_content_clips_to_the_scrollframe_rect() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(overflowing_entry());
     s.run("ToggleQuestLog()").unwrap();
@@ -1178,28 +1178,28 @@ fn wheel_over_the_detail_pane_changes_vertical_scroll() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(overflowing_entry());
     s.run("ToggleQuestLog()").unwrap();
@@ -1242,28 +1242,28 @@ fn selection_change_resets_detail_scroll_but_a_quest_log_update_refresh_does_not
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(overflowing_entry());
     s.run("ToggleQuestLog()").unwrap();
@@ -1319,33 +1319,33 @@ fn reward_row_hover_serves_the_shared_item_tooltip() {
 
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     // This used to load LootFrame.xml for `BENILLA_LOOT_QUALITY_COLORS`, an alias our own copy of
     // that window set to `ITEM_QUALITY_COLORS`. 1751 retired the window and the alias with it, so
     // Fonts.xml alone is the source now. Formerly: it
     // needs the dropdown kit its GroupLootDropDown initializes against (benilla.toc l.64 vs 383).
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(eight_entries());
     s.run("ToggleQuestLog()").unwrap();
@@ -1422,17 +1422,17 @@ fn popup_children_inherit_the_dialog_stratum() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     s.run(
         "StaticPopupDialogs[\"TEST_STRATUM\"] = { text = \"Abandon?\", button1 = \"Yes\", \
          button2 = \"No\", timeout = 0 }\n\
@@ -1479,37 +1479,37 @@ fn reward_rows_preview_and_post_and_a_plain_click_stays_inert() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
     // A shift-click reaches stock QuestLogTitleButton_OnClick's unguarded `ChatFrameEditBox:IsVisible()`
     // (QuestLogFrame.lua:478) — the chat window is on the manifest long before the log (1944).
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\DressUpFrame.xml"); // DressUpItemLink lives here
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml"); // the kit its menus build from
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml"); // ChatFrameEditBox lives here
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\DressUpFrame.xml"); // DressUpItemLink lives here
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml"); // the kit its menus build from
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml"); // ChatFrameEditBox lives here
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
 
     s.set_quest_log(eight_entries());
     s.run("ToggleQuestLog()").unwrap();
@@ -1576,36 +1576,36 @@ fn shift_click_on_a_title_posts_the_quest_name_with_chat_open_and_watches_with_i
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
     // A shift-click reaches stock QuestLogTitleButton_OnClick's unguarded `ChatFrameEditBox:IsVisible()`
     // (QuestLogFrame.lua:478) — the chat window is on the manifest long before the log (1944).
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml"); // the kit its menus build from
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml"); // ChatFrameEditBox lives here
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml"); // the kit its menus build from
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml"); // ChatFrameEditBox lives here
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
 
     s.set_quest_log(eight_entries());
     s.run("ToggleQuestLog()").unwrap();
@@ -1684,28 +1684,28 @@ fn share_quest_needs_both_a_sharable_selection_and_a_party() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     // Solo, quest 1 sharable and selected by the auto-selection.
     s.set_quest_log(entries_sharable(&[1]));
@@ -1770,28 +1770,28 @@ fn share_quest_is_dark_on_an_empty_log_even_in_a_party() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(QuestLogState::default());
     s.set_party(party(4));
@@ -1810,28 +1810,28 @@ fn share_quest_click_queues_the_selected_quests_id() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     // UIPanelScrollFrameTemplate, and a MISSING template is a loader *warning*, not an error —
     // an under-loaded list passes load_xml and then loses the wheel, the arrows and the bar
     // silently.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     s.set_quest_log(entries_sharable(&[1, 5]));
     s.set_party(party(1));
@@ -1870,25 +1870,25 @@ fn the_stock_title_width_cap_bites_and_is_sticky_per_row_button() {
     // measure seam is synchronous (`extract::seat_text_measurer`), so the harness installs its
     // stand-in or every tag measures 0 and the cap comes out at the wrong number.
     s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
 
     // A real 1.11 Dungeon-tagged quest, and the longest title the tag branch has to survive.
     const LONG: &str = "The Left Piece of Lord Valthalak's Amulet";

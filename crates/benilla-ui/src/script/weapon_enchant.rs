@@ -70,7 +70,7 @@
 //! never reads it — decision 0920). The server sends the packet in the same breath as the field, so
 //! the window is a frame or two.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -105,30 +105,27 @@ impl super::UiScript {
 }
 
 /// Register `GetWeaponEnchantInfo`.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "GetWeaponEnchantInfo",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::with_capacity(6);
-            // Main hand then off hand, three values each — the arity is fixed at six whatever is
-            // equipped, so a caller's `local a, b, c, d, e, f = …` never shifts.
-            for hand in model.weapon_enchants {
-                match hand {
-                    Some(e) => {
-                        out.push(Value::Integer(1));
-                        out.push(
-                            e.remaining_ms
-                                .map_or(Value::Nil, |ms| Value::Number(ms as f64)),
-                        );
-                        out.push(Value::Integer(i64::from(e.charges)));
-                    }
-                    None => out.extend([Value::Nil, Value::Nil, Value::Nil]),
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("GetWeaponEnchantInfo", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::with_capacity(6);
+        // Main hand then off hand, three values each — the arity is fixed at six whatever is
+        // equipped, so a caller's `local a, b, c, d, e, f = …` never shifts.
+        for hand in model.weapon_enchants {
+            match hand {
+                Some(e) => {
+                    out.push(Value::Integer(1));
+                    out.push(
+                        e.remaining_ms
+                            .map_or(Value::Nil, |ms| Value::Number(ms as f64)),
+                    );
+                    out.push(Value::Integer(i64::from(e.charges)));
                 }
+                None => out.extend([Value::Nil, Value::Nil, Value::Nil]),
             }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )
+        }
+        Ok(MultiValue::from(out))
+    })
 }
 
 #[cfg(test)]

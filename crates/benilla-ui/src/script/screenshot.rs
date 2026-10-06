@@ -12,24 +12,20 @@
 //! are two captures rather than one collapsed intent. The app drains it in
 //! [`crate::script::UiScript::take_screenshot_asks`].
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use super::Model;
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `Screenshot()` — take one. Returns nothing: the reference's does not either, because the
     // capture completes after the frame that asked for it and the outcome arrives as
     // SCREENSHOT_SUCCEEDED / SCREENSHOT_FAILED.
-    lua.globals().set(
-        "Screenshot",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .screenshot_asks += 1;
-            Ok(())
-        })?,
-    )?;
-    Ok(())
+    lua.register_function("Screenshot", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .screenshot_asks += 1;
+        Ok(())
+    })
 }
 
 impl super::UiScript {

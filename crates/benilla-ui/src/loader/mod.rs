@@ -56,7 +56,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mlua::{Function, ObjectLike, Table, Value};
+use benilla_lua::{Function as LuaFunction, LuaContext, Table as LuaTable, Value as LuaValue};
 
 use crate::framexml::{self, Element, ParsedDocument, ScriptRef, TopLevel};
 use crate::script::{FontObject, JustifyH, JustifyV, Outline, UiScript};
@@ -126,7 +126,7 @@ pub struct LoadReport {
 /// **bytes**. Returning `None` yields a [`LoadReport::missing_files`] row — reported, but not an
 /// error, because nothing raised (decision 2155).
 pub fn load(
-    script: &UiScript,
+    script: &mut UiScript,
     doc: &ParsedDocument,
     files: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> LoadReport {
@@ -148,19 +148,18 @@ pub fn load(
 /// addon (decision 1217). Three callers used to derive this directory themselves with the same
 /// three lines; they pass the path now and [`dir_of`] does it once.
 pub fn load_in(
-    script: &UiScript,
+    script: &mut UiScript,
     doc: &ParsedDocument,
     path: &str,
     files: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> LoadReport {
-    load_into(script.lua(), doc, path, files)
+    load_into_context(script.vm_mut(), doc, path, files)
 }
 
-/// [`load_in`] against the VM directly, for a caller that holds `&Lua` rather than `&UiScript` —
-/// which is every Lua binding, and therefore `LoadAddOn` (1188 phase 2). Identical behaviour;
-/// `load_in` is the same call with the script's own VM.
-pub fn load_into(
-    lua: &mlua::Lua,
+
+
+pub(crate) fn load_into_context(
+    lua: &mut impl LuaContext,
     doc: &ParsedDocument,
     path: &str,
     files: &dyn Fn(&str) -> Option<Vec<u8>>,
@@ -210,8 +209,12 @@ pub fn load_into(
 /// `CreateFrame`, and this runs from inside that binding — it would recurse forever. The steps
 /// after it are [`Loader::decorate`], which is what both entry points share.
 ///
-/// Reachable from a Lua binding at all only because decision 1191 §4 made the loader `&Lua`-native.
-pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &str) -> Vec<String> {
+pub(crate) fn apply_template_context(
+    lua: &mut impl LuaContext,
+    wrapper: &LuaTable,
+    kind: &str,
+    template: &str,
+) -> Vec<String> {
     let template = template.trim();
     if template.is_empty() {
         return Vec::new();
@@ -357,13 +360,13 @@ fn dir_of(path: &str) -> &str {
     }
 }
 
-struct Loader<'a> {
+struct Loader<'a, C: LuaContext> {
     /// **The VM itself, not a `UiScript`** — every piece of state this loader touches
     /// (the two FrameXML registries, the font objects, the chunk runner) is reachable from a bare
-    /// `&Lua` through [`Model`]. That is what lets `LoadAddOn` load an addon from inside a Lua
-    /// binding, synchronously, the way the reference does (1188 phase 2): a binding is handed
-    /// `&Lua` and can never obtain the `&UiScript` that owns it.
-    pub(super) lua: &'a mlua::Lua,
+    /// [`LuaContext`] through [`Model`]. That is what lets `LoadAddOn` load an addon synchronously
+    /// from an active callback context, the way the reference does (1188 phase 2), without reaching
+    /// back into the `UiScript` that owns the VM.
+    pub(super) lua: &'a mut C,
     pub(super) files: &'a dyn Fn(&str) -> Option<Vec<u8>>,
     /// The current document's own path in the provider's path space. Its **directory**
     /// ([`Loader::base`]) is what a relative `<Include>`/`<Script file=>` inside it resolves
@@ -394,25 +397,22 @@ struct Loader<'a> {
 
 /// One `SetPoint` the loader holds until its target can exist — see `Loader::deferred_anchors`.
 pub(super) struct DeferredAnchor {
-    pub(super) wrapper: Table,
+    pub(super) wrapper: LuaTable,
     /// A region wrapper (`call_region`) rather than a frame's (`call`).
     pub(super) region: bool,
     pub(super) args: (String, Option<String>, String, f32, f32),
     pub(super) dbg: String,
 }
 
-impl Loader<'_> {
-    pub(super) fn lua(&self) -> &mlua::Lua {
-        self.lua
-    }
-
+impl<C: LuaContext> Loader<'_, C> {
     /// The current document's own directory — what a relative `<Include>`/`<Script file=>` inside
     /// it resolves against.
     fn base(&self) -> &str {
         dir_of(&self.path)
     }
 
-    /// Run a chunk in the one global state — `UiScript::run`'s body, reachable from `&Lua`.
+    /// Run a chunk in the one global state — `UiScript::run`'s body, reachable from the active
+    /// [`LuaContext`].
     ///
     /// Takes **bytes**, because a `<Script file=>` chunk is whatever is on disk (decision 1193) and
     /// Lua 5.0 strings are byte strings. An inline `<Script>` body arrives as `&str` from the XML
@@ -424,7 +424,7 @@ impl Loader<'_> {
     /// (decision 1217). Lua's leading `@` is what makes it a *file* name rather than a quoted
     /// source snippet, and the separator is `\` because that is the shape an addon parsing its own
     /// `debugstack()` matches against (`crate::script::addon_chunk_name`).
-    fn run(&self, chunk: &[u8], path: &str) -> mlua::Result<()> {
+    fn run(&mut self, chunk: &[u8], path: &str) -> benilla_lua::Result<()> {
         // A FILE chunk is `"@%s"` (`0x8716e0`) over the resolved path — `0x704bc0` builds it that
         // way for every `.lua` the loader touches, and `luaO_chunkid`'s `@` branch prints it
         // plainly (wow-re `scratch/include-lua-dispatch.md` §7).
@@ -433,29 +433,15 @@ impl Loader<'_> {
 
     /// Run a chunk under a chunk name given **whole** — for the producers whose name is not a
     /// path. See the inline `<Script>` arm in [`Self::load_doc`].
-    fn run_named(&self, chunk: &[u8], name: &str) -> mlua::Result<()> {
-        self.lua
-            .load(chunk)
-            .set_name(name)
-            .set_mode(mlua::ChunkMode::Text)
-            .exec()
+    fn run_named(&mut self, chunk: &[u8], name: &str) -> benilla_lua::Result<()> {
+        self.lua.exec_named_text(chunk, name)
     }
 
     /// The model, for the two FrameXML registries below.
-    fn model(&self) -> mlua::AppDataRefMut<'_, crate::script::Model> {
+    fn model(&self) -> benilla_lua::AppDataRefMut<'_, crate::script::Model> {
         self.lua
             .app_data_mut::<crate::script::Model>()
             .expect("model app_data")
-    }
-
-    /// Run a widget handler with the client's calling convention — `UiScript::invoke_handler`'s
-    /// body, reachable from `&Lua`.
-    pub(super) fn invoke_handler(
-        &self,
-        wrapper: &mlua::Table,
-        func: &mlua::Function,
-    ) -> mlua::Result<()> {
-        crate::script::event::invoke_with_globals(self.lua, wrapper.clone(), func, None, Vec::new())
     }
 
     pub(super) fn warn_once(&mut self, key: &str, msg: impl Into<String>) {
@@ -492,7 +478,7 @@ impl Loader<'_> {
     /// signal that was missing when the macro window shipped with "CREATE_MACROS" across its title
     /// bar (0983 → 0991).
     pub(super) fn resolve_text(&mut self, raw: &str, dbg: &str) -> String {
-        if let Ok(s) = self.lua().globals().get::<String>(raw) {
+        if let Ok(s) = self.lua.get_global::<String>(raw) {
             return s;
         }
         if is_global_string_key(raw) {
@@ -738,7 +724,7 @@ impl Loader<'_> {
         //
         // Flattening is untouched: the merge above still resolves the `inherits=` chain once, at
         // load, and publishing only gives the result a name.
-        if let Err(e) = crate::script::font::publish(self.lua(), &name) {
+        if let Err(e) = crate::script::font::publish_context(self.lua, &name) {
             self.report
                 .warnings
                 .push(format!("<Font name=\"{name}\">: {e}"));
@@ -758,9 +744,9 @@ impl Loader<'_> {
     pub(super) fn materialize(
         &mut self,
         el: &Element,
-        parent: Option<&Table>,
+        parent: Option<&LuaTable>,
         parent_name: &str,
-    ) -> Option<Table> {
+    ) -> Option<LuaTable> {
         // ─ Step 1 and ONLY step 1 lives here: resolve the parent, resolve the name against it,
         //   and call CreateFrame. Everything after it is `decorate`, because the runtime template
         //   path enters at exactly that seam (`apply_template`) — its frame already exists, and
@@ -780,7 +766,8 @@ impl Loader<'_> {
         //     `<Binding>` children are not `Include`/`Script`/`Font`, so each is a frame element
         //     whose type does not exist — three log lines in the reference, three red dialogs here
         //     — while the file's real reading as bindings happens at `0x51f400` regardless.
-        if crate::script::object::registered_frame_kind(self.lua(), &el.tag).is_none() {
+        let known_kind = crate::script::object::registered_frame_kind_context(self.lua, &el.tag);
+        if known_kind.is_none() {
             self.report
                 .warnings
                 .push(format!("Unknown frame type: {}", el.tag));
@@ -820,33 +807,40 @@ impl Loader<'_> {
         //
         //      `None` = no attribute, or an empty one: keep the enclosing parent.
         //      `Some(None)` = named a parent that does not resolve: parentless, and logged.
-        let attr_parent: Option<Option<Table>> =
-            el.attr("parent")
-                .filter(|name| !name.is_empty())
-                .map(|name| {
-                    // A FRAME, not merely a global of that name. `_G` is one namespace: an addon's own
-                    // `MyAddon = {}` sits in it beside every frame, and the corpus really does write
-                    // `parent="TheoryCraft"` where the addon owns that name. Handing a plain table to
-                    // `CreateFrame` would raise and take the element's whole subtree with it — a name
-                    // collision costing a window. The identity test is RF-0023's own: a frame wrapper
-                    // carries its handle at `T[0]` as lightuserdata, and nothing else does. The
-                    // reference's own `0x76c760` reads the frame registry, so a non-frame global of
-                    // the right name is the same miss, with the same message.
-                    let hit =
-                        self.lua().globals().get::<Table>(name).ok().filter(|t| {
-                            matches!(t.raw_get::<Value>(0), Ok(Value::LightUserData(_)))
-                        });
-                    if hit.is_none() {
-                        // The reference's own wording (`0x8710f0`), like the frame-type miss above.
-                        self.report
-                            .warnings
-                            .push(format!("Couldn't find frame parent: {name}"));
+        let attr_parent: Option<Option<LuaTable>> = el
+            .attr("parent")
+            .filter(|name| !name.is_empty())
+            .map(|name| {
+                // A FRAME, not merely a global of that name. `_G` is one namespace: an addon's own
+                // `MyAddon = {}` sits in it beside every frame, and the corpus really does write
+                // `parent="TheoryCraft"` where the addon owns that name. Handing a plain table to
+                // `CreateFrame` would raise and take the element's whole subtree with it — a name
+                // collision costing a window. The identity test is RF-0023's own: a frame wrapper
+                // carries its handle at `T[0]` as lightuserdata, and nothing else does. The
+                // reference's own `0x76c760` reads the frame registry, so a non-frame global of
+                // the right name is the same miss, with the same message.
+                let hit = match self.lua.global_value(name) {
+                    Ok(LuaValue::Table(table))
+                        if matches!(
+                            self.lua.table_get_raw_value(&table, LuaValue::Integer(0)),
+                            Ok(LuaValue::LightUserData(_))
+                        ) =>
+                    {
+                        Some(table)
                     }
-                    hit
-                });
+                    _ => None,
+                };
+                if hit.is_none() {
+                    // The reference's own wording (`0x8710f0`), like the frame-type miss above.
+                    self.report
+                        .warnings
+                        .push(format!("Couldn't find frame parent: {name}"));
+                }
+                hit
+            });
         let parent = match &attr_parent {
-            Some(resolved) => resolved.as_ref(),
-            None => parent,
+            Some(resolved) => resolved.clone(),
+            None => parent.cloned(),
         };
 
         // 1b · **The name, resolved AFTER the parent — and against it** (B387). `$parent` is not a
@@ -893,8 +887,8 @@ impl Loader<'_> {
         // 1 · CreateFrame(kind = element tag, name, parent). The type is already known to resolve
         //     (step 0), so an error here is something else the call raised — record it and skip
         //     the whole subtree.
-        let create: Function = match self.lua().globals().get("CreateFrame") {
-            Ok(f) => f,
+        let create: LuaFunction = match self.lua.get_global("CreateFrame") {
+            Ok(create) => create,
             Err(e) => {
                 self.report
                     .errors
@@ -902,21 +896,24 @@ impl Loader<'_> {
                 return None;
             }
         };
-        let wrapper: Table =
-            match create.call((el.tag.clone(), resolved_name.clone(), parent.cloned())) {
-                Ok(w) => w,
-                Err(e) => {
-                    self.report.errors.push(format!(
-                        "CreateFrame(<{}>{}): {e}",
-                        el.tag,
-                        resolved_name
-                            .as_deref()
-                            .map(|n| format!(" name=\"{n}\""))
-                            .unwrap_or_default()
-                    ));
-                    return None;
-                }
-            };
+        let wrapper = match LuaContext::call_function::<_, LuaTable>(
+            self.lua,
+            &create,
+            (el.tag.clone(), resolved_name.clone(), parent.clone()),
+        ) {
+            Ok(wrapper) => wrapper,
+            Err(e) => {
+                self.report.errors.push(format!(
+                    "CreateFrame(<{}>{}): {e}",
+                    el.tag,
+                    resolved_name
+                        .as_deref()
+                        .map(|n| format!(" name=\"{n}\""))
+                        .unwrap_or_default()
+                ));
+                return None;
+            }
+        };
         self.report.frames += 1;
 
         let dbg_name = resolved_name
@@ -947,7 +944,7 @@ impl Loader<'_> {
     /// `<Frames>` pass, and finally this frame's own `OnLoad` (bottom-up, rf26).
     ///
     /// Split out of [`Self::materialize`] because materialize's *first* step is `CreateFrame`, and
-    /// the runtime template path — [`apply_template`], i.e. `CreateFrame`'s own fourth argument —
+    /// the runtime template path — [`apply_template_context`], i.e. `CreateFrame`'s own fourth argument —
     /// is called from **inside** that binding. It cannot re-enter materialize without recursing
     /// forever; it enters here instead, and the two paths share every step that follows.
     ///
@@ -957,7 +954,7 @@ impl Loader<'_> {
     pub(super) fn decorate(
         &mut self,
         el: &Element,
-        wrapper: &Table,
+        wrapper: &LuaTable,
         self_name: &str,
         parent_name: &str,
         dbg_name: &str,
@@ -1030,11 +1027,7 @@ impl Loader<'_> {
             let Some(child_wrapper) = self.materialize(&expanded, Some(wrapper), self_name) else {
                 continue; // materialize already reported why
             };
-            if let Err(e) = wrapper.call_method::<()>("SetScrollChild", child_wrapper) {
-                self.report
-                    .errors
-                    .push(format!("{dbg_name}: <ScrollChild>: {e}"));
-            }
+            self.call(wrapper, "SetScrollChild", child_wrapper, dbg_name);
         }
 
         // 7c · the anchors this frame's own elements could not resolve while their targets were
@@ -1049,18 +1042,19 @@ impl Loader<'_> {
 
     /// The two names a decoration needs, read back from the frame itself through the **public
     /// object model** (`GetName`/`GetParent`) rather than the arena — the discipline this module
-    /// holds to everywhere else (see the module docs). Used by [`apply_template`], whose caller
+    /// holds to everywhere else (see the module docs). Used by [`apply_template_context`], whose caller
     /// hands it a wrapper and nothing else.
     ///
     /// Returns the frame's own name (`None` if it is anonymous) and the name of its nearest
     /// **named** ancestor — rf27 rule 3's walk, with [`framexml::DEFAULT_PARENT_NAME`] when there
     /// is none.
     pub(super) fn apply_anchor(&mut self, d: DeferredAnchor, may_defer: bool) {
-        let rel: Value = match d.args.1.as_deref() {
+        let rel: LuaValue = match d.args.1.as_deref() {
             Some(name) => {
-                match crate::script::object::anchor_args::resolve_xml_relative_to(self.lua(), name)
-                {
-                    Some(t) => Value::Table(t),
+                match crate::script::object::anchor_args::resolve_xml_relative_to_context(
+                    self.lua, name,
+                ) {
+                    Some(t) => LuaValue::Table(t),
                     // Nothing by that name YET — a target declared later in the enclosing frame's
                     // subtree. Hold it until the subtree is complete (`deferred_anchors`) and try
                     // once more; a miss THEN is a real miss and takes the reference's leg.
@@ -1079,15 +1073,17 @@ impl Loader<'_> {
             // No `relativeTo=`: `ebx` still holds `[ebp-0x14]`, the layout parent default that
             // `0x76785b call [edx+0xc]` (= `0x76c6e0`) seeded before the `<Anchor>` loop. A frame
             // with no parent gets the screen root there, which is what a Lua `nil` means here.
-            None => match d
-                .wrapper
-                .call_method::<Option<Table>>("GetParent", ())
-                .ok()
-                .flatten()
-            {
-                Some(t) => Value::Table(t),
-                None => Value::Nil,
-            },
+            None => {
+                let parent = self
+                    .lua
+                    .call_method::<_, Option<LuaTable>>(&d.wrapper, "GetParent", ())
+                    .ok()
+                    .flatten();
+                match parent {
+                    Some(parent) => LuaValue::Table(parent),
+                    None => LuaValue::Nil,
+                }
+            }
         };
         let DeferredAnchor {
             wrapper,
@@ -1112,25 +1108,32 @@ impl Loader<'_> {
         }
     }
 
-    fn frame_names(&self, wrapper: &Table) -> (Option<String>, String) {
-        let own = wrapper
-            .call_method::<Option<String>>("GetName", ())
-            .ok()
-            .flatten();
-        let mut cur = wrapper.clone();
-        // Bounded: the arena's parent chain is a tree, and a walk that somehow is not must still
-        // return rather than hang a load.
-        for _ in 0..64 {
-            let Ok(Some(parent)) = cur.call_method::<Option<Table>>("GetParent", ()) else {
-                break;
-            };
-            if let Ok(Some(name)) = parent.call_method::<Option<String>>("GetName", ()) {
-                return (own, name);
-            }
-            cur = parent;
-        }
-        (own, framexml::DEFAULT_PARENT_NAME.to_string())
+    fn frame_names(&mut self, wrapper: &LuaTable) -> (Option<String>, String) {
+        frame_names_in_context(self.lua, wrapper)
     }
+}
+
+fn frame_names_in_context(
+    lua: &mut impl LuaContext,
+    wrapper: &LuaTable,
+) -> (Option<String>, String) {
+    let own = lua
+        .call_method::<_, Option<String>>(wrapper, "GetName", ())
+        .ok()
+        .flatten();
+    let mut cur = wrapper.clone();
+    // Bounded: the arena's parent chain is a tree, and a walk that somehow is not must still
+    // return rather than hang a load.
+    for _ in 0..64 {
+        let Ok(Some(parent)) = lua.call_method::<_, Option<LuaTable>>(&cur, "GetParent", ()) else {
+            break;
+        };
+        if let Ok(Some(name)) = lua.call_method::<_, Option<String>>(&parent, "GetName", ()) {
+            return (own, name);
+        }
+        cur = parent;
+    }
+    (own, framexml::DEFAULT_PARENT_NAME.to_string())
 }
 
 /// Iterate an element's direct children whose tag matches `tag` (case-insensitively).

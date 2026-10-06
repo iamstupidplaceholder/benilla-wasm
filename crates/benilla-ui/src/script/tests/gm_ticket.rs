@@ -24,7 +24,7 @@ fn with_categories() -> UiScript {
 /// list of names alone, would leave every category button unlabelled or unclickable.
 #[test]
 fn the_categories_come_back_as_a_flat_id_name_vararg_list() {
-    let s = with_categories();
+    let mut s = with_categories();
     let n: i64 = s
         .eval("local f = function(...) return arg.n end return f(GetGMTicketCategories())")
         .unwrap();
@@ -59,7 +59,7 @@ fn the_ids_are_the_dbc_ids_not_list_positions() {
 /// bare-XML harness, and a run with no client data.
 #[test]
 fn an_absent_catalog_returns_nothing_rather_than_erroring() {
-    let s = script();
+    let mut s = script();
     let n: i64 = s
         .eval("local f = function(...) return arg.n end return f(GetGMTicketCategories())")
         .unwrap();

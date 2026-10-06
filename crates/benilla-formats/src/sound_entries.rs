@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -154,7 +153,7 @@ fn join_variation(dir: &str, file: &str) -> String {
 }
 
 /// Read SoundEntries.dbc off the patch chain into a [`SoundKitCatalog`].
-pub fn load_sound_kit_catalog(chain: &mut Chain) -> Result<SoundKitCatalog> {
+pub fn load_sound_kit_catalog(chain: &mut impl crate::FileSource) -> Result<SoundKitCatalog> {
     let bytes = chain
         .read_file(SOUND_ENTRIES)
         .with_context(|| format!("reading {SOUND_ENTRIES}"))?;

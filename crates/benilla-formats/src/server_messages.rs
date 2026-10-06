@@ -30,8 +30,8 @@
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
 use crate::dbc::{parse, str_at, u32_at};
+use crate::FileSource;
 
 const SERVER_MESSAGES: &str = "DBFilesClient\\ServerMessages.dbc";
 
@@ -90,7 +90,7 @@ fn schema() -> Schema {
     s
 }
 
-pub fn load_server_messages_catalog(chain: &mut Chain) -> Result<ServerMessagesCatalog> {
+pub fn load_server_messages_catalog(chain: &mut impl FileSource) -> Result<ServerMessagesCatalog> {
     let bytes = chain
         .read_file(SERVER_MESSAGES)
         .context("reading ServerMessages.dbc")?;

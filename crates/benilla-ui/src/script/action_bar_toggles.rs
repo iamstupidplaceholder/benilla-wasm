@@ -40,7 +40,7 @@
 //! The bit→bar meaning is a FrameXML convention, not the binary's (§7) — the engine stores four
 //! unnamed bits and the names live in the UI layer.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::binding_abi::bool_or_default;
 use super::Model;
@@ -79,30 +79,25 @@ impl super::UiScript {
 }
 
 /// Register the two action-bar-toggle globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetActionBarToggles() -> four values, each the NUMBER 1 or nil (`0x6f3810` pushes tag 3 with
     // the double 1.0; `0x6f37f0` pushes tag 0). Never booleans — callers write `if toggle then`,
     // and the WoW `1`-or-`nil` idiom is what the reference's own `SHOW_MULTI_ACTIONBAR_n` globals
     // then hold. Return N tests bit `1 << (N-1)`, the exact inverse of the setter's map.
-    g.set(
-        "GetActionBarToggles",
-        lua.create_function(|lua, ()| {
-            let byte = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.action_bar_toggles.unwrap_or(0)
-            };
-            let bit = |i: u32| {
-                if byte & (1 << i) != 0 {
-                    Value::Number(1.0)
-                } else {
-                    Value::Nil
-                }
-            };
-            Ok((bit(0), bit(1), bit(2), bit(3)))
-        })?,
-    )?;
+    lua.register_function("GetActionBarToggles", |lua, ()| {
+        let byte = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.action_bar_toggles.unwrap_or(0)
+        };
+        let bit = |i: u32| {
+            if byte & (1 << i) != 0 {
+                Value::Number(1.0)
+            } else {
+                Value::Nil
+            }
+        };
+        Ok((bit(0), bit(1), bit(2), bit(3)))
+    })?;
 
     // SetActionBarToggles(a, b, c, d) -> nothing. Four argument slots, no more: a fifth is never
     // fetched (§2), which matters because the shipped Options panel passes one.
@@ -114,21 +109,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Nothing local is written: the byte we hold is the server's, and only the server's push moves
     // it (module doc). A `Set` that never reaches the server therefore leaves the UI showing the
     // truth rather than a lie.
-    g.set(
-        "SetActionBarToggles",
-        lua.create_function(|lua, args: MultiValue| {
-            let args: Vec<Value> = args.into_iter().collect();
-            let mut packed = 0u8;
-            for i in 0..ACTION_BAR_TOGGLE_BITS {
-                if bool_or_default(args.get(i as usize), false) {
-                    packed |= 1 << i;
-                }
+    lua.register_function("SetActionBarToggles", |lua, args: MultiValue| {
+        let mut packed = 0u8;
+        for i in 0..ACTION_BAR_TOGGLE_BITS {
+            if bool_or_default(args.get(i as usize), false) {
+                packed |= 1 << i;
             }
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.action_bar_toggle_sends.push(packed);
-            Ok(())
-        })?,
-    )?;
+        }
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.action_bar_toggle_sends.push(packed);
+        Ok(())
+    })?;
 
     Ok(())
 }

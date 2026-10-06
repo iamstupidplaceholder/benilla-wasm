@@ -19,7 +19,7 @@
 //! the surface, which is the exact failure this measurement exists to prevent.
 use std::collections::BTreeSet;
 
-use mlua::{Table, Value};
+use benilla_lua::{LuaContext, Table, Value};
 
 use super::UiScript;
 
@@ -143,37 +143,43 @@ const CLASSES: &[(&str, &str)] = &[
 /// **A class that cannot be instantiated is REPORTED, never skipped**: its row is
 /// `(class, "!NOT-INSTANTIABLE")`. A census that silently drops a class reads as "that class has
 /// no methods", which is the wrong answer to a different question.
-pub fn widget_method_census(script: &UiScript) -> mlua::Result<Vec<(String, String)>> {
+pub fn widget_method_census(script: &mut UiScript) -> benilla_lua::Result<Vec<(String, String)>> {
+    let lua = script.vm_mut();
     let mut candidates: BTreeSet<String> = BTreeSet::new();
     for key in METHOD_TABLES {
-        let table: Table = script.lua().named_registry_value(key).map_err(|e| {
-            mlua::Error::runtime(format!(
+        let table: Table = lua.named_registry_value(key).map_err(|e| {
+            benilla_lua::Error::runtime(format!(
                 "candidate source '{key}' is not a table in this VM ({e}) — a renamed or retired \
                  method table would silently shrink this census; fix the list, do not ignore it"
             ))
         })?;
-        for pair in table.pairs::<Value, Value>() {
-            let (k, _) = pair?;
+        for (k, _) in lua.table_entries(&table)? {
             if let Value::String(s) = k {
-                candidates.insert(s.to_str()?.to_string());
+                let name = s.as_str().map_err(|error| {
+                    benilla_lua::Error::runtime(format!(
+                        "widget method name is not valid UTF-8: {error}"
+                    ))
+                })?;
+                candidates.insert(name.to_string());
             }
         }
     }
     // Hand the names to the VM once; the per-class probe is then one chunk, not one per name.
-    let names = script.lua().create_table()?;
+    let names = lua.create_table()?;
     for (i, n) in candidates.iter().enumerate() {
-        names.set(i + 1, n.as_str())?;
+        lua.table_set(&names, i + 1, n.as_str())?;
     }
-    script.lua().globals().set("DW_NAMES", names)?;
+    lua.set_global_table("DW_NAMES", &names)?;
 
     let mut rows: Vec<(String, String)> = Vec::new();
     for (class, expr) in CLASSES {
-        if let Err(e) = script.run(&format!("DW_{class} = {expr}")) {
+        let instantiate = format!("DW_{class} = {expr}");
+        if let Err(e) = lua.exec_named_text(instantiate.as_bytes(), "=widget method census") {
             eprintln!("{class}: could not be instantiated: {e}");
             rows.push(((*class).to_string(), "!NOT-INSTANTIABLE".to_string()));
             continue;
         }
-        let found: Vec<String> = script.eval(&format!(
+        let probe = format!(
             "local o = DW_{class} \
              local out = {{}} \
              for i = 1, table.getn(DW_NAMES) do \
@@ -181,8 +187,11 @@ pub fn widget_method_census(script: &UiScript) -> mlua::Result<Vec<(String, Stri
                if type(o[n]) == 'function' then table.insert(out, n) end \
              end \
              return out"
-        ))?;
-        for name in found {
+        );
+        let function = lua.load_function(probe.as_bytes(), "=widget method census")?;
+        let found: Table = LuaContext::call_function(lua, &function, ())?;
+        for i in 1..=lua.table_raw_len(&found)? {
+            let name: String = LuaContext::table_get(lua, &found, i as i64)?;
             rows.push(((*class).to_string(), name));
         }
     }

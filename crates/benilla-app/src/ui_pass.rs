@@ -386,27 +386,29 @@ struct UiWhiteTexture(Handle<Image>);
 /// asset for as long as the image lives, and a steady frame re-prepares none.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub(crate) struct UiQuadMaterial {
+    // Each uniform binding must be at least 16-byte sized on downlevel GPUs.
+    // Only .x is semantic; the remaining lanes are padding, on every target.
     #[uniform(0)]
-    additive: u32,
+    additive: UVec4,
     #[texture(1)]
     #[sampler(2)]
     texture: Option<Handle<Image>>,
     /// Mask to the inscribed circle (live unit portraits) — see [`UiQuad::circular`].
     #[uniform(3)]
-    circular: u32,
+    circular: UVec4,
     /// Fold the texel to luminance — see [`UiQuad::desaturated`].
     #[uniform(7)]
-    desaturate: u32,
+    desaturate: UVec4,
     /// The texel is already premultiplied (a booth bake) — see [`UiQuad::premultiplied`].
     #[uniform(8)]
-    premultiplied: u32,
+    premultiplied: UVec4,
     /// Alpha-TEST reference on `texel.a × colour.a`; `<= 0` disables — see [`UiQuad::alpha_test`].
     #[uniform(9)]
-    alpha_ref: f32,
+    alpha_ref: Vec4,
     /// The texel is already the client's gamma byte (a SKIP_DECODE upload — the minimap tiles), so
     /// the ordinary arm skips its `linear_to_srgb` re-encode — see [`UiQuad::gamma_texel`].
     #[uniform(10)]
-    gamma_texel: u32,
+    gamma_texel: UVec4,
     /// The screen-anchored mask span in **physical framebuffer px** (`min.xy, max.xy` — the
     /// fragment shader compares `@builtin(position)`, which is physical): [`UiQuadMask::rect`]
     /// scaled by the window's scale factor at mesh build. `z <= x` (degenerate) disables masking.
@@ -463,15 +465,15 @@ impl UiQuadMaterial {
     /// `a = 1`, so the state degenerates to a plain replace — and one that fails emits nothing.
     pub(crate) fn interior_tile(texture: Handle<Image>, alpha_ref: f32) -> Self {
         Self {
-            additive: 0,
+            additive: UVec4::ZERO,
             texture: Some(texture),
-            circular: 0,
-            desaturate: 0,
-            premultiplied: 0,
-            alpha_ref,
+            circular: UVec4::ZERO,
+            desaturate: UVec4::ZERO,
+            premultiplied: UVec4::ZERO,
+            alpha_ref: Vec4::new(alpha_ref, 0.0, 0.0, 0.0),
             // The alpha-test arm never reads this: it decodes explicitly (its target is the
             // un-encoded composite), so the tile's SKIP_DECODE contract is already honoured there.
-            gamma_texel: 0,
+            gamma_texel: UVec4::ZERO,
             mask_rect: Vec4::new(0.0, 0.0, -1.0, -1.0),
             mask: None,
             // A tile samples its whole image; there is no cell to stay inside of.
@@ -601,9 +603,15 @@ fn accepts(p: Vec2, viewport: Vec2) -> bool {
 
 /// Owns the player-UI camera + the per-frame quad→mesh rebuild. See the module doc for the
 /// camera-order arbitration and the batching/ordering approach.
+mod mesh_changes;
+
 pub(crate) struct PlayerUiPlugin;
 
 impl Plugin for PlayerUiPlugin {
+    fn finish(&self, app: &mut App) {
+        mesh_changes::install(app);
+    }
+
     fn build(&self, app: &mut App) {
         app.init_resource::<UiQuads>()
             .init_resource::<UiMeshCost>()
@@ -793,7 +801,11 @@ struct Run {
 impl Run {
     /// A fresh run carrying `q`'s material identity (every flag that splits a run) under the
     /// already-resolved `texture` (the quad's own, or the shared white fallback).
-    fn new(texture: Handle<Image>, q: &UiQuad) -> Self {
+    fn new(texture: Handle<Image>, q: &UiQuad, mut scratch: GeometryScratch) -> Self {
+        scratch.positions.clear();
+        scratch.uvs.clear();
+        scratch.colors.clear();
+        scratch.indices.clear();
         Self {
             texture,
             additive: q.additive,
@@ -804,10 +816,10 @@ impl Run {
             alpha_test: q.alpha_test,
             mask: q.mask.clone(),
             uv_clamp: q.uv_clamp,
-            positions: Vec::new(),
-            uvs: Vec::new(),
-            colors: Vec::new(),
-            indices: Vec::new(),
+            positions: scratch.positions,
+            uvs: scratch.uvs,
+            colors: scratch.colors,
+            indices: scratch.indices,
         }
     }
 
@@ -922,6 +934,10 @@ fn count_material_events(
 /// of render-side churn in a live city (0365).
 #[derive(Default)]
 struct BatchPools {
+    sort_order: Vec<usize>,
+    /// Per-run CPU candidates, recycled after exact comparison or replacement.
+    /// StoredRun remains the independent last-written GPU-content authority.
+    scratch: Vec<GeometryScratch>,
     entities: Vec<Entity>,
     meshes: Vec<Handle<Mesh>>,
     /// Each slot's last-written MESH content (base positions, before [`Self::offsets`]) — the
@@ -955,6 +971,25 @@ struct StoredRun {
     indices: Vec<u32>,
     z_bits: u32,
     key: MatKey,
+}
+
+#[derive(Default)]
+struct GeometryScratch {
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+}
+
+impl From<StoredRun> for GeometryScratch {
+    fn from(run: StoredRun) -> Self {
+        Self {
+            positions: run.positions,
+            uvs: run.uvs,
+            colors: run.colors,
+            indices: run.indices,
+        }
+    }
 }
 
 impl StoredRun {
@@ -1147,14 +1182,14 @@ fn rebuild_ui_mesh(
     // rebuild pays one bool test, not six clock reads.
     let cost_on = cost_wanted.0 || crate::ui_script::extract::ui_cost_enabled();
     **mesh_cost = UiMeshCost::default();
-    let t_rebuild = cost_on.then(std::time::Instant::now);
+    let t_rebuild = cost_on.then(benilla_time::Instant::now);
     let mut t_mark = t_rebuild;
     let mut lap = move || -> u128 {
         if !cost_on {
             return 0;
         }
         t_mark
-            .replace(std::time::Instant::now())
+            .replace(benilla_time::Instant::now())
             .map_or(0, |t| t.elapsed().as_micros())
     };
     let (meshes, materials) = (&mut stores.0, &mut stores.1);
@@ -1247,12 +1282,19 @@ fn rebuild_ui_mesh(
     // Stable sort by z_key: the WoW-style total order. Stable so equal-z_key quads keep the producer's
     // original relative order (their own decl-order tiebreak, if any). Base lane first, append lane
     // after — the same relative order the one-Vec era produced.
-    let mut sorted: Vec<&UiQuad> = if lanes_hidden {
-        Vec::new()
-    } else {
-        q.quads.iter().chain(q.overlays.iter()).collect()
+    let quad_at = |i: usize| {
+        if i < q.quads.len() {
+            &q.quads[i]
+        } else {
+            &q.overlays[i - q.quads.len()]
+        }
     };
-    sorted.sort_by_key(|q| q.z_key);
+    let mut sorted = std::mem::take(&mut pools.sort_order);
+    sorted.clear();
+    if !lanes_hidden {
+        sorted.extend(0..q.quads.len() + q.overlays.len());
+    }
+    sorted.sort_by_key(|&i| quad_at(i).z_key);
     let n_sorted = sorted.len();
     let us_sort = lap();
 
@@ -1267,7 +1309,8 @@ fn rebuild_ui_mesh(
                 window.width(),
                 window.height()
             );
-            for q in &sorted {
+            for &index in &sorted {
+                let q = quad_at(index);
                 info!(
                     "ui probe: [{:.0},{:.0} {:.0}x{:.0}] tex={} z={:x}",
                     q.rect.min.x,
@@ -1291,7 +1334,8 @@ fn rebuild_ui_mesh(
     // nothing is simply never pushed — it does NOT break a run (an invisible quad has no texture to
     // conflict with its neighbours).
     let mut runs: Vec<Run> = Vec::new();
-    for q in sorted {
+    for &index in &sorted {
+        let q = quad_at(index);
         // Explicit-corner quads (the cooldown pie's wedge) carry exact geometry — no clip, no
         // rotation, no UV reprojection to apply (see [`UiQuad::corners`]).
         let plain = if q.corners.is_none() {
@@ -1318,7 +1362,12 @@ fn rebuild_ui_mesh(
                 && r.uv_clamp == q.uv_clamp
         });
         if !same_run {
-            runs.push(Run::new(texture, q));
+            let slot = runs.len();
+            if pools.scratch.len() <= slot {
+                pools.scratch.push(GeometryScratch::default());
+            }
+            let scratch = std::mem::take(&mut pools.scratch[slot]);
+            runs.push(Run::new(texture, q, scratch));
         }
         let run = runs.last_mut().unwrap();
         match (q.corners, plain) {
@@ -1339,6 +1388,8 @@ fn rebuild_ui_mesh(
             (None, None) => unreachable!("plain is Some when corners is None"),
         }
     }
+
+    pools.sort_order = sorted;
 
     // Cross-run order: ascending world-space z (see the module doc — `bevy_sprite_render` sorts its
     // `Transparent2d` phase by ascending mesh z, so later runs drawing on top is exactly "higher z").
@@ -1419,10 +1470,10 @@ fn rebuild_ui_mesh(
             .filter(|&&c| run.colors.iter().all(|&o| o == c))
             .copied();
         let tag = tint_tag(one_colour.unwrap_or([1.0; 4]));
-        let colors = match one_colour {
-            Some(_) => vec![[1.0; 4]; run.colors.len()],
-            None => run.colors,
-        };
+        let mut colors = run.colors;
+        if one_colour.is_some() {
+            colors.fill([1.0; 4]);
+        }
         let stored = StoredRun {
             positions: run.positions,
             uvs: run.uvs,
@@ -1440,13 +1491,13 @@ fn rebuild_ui_mesh(
             .entry(key)
             .or_insert_with(|| {
                 materials.add(UiQuadMaterial {
-                    additive: u32::from(run.additive),
+                    additive: UVec4::new(u32::from(run.additive), 0, 0, 0),
                     texture: Some(run.texture.clone()),
-                    circular: u32::from(run.circular),
-                    desaturate: u32::from(run.desaturated),
-                    premultiplied: u32::from(run.premultiplied),
-                    alpha_ref,
-                    gamma_texel: u32::from(run.gamma_texel),
+                    circular: UVec4::new(u32::from(run.circular), 0, 0, 0),
+                    desaturate: UVec4::new(u32::from(run.desaturated), 0, 0, 0),
+                    premultiplied: UVec4::new(u32::from(run.premultiplied), 0, 0, 0),
+                    alpha_ref: Vec4::new(alpha_ref, 0.0, 0.0, 0.0),
+                    gamma_texel: UVec4::new(u32::from(run.gamma_texel), 0, 0, 0),
                     mask_rect,
                     mask: mask.clone(),
                     uv_clamp,
@@ -1463,6 +1514,7 @@ fn rebuild_ui_mesh(
             .get(used)
             .and_then(|prev| prev.translation_from(&stored).map(|d| (d, prev.z_bits)));
         if let Some((d, z_bits)) = pan {
+            pools.scratch[i] = stored.into();
             if pools.bound[used] != Some(material_handle.id()) {
                 pools.bound[used] = Some(material_handle.id());
                 if let Some(&entity) = pools.entities.get(used) {
@@ -1497,9 +1549,9 @@ fn rebuild_ui_mesh(
             use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
             static SHOWN: AtomicU32 = AtomicU32::new(0);
             static LAST_SEC: AtomicU64 = AtomicU64::new(0);
-            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            static START: std::sync::OnceLock<benilla_time::Instant> = std::sync::OnceLock::new();
             let sec = START
-                .get_or_init(std::time::Instant::now)
+                .get_or_init(benilla_time::Instant::now)
                 .elapsed()
                 .as_secs();
             if LAST_SEC.swap(sec, Ordering::Relaxed) != sec {
@@ -1528,7 +1580,7 @@ fn rebuild_ui_mesh(
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, stored.colors.clone());
         mesh.insert_indices(Indices::U32(stored.indices.clone()));
         if pools.stored.len() > used {
-            pools.stored[used] = stored;
+            pools.scratch[i] = std::mem::replace(&mut pools.stored[used], stored).into();
         } else {
             pools.stored.push(stored);
         }
@@ -1588,6 +1640,7 @@ fn rebuild_ui_mesh(
         }
         used += 1;
     }
+    pools.scratch.truncate(used);
     // Retire the surplus: batch entities beyond this frame's run count despawn, and their pooled
     // mesh assets drop with the truncation (nothing references them anymore).
     for entity in pools.entities.drain(used..) {
@@ -1931,7 +1984,7 @@ mod tests {
             .world_mut()
             .resource::<Assets<UiQuadMaterial>>()
             .iter()
-            .map(|(_, m)| m.desaturate)
+            .map(|(_, m)| m.desaturate.x)
             .collect();
         flags.sort_unstable();
         assert_eq!(

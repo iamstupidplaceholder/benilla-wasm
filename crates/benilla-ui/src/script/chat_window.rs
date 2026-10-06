@@ -113,7 +113,7 @@
 //! `ChatFrame_SendTell` ([`super::party`]): benilla's chat edit machine is app-side
 //! (`benilla_app::ui_chat::edit`), so the verb queues the request and the app opens the box.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::channel::ZoneChannelRow;
 use super::Model;
@@ -130,224 +130,7 @@ pub(super) const ENGINE_CHAT_WINDOW_SLOTS: usize = 10;
 /// the shipped XML so the two cannot drift.
 pub(super) const NUM_CHAT_WINDOWS: usize = 7;
 
-/// One chat window's **look** — the mutable slice of the engine's per-window record (decision
-/// 1589): the background tint, the background alpha, and the font size. The colour is bytes
-/// because the engine's colour is bytes (`0xb4fe50 + n*0x98 + 0x88..0x8b`, packed BGRA,
-/// `__ftol(x · 255.0)` in and `× 1/255` out); the font size is an `i32` because the engine's is
-/// (`+0x84`). See this module's docs for why that quantisation is kept rather than smoothed over.
-///
-/// [`Self::default`] is the stock `chat-cache.txt` row — `COLOR 0 0 0 0`, `SIZE 0`, `LOCKED 1` —
-/// i.e. a black box at alpha 0 that cannot be dragged, which is the classic "chat is text over the
-/// world until you mouse over it".
-/// `CHATMSGGROUP` — the client's 68-entry message-group table at `0x805fb0` (wow-re
-/// `system/ui/scratch/chat-cache-grammar.md` §2): `(name, defaultOn, addedVersion)`, stride 0xc,
-/// in the order that IS the record's `+0x20` flag index. **Not** the 94-entry colour table: 67
-/// names are shared, `CREATURE` exists only here, and 27 colour names (RAID, OFFICER,
-/// WHISPER_INFORM, EMOTE, TEXT_EMOTE, MONSTER_*, CHANNEL_JOIN/LEAVE/LIST/NOTICE[_USER], AFK, DND,
-/// IGNORED, BG_SYSTEM_*, RAID_LEADER/WARNING/BOSS_EMOTE, FOREIGN_TELL, FILTERED, BATTLEGROUND[_LEADER])
-/// have no group. `defaultOn` is what the boot init copies into window 2's flags (§4);
-/// `addedVersion` is the loader's back-fill for a file older than `ADDEDVERSION 2` (§3).
-pub const MESSAGE_GROUPS: [(&str, bool, u8); 68] = [
-    ("SYSTEM", true, 0),
-    ("SAY", true, 0),
-    ("YELL", true, 0),
-    ("WHISPER", true, 0),
-    ("PARTY", true, 0),
-    ("GUILD", true, 0),
-    ("CREATURE", true, 0),
-    ("CHANNEL", true, 0),
-    ("SKILL", true, 0),
-    ("LOOT", true, 0),
-    ("COMBAT_MISC_INFO", true, 0),
-    ("COMBAT_SELF_HITS", true, 0),
-    ("COMBAT_SELF_MISSES", true, 0),
-    ("COMBAT_PET_HITS", true, 0),
-    ("COMBAT_PET_MISSES", true, 0),
-    ("COMBAT_PARTY_HITS", false, 0),
-    ("COMBAT_PARTY_MISSES", false, 0),
-    ("COMBAT_FRIENDLYPLAYER_HITS", false, 0),
-    ("COMBAT_FRIENDLYPLAYER_MISSES", false, 0),
-    ("COMBAT_HOSTILEPLAYER_HITS", true, 0),
-    ("COMBAT_HOSTILEPLAYER_MISSES", true, 0),
-    ("COMBAT_CREATURE_VS_SELF_HITS", true, 0),
-    ("COMBAT_CREATURE_VS_SELF_MISSES", true, 0),
-    ("COMBAT_CREATURE_VS_PARTY_HITS", false, 0),
-    ("COMBAT_CREATURE_VS_PARTY_MISSES", false, 0),
-    ("COMBAT_CREATURE_VS_CREATURE_HITS", false, 0),
-    ("COMBAT_CREATURE_VS_CREATURE_MISSES", false, 0),
-    ("COMBAT_FRIENDLY_DEATH", true, 0),
-    ("COMBAT_HOSTILE_DEATH", true, 0),
-    ("COMBAT_XP_GAIN", true, 0),
-    ("SPELL_SELF_DAMAGE", true, 0),
-    ("SPELL_SELF_BUFF", true, 0),
-    ("SPELL_PET_DAMAGE", true, 0),
-    ("SPELL_PET_BUFF", true, 0),
-    ("SPELL_PARTY_DAMAGE", false, 0),
-    ("SPELL_PARTY_BUFF", false, 0),
-    ("SPELL_FRIENDLYPLAYER_DAMAGE", false, 0),
-    ("SPELL_FRIENDLYPLAYER_BUFF", false, 0),
-    ("SPELL_HOSTILEPLAYER_DAMAGE", true, 0),
-    ("SPELL_HOSTILEPLAYER_BUFF", true, 0),
-    ("SPELL_CREATURE_VS_SELF_DAMAGE", true, 0),
-    ("SPELL_CREATURE_VS_SELF_BUFF", true, 0),
-    ("SPELL_CREATURE_VS_PARTY_DAMAGE", false, 0),
-    ("SPELL_CREATURE_VS_PARTY_BUFF", false, 0),
-    ("SPELL_CREATURE_VS_CREATURE_DAMAGE", false, 0),
-    ("SPELL_CREATURE_VS_CREATURE_BUFF", false, 0),
-    ("SPELL_TRADESKILLS", true, 0),
-    ("SPELL_DAMAGESHIELDS_ON_SELF", true, 0),
-    ("SPELL_DAMAGESHIELDS_ON_OTHERS", false, 0),
-    ("SPELL_AURA_GONE_SELF", true, 0),
-    ("SPELL_AURA_GONE_PARTY", false, 0),
-    ("SPELL_AURA_GONE_OTHER", false, 0),
-    ("SPELL_ITEM_ENCHANTMENTS", true, 0),
-    ("SPELL_BREAK_AURA", true, 0),
-    ("SPELL_PERIODIC_SELF_DAMAGE", true, 0),
-    ("SPELL_PERIODIC_SELF_BUFFS", true, 0),
-    ("SPELL_PERIODIC_PARTY_DAMAGE", false, 0),
-    ("SPELL_PERIODIC_PARTY_BUFFS", false, 0),
-    ("SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE", false, 0),
-    ("SPELL_PERIODIC_FRIENDLYPLAYER_BUFFS", false, 0),
-    ("SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE", true, 0),
-    ("SPELL_PERIODIC_HOSTILEPLAYER_BUFFS", true, 0),
-    ("SPELL_PERIODIC_CREATURE_DAMAGE", true, 0),
-    ("SPELL_PERIODIC_CREATURE_BUFFS", true, 0),
-    ("SPELL_FAILED_LOCALPLAYER", false, 0),
-    ("COMBAT_HONOR_GAIN", true, 0),
-    ("COMBAT_FACTION_CHANGE", true, 1),
-    ("MONEY", true, 2),
-];
-
-/// The flag index of a group name, matched the loader's way (`SStrCmpI` — an ASCII case-fold).
-pub fn message_group_index(name: &str) -> Option<usize> {
-    MESSAGE_GROUPS
-        .iter()
-        .position(|(n, _, _)| n.eq_ignore_ascii_case(name))
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ChatWindowLook {
-    /// Background tint, `0..=255` each. The engine renormalises by 1/255 on the way out.
-    pub r: u8,
-    /// See [`Self::r`].
-    pub g: u8,
-    /// See [`Self::r`].
-    pub b: u8,
-    /// Background alpha, `0..=255`. `0` is the stock value and what benilla shipped as a constant
-    /// until 1589 — the hover fade lifts it to `DEFAULT_CHATFRAME_ALPHA` and drops it back.
-    pub a: u8,
-    /// The cache's `SIZE` — the chat font height in points, or `0` for "the font's own height".
-    /// The reference's own values are `CHAT_FONT_HEIGHTS = {12, 14, 16, 18}`. An `i32` because the
-    /// record's field is (`+0x84`), and never `<= 0` once set: the setter drops those.
-    pub font_size: i32,
-    /// The cache's `LOCKED` — whether the window refuses to be dragged or resized.
-    ///
-    /// **`true` out of the box**, because the stock row is `LOCKED 1` for every window: a fresh
-    /// character's chat box cannot be nudged out of place by a stray drag, and unlocking it is a
-    /// deliberate trip through the tab menu (`FCF_ToggleLock`). It joined this struct with the
-    /// move/resize arc: until something could *move* a window, writing the key would have
-    /// persisted state nothing could change, which is the honest-tree rule (1134 §4) at the
-    /// persistence layer, and the reason 1589 §6 left it out.
-    pub locked: bool,
-    /// The cache's `DOCKED` — the window's **position in the dock**, 1-based, or `None` for a
-    /// window that is not docked. Not a flag: window 1 answers `1` and window 2 `2`, which is the
-    /// index `FCF_DockFrame(frame, docked)` takes (this module's §3 note), and the order the tabs
-    /// sit in.
-    ///
-    /// It joined this struct with the dock verbs (1714), by the same rule `locked` did: until
-    /// `FCF_DockFrame`/`FCF_UnDockFrame` existed there was nothing that could move it, so it was a
-    /// per-window constant read straight out of [`WINDOW_STATE`]. There is now, so it is state.
-    pub docked: Option<u8>,
-    /// `+0x00` — the window's name as `SetChatWindowName` stored it: `""` until FrameXML names
-    /// it (the getter's first return; the `NAME` line is emitted only when non-empty).
-    pub name: String,
-    /// `+0x94` — `SHOWN`; the getter answers 1 or nil off it.
-    pub shown: bool,
-    /// `+0x20` — the enabled message-type names, the `MESSAGES … END` block.
-    pub messages: Vec<String>,
-    /// `+0x64` / `+0x74` — the channels this window shows, `(name, zone channel id)` pairs: the
-    /// `CHANNELS … END` block.
-    pub channels: Vec<(String, u32)>,
-}
-
-impl Default for ChatWindowLook {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl ChatWindowLook {
-    /// The stock `chat-cache.txt` row, as a const so [`super::Model`]'s array literal can use it.
-    pub(super) const DEFAULT: Self = Self {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-        font_size: 0,
-        locked: true,
-        // The stock row's `DOCKED` differs per window, so the array literal that uses this const
-        // seeds each slot from [`WINDOW_STATE`] afterwards. `None` here is only the value a
-        // slot holds before that seeding, and the value a *hand-built* look starts at.
-        docked: None,
-        name: String::new(),
-        shown: false,
-        messages: Vec::new(),
-        channels: Vec::new(),
-    };
-
-    /// The stock row for window `index` (0-based) — [`Self::DEFAULT`] with that window's own
-    /// `DOCKED` position from [`WINDOW_STATE`]. The seed for the model's array and for the
-    /// settings parser's per-line default, so a file that never mentions `DOCKED` keeps the
-    /// shipped dock rather than silently undocking both windows.
-    /// The boot init `0x4982c0` (wow-re chat-cache-grammar.md §4) — the record a client with no
-    /// `chat-cache.txt` runs from, and what FrameXML's own `FloatingChatFrame_Update` then docks,
-    /// hides and saves: window 1 shown and undocked (it IS the dock — `FCF_DockFrame(ChatFrame1, 1)`
-    /// at FloatingChatFrame.xml's file scope), groups 1–10 by a literal fill; window 2 shown and
-    /// `docked 1`, every `defaultOn` group of 11–68 (the 34 the stock file lists); windows 3–10
-    /// hidden with nothing enabled. Every window locked, size 0, colour 0, name empty, ten empty
-    /// channel slots. The init fires no event; the loader does (§8).
-    pub fn stock(index: usize) -> Self {
-        let groups = |range: std::ops::Range<usize>, all: bool| -> Vec<String> {
-            MESSAGE_GROUPS[range]
-                .iter()
-                .filter(|(_, on, _)| all || *on)
-                .map(|(n, _, _)| (*n).to_string())
-                .collect()
-        };
-        match index {
-            0 => Self {
-                shown: true,
-                messages: groups(0..10, true),
-                ..Self::DEFAULT
-            },
-            1 => Self {
-                shown: true,
-                docked: Some(1),
-                messages: groups(10..68, false),
-                ..Self::DEFAULT
-            },
-            _ => Self::DEFAULT,
-        }
-    }
-
-    /// The loader's discipline over the message set — unknown names dropped, duplicates folded,
-    /// **table order** — so `GetChatWindowMessages` answers the way a flag walk does (§5: "table
-    /// order 0..67") whatever order a file or a caller listed them in.
-    pub fn normalize_messages(&mut self) {
-        let mut flags = [false; MESSAGE_GROUPS.len()];
-        for m in &self.messages {
-            if let Some(i) = message_group_index(m) {
-                flags[i] = true;
-            }
-        }
-        self.messages = MESSAGE_GROUPS
-            .iter()
-            .zip(flags)
-            .filter(|(_, on)| *on)
-            .map(|((n, _, _), _)| (*n).to_string())
-            .collect();
-    }
-}
+pub use crate::script_data::{message_group_index, ChatWindowLook, MESSAGE_GROUPS};
 
 /// `x` in the reference's `0..1` float domain → the byte its `__ftol(x · 255.0)` stores, clamped
 /// (see the module docs' divergence note). `NaN` lands on `0` rather than propagating.
@@ -387,9 +170,9 @@ fn from_byte(b: u8) -> f64 {
 
 /// The 1-based Lua window id → a live index, or the raise every out-of-range ask gets. Shared by
 /// the getter and the three setters so a window that cannot be read cannot be written either.
-fn window_index(id: i64) -> mlua::Result<usize> {
+fn window_index(id: i64) -> benilla_lua::Result<usize> {
     if id < 1 || id as usize > NUM_CHAT_WINDOWS {
-        return Err(mlua::Error::runtime(format!(
+        return Err(benilla_lua::Error::runtime(format!(
             "chat window {id} out of range — benilla builds ChatFrame1..ChatFrame{NUM_CHAT_WINDOWS} \
              (the client's settings array holds {ENGINE_CHAT_WINDOW_SLOTS} slots, but only \
              {NUM_CHAT_WINDOWS} have frames)"
@@ -472,7 +255,7 @@ impl super::UiScript {
     }
 
     /// Snapshot every window's look, index 0 = `ChatFrame1` — what the saver writes out.
-    pub fn chat_window_looks(&self) -> Vec<ChatWindowLook> {
+    pub fn chat_window_looks(&mut self) -> Vec<ChatWindowLook> {
         self.model_mut().chat_window_looks.to_vec()
     }
 
@@ -497,7 +280,7 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetChatWindowInfo(id) → name, fontSize, r, g, b, a, shown, locked, docked.
     //
     // Out of range RAISES rather than answering. The reference's array has 10 slots and benilla
@@ -505,46 +288,43 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // here, and the two honest answers are "raise" or "invent a row". Every corpus caller loops
     // `1, NUM_CHAT_WINDOWS`, so the raise is unreachable from real code and exists to keep the
     // next caller from reading a fabricated window as a real one.
-    lua.globals().set(
-        "GetChatWindowInfo",
-        lua.create_function(|lua, id: i64| {
-            let i = window_index(id)?;
-            let look = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .chat_window_looks[i]
-                .clone();
-            let shown = if look.shown { Some(1) } else { None };
-            // `docked` is the LIVE position now, not the table's — `FCF_DockFrame`/
-            // `FCF_UnDockFrame` move it through `SetChatWindowDocked` below.
-            let docked = look.docked.map(i64::from);
-            let num = |v: Option<i64>| match v {
-                Some(n) => Value::Integer(n),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                // name: "" until `SetChatWindowName` stores one — never a label of ours. See
-                // the module docs' trap 1.
-                Value::String(lua.create_string(&look.name)?),
-                // The three the setters below own (1589). Stock is SIZE 0 / COLOR 0 0 0 0 — the
-                // same tuple this getter answered as a constant before those setters existed.
-                Value::Integer(i64::from(look.font_size)),
-                Value::Number(from_byte(look.r)),
-                Value::Number(from_byte(look.g)),
-                Value::Number(from_byte(look.b)),
-                Value::Number(from_byte(look.a)),
-                num(shown), // 1 or nil, never 0
-                // locked — the cache's LOCKED, stock `1`, moved by `SetChatWindowLocked` below.
-                // `1` or nil like `shown`, never `0`: the reference's own boolean-in-a-number.
-                if look.locked {
-                    Value::Integer(1)
-                } else {
-                    Value::Nil
-                },
-                num(docked), // the dock POSITION (1, 2) or nil
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetChatWindowInfo", |lua, id: i64| {
+        let i = window_index(id)?;
+        let look = lua
+            .app_data_ref::<Model>()
+            .expect("model app_data")
+            .chat_window_looks[i]
+            .clone();
+        let shown = if look.shown { Some(1) } else { None };
+        // `docked` is the LIVE position now, not the table's — `FCF_DockFrame`/
+        // `FCF_UnDockFrame` move it through `SetChatWindowDocked` below.
+        let docked = look.docked.map(i64::from);
+        let num = |v: Option<i64>| match v {
+            Some(n) => Value::Integer(n),
+            None => Value::Nil,
+        };
+        Ok(MultiValue::from(vec![
+            // name: "" until `SetChatWindowName` stores one — never a label of ours. See
+            // the module docs' trap 1.
+            Value::from(look.name),
+            // The three the setters below own (1589). Stock is SIZE 0 / COLOR 0 0 0 0 — the
+            // same tuple this getter answered as a constant before those setters existed.
+            Value::Integer(i64::from(look.font_size)),
+            Value::Number(from_byte(look.r)),
+            Value::Number(from_byte(look.g)),
+            Value::Number(from_byte(look.b)),
+            Value::Number(from_byte(look.a)),
+            num(shown), // 1 or nil, never 0
+            // locked — the cache's LOCKED, stock `1`, moved by `SetChatWindowLocked` below.
+            // `1` or nil like `shown`, never `0`: the reference's own boolean-in-a-number.
+            if look.locked {
+                Value::Integer(1)
+            } else {
+                Value::Nil
+            },
+            num(docked), // the dock POSITION (1, 2) or nil
+        ]))
+    })?;
 
     // SetChatWindowColor(id, r, g, b) — 0x4a14f0, `__ftol(x · 255.0)` per channel.
     //
@@ -552,9 +332,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // nine CHAT_FRAME_TEXTURES and then saves through here; the tab menu's Background swatch
     // reaches it via `FCF_SetChatWindowBackGroundColor`. The write is what makes the tint survive
     // a session — the *visible* tint is the Lua SetVertexColor, not this.
-    lua.globals().set(
+    lua.register_function(
         "SetChatWindowColor",
-        lua.create_function(|lua, (id, r, g, b): (i64, f64, f64, f64)| {
+        |lua, (id, r, g, b): (i64, f64, f64, f64)| {
             let i = window_index(id)?;
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let look = &mut model.chat_window_looks[i];
@@ -569,7 +349,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 model.chat_window_changes.insert(i);
             }
             Ok(())
-        })?,
+        },
     )?;
 
     // SetChatWindowAlpha(id, alpha) — 0x4a15d0, `__ftol(alpha · 255.0)`.
@@ -577,20 +357,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // FrameXML's caller is `FCF_SetWindowAlpha` (l.706-716), the other half of the tab menu's
     // Background row: its opacity slider drives `FCF_SetChatWindowOpacity` on every drag step.
     // `frame.oldAlpha` — the value the hover fade returns to — is that same number.
-    lua.globals().set(
-        "SetChatWindowAlpha",
-        lua.create_function(|lua, (id, alpha): (i64, f64)| {
-            let i = window_index(id)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let look = &mut model.chat_window_looks[i];
-            let a = to_byte(alpha);
-            if a != look.a {
-                look.a = a;
-                model.chat_window_changes.insert(i);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetChatWindowAlpha", |lua, (id, alpha): (i64, f64)| {
+        let i = window_index(id)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let look = &mut model.chat_window_looks[i];
+        let a = to_byte(alpha);
+        if a != look.a {
+            look.a = a;
+            model.chat_window_changes.insert(i);
+        }
+        Ok(())
+    })?;
 
     // SetChatWindowLocked(id, isLocked) — `0x4a1650`, writing the record's `+0x8c` locked field
     // (wow-re `system/ui/ledger.tsv:9325` + `scratch/chat-window-record.md` §2, VERIFIED:
@@ -607,21 +384,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // and `FloatingChatFrame_Update` (l.56) seats the frame back from here at load.
     //
     // Lua truthiness, not a strict boolean, because the reference's callers pass `1` and `nil` —
-    // `FCF_ToggleLock`'s two arms and `FCF_OpenNewWindow`'s `SetChatWindowLocked(i, nil)`. mlua
-    // marshals both the way the reference binding's own `toboolean` does.
-    lua.globals().set(
-        "SetChatWindowLocked",
-        lua.create_function(|lua, (id, locked): (i64, bool)| {
-            let i = window_index(id)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let look = &mut model.chat_window_looks[i];
-            if locked != look.locked {
-                look.locked = locked;
-                model.chat_window_changes.insert(i);
-            }
-            Ok(())
-        })?,
-    )?;
+    // `FCF_ToggleLock`'s two arms and `FCF_OpenNewWindow`'s `SetChatWindowLocked(i, nil)`. The
+    // wrapper marshals both the way the reference binding's own `toboolean` does.
+    lua.register_function("SetChatWindowLocked", |lua, (id, locked): (i64, bool)| {
+        let i = window_index(id)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let look = &mut model.chat_window_looks[i];
+        if locked != look.locked {
+            look.locked = locked;
+            model.chat_window_changes.insert(i);
+        }
+        Ok(())
+    })?;
     // SetChatWindowDocked(id, position) — the dock half of the record, written by `FCF_SaveDock`
     // (FloatingChatFrame.lua l.1276-1285) once per docked window on every dock change, and by
     // `FCF_UnDockFrame` (l.1182) with `nil` to clear it.
@@ -637,9 +411,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (`benilla_app`'s `ui_chat::settings`) renders `DOCKED` alongside `LOCKED`, but an absent key
     // must keep the *per-window* stock rather than one flat default — see
     // [`ChatWindowLook::stock`], which is what the parser seeds from.
-    lua.globals().set(
+    lua.register_function(
         "SetChatWindowDocked",
-        lua.create_function(|lua, (id, position): (i64, Option<i64>)| {
+        |lua, (id, position): (i64, Option<i64>)| {
             let i = window_index(id)?;
             let position = position
                 .filter(|p| *p > 0)
@@ -651,7 +425,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 model.chat_window_changes.insert(i);
             }
             Ok(())
-        })?,
+        },
     )?;
     // SetChatWindowSize(id, fontSize) — 0x4a1470.
     //
@@ -659,29 +433,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (`chatFrame:SetFont(file, size, flags)`) and then saves through here. A size the reference
     // never stores is `0` — "the font's own height" — which is what a stock cache holds and what
     // benilla ships until the player picks one off the Font Size submenu.
-    lua.globals().set(
-        "SetChatWindowSize",
-        lua.create_function(|lua, (id, size): (i64, f64)| {
-            let i = window_index(id)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let look = &mut model.chat_window_looks[i];
-            // The cache's SIZE is a small integer; anything unrepresentable clamps rather than
-            // wrapping (the module docs' divergence, same reason).
-            // `<= 0` is dropped, not stored — the reference's own `jle` at `0x4a14bc`. That is
-            // why a stock `SIZE 0` and "the player picked a size" are different states rather
-            // than the same one written twice.
-            let s = if size.is_finite() && size >= 1.0 {
-                size.trunc().min(f64::from(i32::MAX)) as i32
-            } else {
-                return Ok(());
-            };
-            if s != look.font_size {
-                look.font_size = s;
-                model.chat_window_changes.insert(i);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetChatWindowSize", |lua, (id, size): (i64, f64)| {
+        let i = window_index(id)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let look = &mut model.chat_window_looks[i];
+        // The cache's SIZE is a small integer; anything unrepresentable clamps rather than
+        // wrapping (the module docs' divergence, same reason).
+        // `<= 0` is dropped, not stored — the reference's own `jle` at `0x4a14bc`. That is
+        // why a stock `SIZE 0` and "the player picked a size" are different states rather
+        // than the same one written twice.
+        let s = if size.is_finite() && size >= 1.0 {
+            size.trunc().min(f64::from(i32::MAX)) as i32
+        } else {
+            return Ok(());
+        };
+        if s != look.font_size {
+            look.font_size = s;
+            model.chat_window_changes.insert(i);
+        }
+        Ok(())
+    })?;
 
     // ChatFrame_OpenChat(text, chatFrame) — open the chat edit box prefilled with `text`.
     //
@@ -706,13 +477,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // The ref's tail — the PARTY/RAID/BATTLEGROUND sticky downgrade (l.1554-1565) — is not skipped,
     // it is the app's: `ui_chat::edit`'s open path already applies exactly that law (a sticky PARTY
     // with nobody in the party opens as SAY), so running it here would be running it twice.
-    lua.globals().set(
+    lua.register_function(
         "ChatFrame_OpenChat",
-        lua.create_function(|lua, (text, _chat_frame): (Option<String>, Value)| {
+        |lua, (text, _chat_frame): (Option<String>, Value)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.open_chat_requests.push(text.unwrap_or_default());
             Ok(())
-        })?,
+        },
     )?;
 
     // ── The rest of the 0x98 record: name, shown, message types, channels ──────────────────
@@ -725,10 +496,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // for the app's persist pass, like the look setters.
 
     fn with_look<T>(
-        lua: &Lua,
+        lua: &mut impl benilla_lua::LuaContext,
         id: i64,
         f: impl FnOnce(&mut ChatWindowLook) -> T,
-    ) -> mlua::Result<T> {
+    ) -> benilla_lua::Result<T> {
         let i = window_index(id)?;
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let before = model.chat_window_looks[i].clone();
@@ -744,7 +515,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     fn names_of(args: MultiValue) -> Vec<&'static str> {
         args.iter()
             .filter_map(|v| match v {
-                Value::String(s) => s.to_str().ok().and_then(|s| message_group_index(s.trim())),
+                Value::String(s) => s.as_str().ok().and_then(|s| message_group_index(s.trim())),
                 _ => None,
             })
             .map(|i| MESSAGE_GROUPS[i].0)
@@ -753,9 +524,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     // SetChatWindowName(id, name) — `SStrCopy(record+0, name, 0x20)`: 31 bytes and the NUL; a
     // non-string second argument is the empty string (`0x4a1436`).
-    lua.globals().set(
+    lua.register_function(
         "SetChatWindowName",
-        lua.create_function(|lua, (id, name): (i64, Option<String>)| {
+        |lua, (id, name): (i64, Option<String>)| {
             let mut name = name.unwrap_or_default();
             if name.len() > 31 {
                 let mut cut = 31;
@@ -765,17 +536,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 name.truncate(cut);
             }
             with_look(lua, id, |look| look.name = name)
-        })?,
+        },
     )?;
 
     // SetChatWindowShown(id [, shown]) — `+0x94 = 0x6f1c10(L, 2, default 1)`: NO second argument
     // stores 1; an explicit nil, `false`, `0` or `"off"` store 0 — the reference's own flag
     // coercion (a boolean, a number by `__ftol`, a string by its digits or by
     // on/off/enabled/disabled).
-    lua.globals().set(
+    lua.register_function(
         "SetChatWindowShown",
-        lua.create_function(|lua, (id, rest): (i64, MultiValue)| {
-            let shown = match rest.front() {
+        |lua, (id, rest): (i64, MultiValue)| {
+            let shown = match rest.first() {
                 None => true,
                 Some(Value::Nil) | Some(Value::Boolean(false)) => false,
                 Some(Value::Boolean(true)) => true,
@@ -783,7 +554,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(Value::Number(n)) => n.is_finite() && n.trunc() != 0.0,
                 Some(Value::String(s)) => {
                     let s = s
-                        .to_str()
+                        .as_str()
                         .map(|s| s.trim().to_ascii_lowercase())
                         .unwrap_or_default();
                     if s.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
@@ -795,13 +566,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(_) => true,
             };
             with_look(lua, id, |look| look.shown = shown)
-        })?,
+        },
     )?;
 
     // AddChatWindowMessages(id, "TYPE", "TYPE", …) — each name set in the window's flags.
-    lua.globals().set(
+    lua.register_function(
         "AddChatWindowMessages",
-        lua.create_function(|lua, (id, names): (i64, MultiValue)| {
+        |lua, (id, names): (i64, MultiValue)| {
             let names = names_of(names);
             with_look(lua, id, |look| {
                 for name in names {
@@ -811,33 +582,30 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 }
                 look.normalize_messages();
             })
-        })?,
+        },
     )?;
 
-    lua.globals().set(
+    lua.register_function(
         "RemoveChatWindowMessages",
-        lua.create_function(|lua, (id, names): (i64, MultiValue)| {
+        |lua, (id, names): (i64, MultiValue)| {
             let names = names_of(names);
             with_look(lua, id, |look| {
                 look.messages.retain(|m| !names.contains(&m.as_str()));
             })
-        })?,
+        },
     )?;
 
     // GetChatWindowMessages(id) — the enabled names as a vararg list, which
     // `ChatFrame_RegisterForMessages(GetChatWindowMessages(id))` consumes directly.
-    lua.globals().set(
-        "GetChatWindowMessages",
-        lua.create_function(|lua, id: i64| {
-            let i = window_index(id)?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::new();
-            for name in &model.chat_window_looks[i].messages {
-                out.push(Value::String(lua.create_string(name)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetChatWindowMessages", |lua, id: i64| {
+        let i = window_index(id)?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::new();
+        for name in &model.chat_window_looks[i].messages {
+            out.push(Value::from(name.as_str()));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // AddChatWindowChannel(id, "channel") — `0x4a1000` (chat-cache-grammar.md §5): (i) the
     // `ChatChannels.dbc` walk compares the argument with each row's **Shortcut**, whole, case-
@@ -846,9 +614,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // not the argument. (ii) The id is the one push. (iii) A name already in the window answers
     // the id and stores nothing. `ChatFrame_AddChannel` keys its bookkeeping on the answer's
     // truthiness, and 0 is truthy.
-    lua.globals().set(
+    lua.register_function(
         "AddChatWindowChannel",
-        lua.create_function(|lua, (id, name): (i64, Option<String>)| {
+        |lua, (id, name): (i64, Option<String>)| {
             let Some(name) = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) else {
                 return Ok(MultiValue::new());
             };
@@ -874,19 +642,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     look.channels.push((name, zone_id));
                 }
             })?;
-            Ok(MultiValue::from_vec(vec![Value::Integer(i64::from(
-                zone_id,
-            ))]))
-        })?,
+            Ok(MultiValue::from(vec![Value::Integer(i64::from(zone_id))]))
+        },
     )?;
 
     // RemoveChatWindowChannel(id, "channel" | n) — `0x4a1260`: a numeric argument (`SStrToInt`,
     // n ≠ 0) names joined slot n, whose name is the key — or nothing, when no such slot; 0 (no
     // digits) keeps the string. Then the shortcut walk above resolves the key to the DBC's own
     // spelling, and the slot with that name is freed. 0 values.
-    lua.globals().set(
+    lua.register_function(
         "RemoveChatWindowChannel",
-        lua.create_function(|lua, (id, key): (i64, Option<String>)| {
+        |lua, (id, key): (i64, Option<String>)| {
             let Some(key) = key else {
                 return Ok(());
             };
@@ -918,24 +684,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             with_look(lua, id, |look| {
                 look.channels.retain(|(c, _)| !c.eq_ignore_ascii_case(&key));
             })
-        })?,
+        },
     )?;
 
     // GetChatWindowChannels(id) — name, zoneId, name, zoneId, … which
     // `ChatFrame_RegisterForChannels` walks two at a time.
-    lua.globals().set(
-        "GetChatWindowChannels",
-        lua.create_function(|lua, id: i64| {
-            let i = window_index(id)?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::new();
-            for (name, zone_id) in &model.chat_window_looks[i].channels {
-                out.push(Value::String(lua.create_string(name)?));
-                out.push(Value::Integer(i64::from(*zone_id)));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetChatWindowChannels", |lua, id: i64| {
+        let i = window_index(id)?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::new();
+        for (name, zone_id) in &model.chat_window_looks[i].channels {
+            out.push(Value::from(name.as_str()));
+            out.push(Value::Integer(i64::from(*zone_id)));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     Ok(())
 }
@@ -947,7 +710,7 @@ mod tests {
     /// The tuple is nine values wide and in the reference's own order.
     #[test]
     fn get_chat_window_info_answers_the_nine_value_tuple() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(s.arity("GetChatWindowInfo(1)").unwrap(), 9);
     }
 
@@ -956,7 +719,7 @@ mod tests {
     /// correct because of this.
     #[test]
     fn every_window_name_is_the_empty_string_not_a_label() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         for id in 1..=7 {
             let name: String = s
                 .eval(&format!("return (GetChatWindowInfo({id}))"))
@@ -972,8 +735,8 @@ mod tests {
     /// `SHOWN 1`/`SHOWN 0` a stock file carries are what FrameXML's own dock pass then saved.
     #[test]
     fn hidden_and_undocked_windows_answer_nil_never_zero() {
-        let s = UiScript::new().unwrap();
-        let probe = |id: i32| -> (String, String) {
+        let mut s = UiScript::new().unwrap();
+        let mut probe = |id: i32| -> (String, String) {
             let shown = s
                 .eval::<String>(&format!(
                     "local _,_,_,_,_,_,shown = GetChatWindowInfo({id}) return type(shown)"
@@ -1028,7 +791,7 @@ mod tests {
     /// and finds nothing — `string.lower(name)` needs a string, and no window is named "debug".
     #[test]
     fn the_corpus_debug_window_walk_completes_and_finds_none() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let found: i64 = s
             .eval(
                 "local debugWin = 0\n\
@@ -1045,7 +808,7 @@ mod tests {
     /// A window benilla has no frame for raises rather than answering with an invented row.
     #[test]
     fn a_window_past_the_last_frame_raises() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(s.eval::<i64>("return (GetChatWindowInfo(8))").is_err());
         assert!(s.eval::<i64>("return (GetChatWindowInfo(0))").is_err());
     }
@@ -1054,7 +817,7 @@ mod tests {
     /// `SIZE 0` cannot be re-written by a caller handing it 0.
     #[test]
     fn a_non_positive_font_size_is_dropped_not_stored() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("SetChatWindowSize(1, 16)").unwrap();
         for bad in ["0", "-1", "0.5"] {
             s.run(&format!("SetChatWindowSize(1, {bad})")).unwrap();
@@ -1073,7 +836,7 @@ mod tests {
     /// `__ftol` truncates (§5-verified: a real client stores 127 there).
     #[test]
     fn the_setters_round_trip_through_the_engine_byte() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("SetChatWindowAlpha(1, 0.4)").unwrap();
         let a: f64 = s
             .eval("local _,_,_,_,_,a = GetChatWindowInfo(1) return a")
@@ -1107,7 +870,7 @@ mod tests {
     /// Windows are independent: writing window 2 leaves window 1 on the stock row.
     #[test]
     fn a_setter_moves_only_the_window_it_names() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("SetChatWindowAlpha(2, 1)").unwrap();
         let one: f64 = s
             .eval("local _,_,_,_,_,a = GetChatWindowInfo(1) return a")
@@ -1123,7 +886,7 @@ mod tests {
     /// cannot be written any more than it can be read.
     #[test]
     fn the_setters_raise_on_a_window_with_no_frame() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(s.run("SetChatWindowAlpha(8, 1)").is_err());
         assert!(s.run("SetChatWindowColor(0, 1, 1, 1)").is_err());
         assert!(s.run("SetChatWindowSize(8, 14)").is_err());
@@ -1133,7 +896,7 @@ mod tests {
     /// stores the low byte of `ftol(2.0 × 255) = 510` and answers `254/255`.
     #[test]
     fn an_out_of_domain_alpha_clamps_rather_than_wrapping() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("SetChatWindowAlpha(1, 2.0)").unwrap();
         let a: f64 = s
             .eval("local _,_,_,_,_,a = GetChatWindowInfo(1) return a")
@@ -1223,7 +986,7 @@ mod record_tests {
     /// at dock index 1 with the 34 `defaultOn` groups of 11–68, the rest empty and hidden.
     #[test]
     fn the_stock_records_are_the_boot_init() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let looks = s.chat_window_looks();
         assert!(looks[0].shown && looks[1].shown && !looks[2].shown);
         assert_eq!((looks[0].docked, looks[1].docked), (None, Some(1)));
@@ -1241,7 +1004,7 @@ mod record_tests {
             .iter()
             .all(|l| l.channels.is_empty() && l.name.is_empty()));
         assert_eq!(
-            s.eval::<Vec<String>>("return {GetChatWindowMessages(1)}")
+            s.eval_sequence::<String>("return {GetChatWindowMessages(1)}")
                 .unwrap(),
             general
         );
@@ -1291,7 +1054,7 @@ mod record_tests {
         )
         .unwrap();
         assert_eq!(
-            s.eval::<Vec<String>>("return {GetChatWindowMessages(3)}")
+            s.eval_sequence::<String>("return {GetChatWindowMessages(3)}")
                 .unwrap(),
             vec!["SAY".to_string(), "YELL".to_string(), "MONEY".to_string()]
         );
@@ -1350,9 +1113,7 @@ mod record_tests {
             .eval::<bool>("return table.getn(D) == 0 and table.getn(E) == 0")
             .unwrap());
         assert_eq!(
-            s.eval::<Vec<mlua::Value>>("return {GetChatWindowChannels(1)}")
-                .unwrap()
-                .len(),
+            s.arity("GetChatWindowChannels(1)").unwrap(),
             4,
             "name, id, name, id — the duplicate was not stored twice"
         );
@@ -1385,7 +1146,7 @@ mod record_tests {
             },
         )]);
         assert_eq!(
-            s.eval::<Vec<String>>("return {GetChatWindowMessages(5)}")
+            s.eval_sequence::<String>("return {GetChatWindowMessages(5)}")
                 .unwrap(),
             vec!["CHANNEL".to_string()]
         );

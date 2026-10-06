@@ -28,10 +28,10 @@
 //! streamed world down on disconnect) lives in the parent module; the halves communicate only
 //! through the channels, so they split cleanly.
 
+use benilla_time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use benilla_assets::LockRecover;
@@ -65,8 +65,8 @@ fn note_inbound() {
 /// Wall-clock unix milliseconds — the one clock two processes share (the trace header's `t0` is in
 /// the same units, so a mover's file and an observer's file line up).
 fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    benilla_time::SystemTime::now()
+        .duration_since(benilla_time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
 }
 
@@ -118,7 +118,9 @@ const REALM_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 /// `0x537ff0`: the connection drain arms the next ping 30 s out). vmangos *kicks* a player socket
 /// whose pings repeat faster than 27 s apart more than twice (`WorldSocket::_HandlePing`), so this
 /// must never shrink below that.
-const PING_INTERVAL: Duration = Duration::from_secs(30);
+use super::ping::PING_INTERVAL;
+#[cfg(test)]
+use super::ping::RTT_RING;
 
 /// How many round trips [`PingClock`] keeps — **fifteen**, which is the reference's *usable*
 /// depth even though its array holds sixteen (VERIFIED, wow-re `system/net`, 4-agent §5).
@@ -129,7 +131,6 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// pushes the oldest out of view as it lands, and every reading from then on is over 15. Our
 /// `VecDeque` holds what can actually be seen, so the bound is the reachable number rather than
 /// the allocation — and the mean is over the same samples the reference's is.
-const RTT_RING: usize = 15;
 
 /// **The connection's ping/RTT stats** — the reference's own per-connection stats block
 /// (`conn+0x1a6c` ring, `+0x1aac/+0x1ab0` head/tail, `+0x1a64` send stamp, `+0x1a68` expected
@@ -162,65 +163,7 @@ const RTT_RING: usize = 15;
 /// is that function, and the read loop calls it from the same position.
 ///
 /// [`record_pong`]: Self::record_pong
-#[derive(Default)]
-pub(crate) struct PingClock {
-    /// Sequence of the most recent ping sent (the real client's ++counter; reset per connection).
-    pub(crate) sequence: u32,
-    /// When that ping went out — `None` until the first ping of a connection.
-    pub(crate) sent_at: Option<Instant>,
-    /// The last measured round trip (ms) — echoed in the next ping's lastRtt field, which is what
-    /// the real client puts on the wire, and shown as the debug panel's readout. Kept apart from
-    /// the ring because it is the *last* sample, not the average.
-    pub(crate) last_rtt_ms: Option<u32>,
-    /// The most recent [`RTT_RING`] round trips (ms), oldest first — the reference's own RTT
-    /// history, which [`Self::avg_latency_ms`] averages for `GetNetStats`.
-    rtt_ring: std::collections::VecDeque<u32>,
-}
-
-impl PingClock {
-    /// **`HandlePong`** — one `SMSG_PONG` off the socket, measured and filed, on the read thread.
-    /// A stale or mismatched sequence (a pong straddling a reconnect) is dropped, as the
-    /// reference drops it. Returns the measured round trip when one was recorded.
-    pub(crate) fn record_pong(&mut self, sequence: u32) -> Option<u32> {
-        let sent = self.sent_at.filter(|_| self.sequence == sequence)?;
-        let rtt = sent.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
-        self.file_rtt(rtt);
-        Some(rtt)
-    }
-
-    /// The filing half of [`Self::record_pong`], split out so a test can hand it exact
-    /// milliseconds — the measuring half reads a real clock, and a ring test wants known numbers.
-    /// The newest sample in, the oldest out at depth.
-    fn file_rtt(&mut self, rtt: u32) {
-        self.last_rtt_ms = Some(rtt);
-        if self.rtt_ring.len() == RTT_RING {
-            self.rtt_ring.pop_front();
-        }
-        self.rtt_ring.push_back(rtt);
-    }
-
-    /// The latency `GetNetStats` reports: the mean of the ring, truncated — `None` while it is
-    /// empty (no pong since the connection came up), which the UI feed renders as the reference's
-    /// own literal 0 (`0x537fd2`).
-    ///
-    /// Byte-for-byte the reference's own arithmetic, not an approximation of it: `0x537f20` walks
-    /// read→write summing into `eax` and counting into `edi`, then does one `xor edx,edx; div edi`
-    /// (`0x537fce`) — **unsigned, truncating, remainder discarded**, with no rounding term
-    /// anywhere in the function. So the mean is over the samples actually present rather than a
-    /// fixed sixteen, and integer `sum / len` in milliseconds *is* the reference's answer.
-    pub(crate) fn avg_latency_ms(&self) -> Option<u32> {
-        if self.rtt_ring.is_empty() {
-            return None;
-        }
-        let sum: u64 = self.rtt_ring.iter().map(|&ms| u64::from(ms)).sum();
-        Some((sum / self.rtt_ring.len() as u64) as u32)
-    }
-
-    /// Forget this connection's measurements — the next connection's latency is its own.
-    pub(crate) fn clear(&mut self) {
-        *self = Self::default();
-    }
-}
+pub(crate) use super::ping::PingClock;
 
 /// Cap on consecutive "command dropped/failed" warns per connection epoch, so a movement stream
 /// during an outage can't flood the log. Reset when a fresh writer arrives.
@@ -305,7 +248,11 @@ pub(super) struct NetHandles {
 /// Spawn the background read thread (with its park/cycle loop) and the single long-lived write
 /// thread. Each cycle failure emits a [`SessionEvent`] and returns to the pre-logon park; the app
 /// keeps rendering regardless, and its policy decides what (if anything) answers the park.
-pub(super) fn spawn_net(cfg: NetConfig, connect: bool) -> NetHandles {
+pub(super) fn spawn_net(
+    _app: &mut bevy::prelude::App,
+    cfg: NetConfig,
+    connect: bool,
+) -> NetHandles {
     let (events_tx, events_rx) = crossbeam_channel::unbounded();
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (pick_tx, pick_rx) = crossbeam_channel::unbounded::<CharRequest>();
@@ -813,7 +760,8 @@ fn run(
             .map(|c| c.name.clone())
             .unwrap_or_default();
         session.player_login(refuse_once(guid))?;
-        session.set_active_mover(guid)?;
+        // Initial mover claim belongs to shared self-object admission, not
+        // this still-pending asynchronous login request.
 
         let billing_time_rested = session.billing_time_rested();
         let tutorial_flags = session.take_tutorial_flags();
@@ -1122,6 +1070,12 @@ fn writer_loop(
                     continue;
                 };
                 let result = match cmd {
+                    ClientCommand::Disconnect { reason } => {
+                        bevy::log::warn!("net: aborting session: {reason}");
+                        // Shutdown wakes the real read half; its ordinary lost-session
+                        // event owns cleanup and the return to login.
+                        w.disconnect()
+                    }
                     ClientCommand::Move {
                         kind,
                         flags,
@@ -1780,7 +1734,7 @@ fn writer_loop(
 #[cfg(test)]
 mod rtt_tests {
     use super::{PingClock, RTT_RING};
-    use std::time::Instant;
+    use benilla_time::Instant;
 
     /// Arm the clock as the write thread does — a ping sent "now" under `sequence`.
     fn sent(clock: &mut PingClock, sequence: u32) {

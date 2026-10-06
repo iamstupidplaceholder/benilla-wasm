@@ -13,26 +13,28 @@ thread_local! {
     /// loader's own assembly.
     ///
     /// Built lazily, so a caller's `wow_data_or_skip!()` runs first.
-    static GLOBAL_STRINGS: benilla_ui::script::UiScript = {
-        let s = benilla_ui::script::UiScript::new().expect("VM");
-        crate::ui_script::test_ui::load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-        s
+    // `RefCell` because `LocalKey::with` hands out shared borrows while the lookups below
+    // need the VM exclusively; each call borrows fresh, and nothing re-enters.
+    static GLOBAL_STRINGS: std::cell::RefCell<benilla_ui::script::UiScript> = {
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
+        crate::ui_script::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+        std::cell::RefCell::new(s)
     };
 }
 
 /// Run something that needs the shipped string table — the feed's line producers resolve their
 /// keys through one of these now (decision 2045), and every assertion below wants the REAL table
 /// under it rather than a stub with our own idea of the wording in it.
-fn with_strings<T>(f: impl FnOnce(&dyn Fn(&str) -> Option<String>) -> T) -> T {
-    GLOBAL_STRINGS.with(|s| f(&|key: &str| s.lua().globals().get::<String>(key).ok()))
+fn with_strings<T>(f: impl FnOnce(&mut dyn FnMut(&str) -> Option<String>) -> T) -> T {
+    GLOBAL_STRINGS.with(|s| f(&mut |key: &str| s.borrow_mut().global_string(key)))
 }
 
 /// [`super::frames::compose`] against the shipped table — the shim that keeps every assertion in
 /// this file (and [`super::broadcast`]'s own) reading as a rendered line rather than as a lookup.
 pub(super) fn compose(event: &ChatEvent, kind: K, default_language: &str) -> Option<String> {
     GLOBAL_STRINGS.with(|s| {
-        super::frames::compose(event, kind, default_language, &|key| {
-            s.lua().globals().get::<String>(key).ok()
+        super::frames::compose(event, kind, default_language, &mut |key| {
+            s.borrow_mut().global_string(key)
         })
     })
 }
@@ -455,7 +457,7 @@ fn chat_vm() -> benilla_ui::script::UiScript {
         "Interface\\FrameXML\\StaticPopup.xml",
         "Interface\\FrameXML\\FloatingChatFrame.xml",
     ] {
-        crate::ui_script::load_ui_for_test(&s, file);
+        crate::ui_script::load_ui_for_test(&mut s, file);
     }
     crate::ui_script::fire_chat_login(&mut s);
     s.set_screen_size(1600.0, 900.0);
@@ -478,7 +480,7 @@ const SPY: &str = r#"
 "#;
 
 /// How many lines `ChatFrame1` is holding (`GetNumMessages`).
-fn lines_in_window(s: &benilla_ui::script::UiScript) -> i64 {
+fn lines_in_window(s: &mut benilla_ui::script::UiScript) -> i64 {
     s.eval::<i64>("return ChatFrame1:GetNumMessages()").unwrap()
 }
 
@@ -500,9 +502,9 @@ fn an_addon_registering_our_own_chat_frame_does_not_double_print() {
     s.run(r#"BenillaChatSpy:RegisterEvent("CHAT_MSG_SAY")"#)
         .unwrap();
 
-    assert_eq!(lines_in_window(&s), 0, "the window starts empty");
+    assert_eq!(lines_in_window(&mut s), 0, "the window starts empty");
     super::frames::route(&mut s, &mut windows, &ev(K::Say, "hi there", "Bob"));
-    assert_eq!(lines_in_window(&s), 1, "our window prints exactly once");
+    assert_eq!(lines_in_window(&mut s), 1, "our window prints exactly once");
     assert_eq!(
         s.eval::<i64>("return SpyN").unwrap(),
         1,
@@ -515,7 +517,7 @@ fn an_addon_registering_our_own_chat_frame_does_not_double_print() {
         .unwrap();
     super::frames::route(&mut s, &mut windows, &ev(K::Say, "hi again", "Bob"));
     assert_eq!(
-        lines_in_window(&s),
+        lines_in_window(&mut s),
         2,
         "one more line, not two — ChatFrame1's own OnEvent does not render CHAT_MSG_*"
     );
@@ -633,7 +635,7 @@ fn a_channel_notice_fires_its_token_and_the_reference_reads_arg7_and_arg10_bare(
     assert_eq!(s.eval::<i64>("return SpyZone").unwrap(), 1);
     assert!(s.errors().is_empty(), "handler errors: {:?}", s.errors());
     // ...and the window still shows the one composed line it always did.
-    assert_eq!(lines_in_window(&s), 1);
+    assert_eq!(lines_in_window(&mut s), 1);
 }
 
 /// **MODE_CHANGE produces no chat event at all** — not a silent one.
@@ -838,7 +840,7 @@ fn a_zone_change_must_not_deregister_the_channel_it_renames() {
     };
 
     // The control: registered by id, a General line reaches the window.
-    let before = lines_in_window(&s);
+    let before = lines_in_window(&mut s);
     super::feed::deliver(
         &mut s,
         &mut windows,
@@ -846,7 +848,7 @@ fn a_zone_change_must_not_deregister_the_channel_it_renames() {
         &mut channel_line("General - Elwynn Forest"),
     );
     assert_eq!(
-        lines_in_window(&s),
+        lines_in_window(&mut s),
         before + 1,
         "the control must print — otherwise the assertion below proves nothing"
     );
@@ -862,7 +864,7 @@ fn a_zone_change_must_not_deregister_the_channel_it_renames() {
         "renamed in place — the slot number does not move"
     );
 
-    let before = lines_in_window(&s);
+    let before = lines_in_window(&mut s);
     super::feed::deliver(
         &mut s,
         &mut windows,
@@ -870,7 +872,7 @@ fn a_zone_change_must_not_deregister_the_channel_it_renames() {
         &mut notice("General - Elwynn Forest", "3"), // YOU_LEFT
     );
     assert_eq!(
-        lines_in_window(&s),
+        lines_in_window(&mut s),
         before,
         "the leave prints NOTHING: no slot carries the old name any more, so arg7/arg8/arg9 come \
          out defaulted and the stock handler returns at `found == 0` — which is also why it never \
@@ -893,7 +895,7 @@ fn a_zone_change_must_not_deregister_the_channel_it_renames() {
     );
 
     // …and the observable that actually matters: speech from the NEW zone still lands.
-    let before = lines_in_window(&s);
+    let before = lines_in_window(&mut s);
     super::feed::deliver(
         &mut s,
         &mut windows,
@@ -901,7 +903,7 @@ fn a_zone_change_must_not_deregister_the_channel_it_renames() {
         &mut channel_line("General - Westfall"),
     );
     assert_eq!(
-        lines_in_window(&s),
+        lines_in_window(&mut s),
         before + 1,
         "a General line in the new zone must reach the window"
     );
@@ -947,7 +949,7 @@ fn leaving_a_capital_suspends_trade_rather_than_deregistering_it() {
 
     // The walk: LEAVE goes out, then the eligibility test suspends the slot.
     assert_eq!(channels.suspend_slot("Trade - City"), Some(1));
-    let before = lines_in_window(&s);
+    let before = lines_in_window(&mut s);
     super::feed::deliver(
         &mut s,
         &mut windows,
@@ -960,7 +962,7 @@ fn leaving_a_capital_suspends_trade_rather_than_deregistering_it() {
     // `CHAT_YOU_LEFT_NOTICE`. Only arg1 differs, and arg1 is what the stock handler branches on.
     // Asserted because a missing string would make `compose_notice` answer `None` and the line
     // would vanish silently — the failure this whole area is prone to.
-    assert_eq!(lines_in_window(&s), before + 1);
+    assert_eq!(lines_in_window(&mut s), before + 1);
     assert!(
         s.extract().iter().any(|q| matches!(
             &q.content,
@@ -985,7 +987,7 @@ fn leaving_a_capital_suspends_trade_rather_than_deregistering_it() {
     );
 
     // Walking back in: the same slot, the same number, and the notice prints again.
-    let before = lines_in_window(&s);
+    let before = lines_in_window(&mut s);
     super::feed::deliver(
         &mut s,
         &mut windows,
@@ -993,7 +995,7 @@ fn leaving_a_capital_suspends_trade_rather_than_deregistering_it() {
         &mut notice("Trade - City", "2"), // YOU_JOINED
     );
     assert_eq!(
-        lines_in_window(&s),
+        lines_in_window(&mut s),
         before + 1,
         "the re-join prints — it could not have, with the registration gone"
     );
@@ -1162,7 +1164,7 @@ fn a_session_end_empties_the_window_and_the_boxs_memory() {
     super::frames::route(&mut s, &mut windows, &ev(K::Whisper, "psst", "Ann"));
     log.push_event(ChatEvent::text_only(K::System, "queued".into()));
     assert_eq!(
-        lines_in_window(&s),
+        lines_in_window(&mut s),
         2,
         "the window has this session's lines"
     );
@@ -1170,7 +1172,7 @@ fn a_session_end_empties_the_window_and_the_boxs_memory() {
     super::end_chat_session(Some(&mut s), &mut log);
 
     assert_eq!(
-        lines_in_window(&s),
+        lines_in_window(&mut s),
         0,
         "and the next character starts clean"
     );
@@ -1193,8 +1195,8 @@ fn every_notice_token_resolves_and_the_tokenless_bytes_stay_silent() {
         e.channel = "World".into();
         e.notice = byte.to_string();
         let rendered = GLOBAL_STRINGS.with(|s| {
-            super::frames::compose_notice(&e, K::ChannelNotice, &|key| {
-                s.lua().globals().get::<String>(key).ok()
+            super::frames::compose_notice(&e, K::ChannelNotice, &mut |key| {
+                s.borrow_mut().global_string(key)
             })
         });
         match super::event::notice_token(byte, None) {
@@ -1224,8 +1226,8 @@ fn the_invite_notice_reorders_its_two_names() {
     e.sender = "Ann".into();
     e.notice = benilla_protocol::messages::channel_notice::INVITE.to_string();
     let line = GLOBAL_STRINGS.with(|s| {
-        super::frames::compose_notice(&e, K::ChannelNoticeUser, &|key| {
-            s.lua().globals().get::<String>(key).ok()
+        super::frames::compose_notice(&e, K::ChannelNoticeUser, &mut |key| {
+            s.borrow_mut().global_string(key)
         })
     });
     assert_eq!(
@@ -1498,7 +1500,7 @@ fn unknown_slash_command_is_dropped_not_said_aloud() {
 fn real_alias_table_resolves_the_shipped_commands() {
     let data = benilla_formats::wow_data_or_skip!();
     let mut chain = benilla_formats::open_chain(&data).expect("open chain");
-    let s = benilla_ui::script::UiScript::new().expect("VM");
+    let mut s = benilla_ui::script::UiScript::new().expect("VM");
     for file in ["GlobalStrings.lua", "ChatFrame.lua"] {
         let src = chain
             .read_file(&format!("Interface\\FrameXML\\{file}"))
@@ -1518,9 +1520,8 @@ fn real_alias_table_resolves_the_shipped_commands() {
         s.run(&src).expect("runs clean");
     }
     let cat = benilla_formats::load_emote_sound_catalog(&mut chain).expect("emote catalog");
-    let globals = s.lua().globals();
     let table = super::commands::SlashCommands::build(
-        |name| globals.get::<String>(name).ok().filter(|v| !v.is_empty()),
+        |name| s.global_string(name).filter(|v| !v.is_empty()),
         |token| cat.text_id(token),
     );
     let parse_line = |line: &str| super::input::parse_line(&table, line);
@@ -1674,7 +1675,7 @@ fn real_alias_table_resolves_the_shipped_commands() {
     // actually pins the grammar: the old form compiled here and would not have on the reference,
     // so a string check alone could not have caught it.
     {
-        let vm = benilla_ui::script::UiScript::new().expect("VM");
+        let mut vm = benilla_ui::script::UiScript::new().expect("VM");
         for payload in [
             "fpsJournal 1",
             "a]]b",
@@ -2249,7 +2250,7 @@ fn a_combat_log_line_renders_verbatim() {
 #[test]
 fn both_dock_tabs_exist_and_select_their_window() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = chat_vm();
+    let mut s = chat_vm();
     for id in [1, 2] {
         assert!(
             s.eval::<bool>(&format!("return ChatFrame{id}Tab ~= nil"))
@@ -2286,10 +2287,10 @@ fn the_dock_tab_labels_come_from_the_install() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let s = benilla_ui::script::UiScript::new().expect("VM");
+    let mut s = benilla_ui::script::UiScript::new().expect("VM");
     s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
     for key in ["GENERAL", "COMBAT_LOG"] {
-        let text: String = s.lua().globals().get(key).unwrap_or_default();
+        let text: String = s.global_string(key).unwrap_or_default();
         assert!(!text.is_empty(), "{key} is not a GlobalString");
     }
 }
@@ -2307,8 +2308,8 @@ fn the_dock_tab_labels_come_from_the_install() {
 #[test]
 fn the_combat_log_window_has_the_docks_rect() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = chat_vm();
-    let edge = |frame: &str, get: &str| {
+    let mut s = chat_vm();
+    let mut edge = |frame: &str, get: &str| {
         s.eval::<Option<f64>>(&format!("return {frame}:{get}()"))
             .unwrap()
     };
@@ -2366,7 +2367,7 @@ fn the_combat_log_window_has_the_docks_rect() {
 #[test]
 fn both_dock_windows_carry_the_same_chrome() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = chat_vm();
+    let mut s = chat_vm();
     // The reference's own `CHAT_FRAME_TEXTURES`, which is also the list the file declares — read
     // out of the VM rather than restated here, so a piece that leaves the list cannot leave this
     // check with it.
@@ -2435,13 +2436,13 @@ fn a_docked_chat_window_survives_the_managed_position_pass() {
             ..Default::default()
         }),
     );
-    assert!(crate::ui_script::load_default_ui(&s).is_empty());
+    assert!(crate::ui_script::load_default_ui(&mut s).is_empty());
     s.resolve();
     // Dock the combat log the way the reference's own default layout does, then run the pass.
     s.run("FCF_DockFrame(ChatFrame2, 2, nil) UIParent_ManageFramePositions()")
         .unwrap();
     s.resolve();
-    let rect = |name: &str| {
+    let mut rect = |name: &str| {
         s.eval::<(f64, f64, f64, f64)>(&format!(
             "return {name}:GetLeft(), {name}:GetBottom(), {name}:GetRight(), {name}:GetTop()"
         ))
@@ -2568,9 +2569,9 @@ fn the_ding_block_is_printed_once() {
     };
     // The whole of what the packet's apply does now: park the gains, print nothing.
     log.push_level_up_gains(&info, 1);
-    let before = lines_in_window(&s);
+    let before = lines_in_window(&mut s);
     assert_eq!(
-        lines_in_window(&s) - before,
+        lines_in_window(&mut s) - before,
         0,
         "the app composes no ding line of its own"
     );
@@ -2598,7 +2599,7 @@ fn the_ding_block_is_printed_once() {
     s.fire_event("PLAYER_LEVEL_UP", args);
     assert!(s.errors().is_empty(), "handler errors: {:?}", s.errors());
     assert_eq!(
-        lines_in_window(&s) - before,
+        lines_in_window(&mut s) - before,
         4,
         "LEVEL_UP, the health/mana pair, CHAR_POINTS, and one STAT — once each"
     );
@@ -2644,7 +2645,7 @@ fn the_free_professions_line_is_printed_once() {
         "#,
     )
     .unwrap();
-    let before = lines_in_window(&s);
+    let before = lines_in_window(&mut s);
     // `ui_talent`'s fire: arg1 = the talent delta, arg2 = the profession delta.
     s.fire_event(
         "CHARACTER_POINTS_CHANGED",
@@ -2655,7 +2656,7 @@ fn the_free_professions_line_is_printed_once() {
     );
     assert!(s.errors().is_empty(), "handler errors: {:?}", s.errors());
     assert_eq!(
-        lines_in_window(&s) - before,
+        lines_in_window(&mut s) - before,
         1,
         "the stock frame prints the professions line from the event"
     );

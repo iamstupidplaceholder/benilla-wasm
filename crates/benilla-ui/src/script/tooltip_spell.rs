@@ -22,9 +22,9 @@
 //! Views are keyed by spell id in an ask-once store (the item-template store's pattern): a
 //! renderer miss records the id, the app resolves and pushes, the hover's re-enter repaints.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::object::frame_handle_of;
+use super::object::frame_handle_of_context;
 use super::tooltip::{append_line, clear_content, fire_cleared};
 use super::{CraftTooltip, Model, TrainerTooltip};
 
@@ -104,7 +104,7 @@ impl super::UiScript {
 
 /// Look up the store; a miss records the ask. `pub(super)` for the talent tooltip's shared use
 /// (its display + next-rank spells ride this same ask-once channel — decision 0304).
-pub(super) fn spell_view_of(lua: &Lua, spell_id: u32) -> Option<SpellTooltipView> {
+pub(super) fn spell_view_of(lua: &mut impl LuaContext, spell_id: u32) -> Option<SpellTooltipView> {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let v = model.spell_tooltips.get(&spell_id).cloned();
     if v.is_none() && spell_id != 0 {
@@ -160,13 +160,13 @@ pub(super) struct SpellRenderOpts {
 }
 
 fn render_spell(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     v: &SpellTooltipView,
     opts: SpellRenderOpts,
     remaining: Option<String>,
     talent: Option<&TalentLines>,
-) -> mlua::Result<()> {
+) -> benilla_lua::Result<()> {
     let SpellRenderOpts {
         aura,
         show_rank,
@@ -262,13 +262,13 @@ fn render_spell(
     // rather than a sentence of ours.
     if let Some(t) = talent {
         if let Some(next) = &t.next_desc {
-            if let Some(header) = crate::strings::global(lua, "TOOLTIP_TALENT_NEXT_RANK") {
+            if let Some(header) = crate::strings::global_context(lua, "TOOLTIP_TALENT_NEXT_RANK") {
                 append_line(lua, this, (header, WHITE), None, false)?;
             }
             append_line(lua, this, (next.clone(), GOLD), None, true)?;
         }
         if t.learn {
-            if let Some(hint) = crate::strings::global(lua, "TOOLTIP_TALENT_LEARN") {
+            if let Some(hint) = crate::strings::global_context(lua, "TOOLTIP_TALENT_LEARN") {
                 append_line(lua, this, (hint, GREEN), None, false)?;
             }
         }
@@ -289,12 +289,12 @@ fn render_spell(
 /// display spell through the shared store + the talent interleave. A missing next-rank view is
 /// re-asked so the hover's re-enter completes the block.
 pub(super) fn set_spell_with_talent(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     spell_id: u32,
     talent: TalentLines,
-) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, this)?;
     {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         clear_content(&mut model, h);
@@ -329,14 +329,14 @@ pub(super) fn set_spell_with_talent(
 /// The reward-spell hover: the spell by id with the quest's own name as the fallback, or an
 /// empty tooltip.
 fn set_reward_spell(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     spell: Option<(u32, Option<String>)>,
-) -> mlua::Result<()> {
+) -> benilla_lua::Result<()> {
     match spell {
         Some((id, name)) => set_spell_by_id(lua, this, id, name, SpellRenderOpts::default(), None),
         None => {
-            let h = frame_handle_of(lua, this)?;
+            let h = frame_handle_of_context(lua, this)?;
             {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                 clear_content(&mut model, h);
@@ -348,14 +348,14 @@ fn set_reward_spell(
 }
 
 pub(super) fn set_spell_by_id(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     spell_id: u32,
     fallback_name: Option<String>,
     opts: SpellRenderOpts,
     remaining: Option<String>,
-) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, this)?;
     {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         clear_content(&mut model, h);
@@ -374,7 +374,7 @@ pub(super) fn set_spell_by_id(
 }
 
 /// Register the spell/aura content channels into the GameTooltip kind method table.
-pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install_methods(vm: &mut Vm, m: &LuaTable) -> benilla_lua::Result<()> {
     // GameTooltip:SetSpell(bookId, bookType) — the spellbook hover: the 1-based book slot resolves
     // through the named book's state to a spell id.
     //
@@ -389,12 +389,15 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //
     // Before the fork, a pet-book hover indexed the PLAYER's slot list, so hovering the imp's first
     // spell showed the player's first spell — "Attack", crit line and all (decision 1050).
-    m.set(
+    let set_spell = vm.create_function(
         "SetSpell",
-        lua.create_function(|lua, (this, book_id, book_type): (Table, u32, Value)| {
+        |lua, (this, book_id, book_type): (LuaTable, u32, LuaValue)| {
             // The reference requires a STRING third argument and bails otherwise (`0x532dc0`'s
             // `lua_isstring(3)` → `je` out); a non-string is therefore not "the player's book".
-            let Some(book_type) = book_type.as_string().and_then(|s| s.to_str().ok()) else {
+            let Some(book_type) = (match &book_type {
+                LuaValue::String(s) => s.as_str().ok().map(str::to_owned),
+                _ => None,
+            }) else {
                 return Ok(());
             };
             let (spell_id, name) = {
@@ -405,12 +408,12 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 }
             };
             set_spell_by_id(lua, &this, spell_id, name, SpellRenderOpts::default(), None)
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetSpell", &set_spell)?;
     // GameTooltip:SetShapeshift(index) — the stance-bar hover (the form's own spell tooltip).
-    m.set(
-        "SetShapeshift",
-        lua.create_function(|lua, (this, index): (Table, usize)| {
+    let set_shapeshift =
+        vm.create_function("SetShapeshift", |lua, (this, index): (LuaTable, usize)| {
             let (spell_id, name) = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 match model.shapeshift_forms.get(index.saturating_sub(1)) {
@@ -419,16 +422,15 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 }
             };
             set_spell_by_id(lua, &this, spell_id, name, SpellRenderOpts::default(), None)
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetShapeshift", &set_shapeshift)?;
     // GameTooltip:SetPetAction(index) — the pet-bar hover (decision 0982). Only ever reached for a
     // SPELL slot: the reference's `PetActionButton_OnEnter` builds a token slot's tooltip inline
     // from `tooltipName`/`tooltipSubtext` and never calls this. A slot with no spell (a token, an
     // empty slot, an out-of-range index) is a no-op, leaving whatever was shown — the same shape
     // as SetSpell's out-of-range.
-    m.set(
-        "SetPetAction",
-        lua.create_function(|lua, (this, index): (Table, usize)| {
+    let set_pet_action =
+        vm.create_function("SetPetAction", |lua, (this, index): (LuaTable, usize)| {
             let (spell_id, name) = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 match model
@@ -445,8 +447,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 }
             };
             set_spell_by_id(lua, &this, spell_id, name, SpellRenderOpts::default(), None)
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetPetAction", &set_pet_action)?;
     // GameTooltip:SetPlayerBuff(buffIndex) — the buff-bar hover: the aura variant (white
     // AuraDescription) + the duration-remaining line only this entry point appends (byte-verified;
     // remaining computed live off the aura's GetTime expiry). The line's TEXT is no longer interim:
@@ -470,13 +472,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // exactly like SetUnitBuff's: content clears and the plate hides, never a stale tooltip left
     // showing. Any surplus argument is ignored — `CT_BuffMod/CT_BuffFrame.lua:151` passes a filter
     // string the reference's own binding never reads.
-    m.set(
-        "SetPlayerBuff",
-        lua.create_function(|lua, (this, index): (Table, i64)| {
-            let now = {
-                let g = lua.globals();
-                g.get::<f64>("__benilla_now").unwrap_or(0.0)
-            };
+    let set_player_buff =
+        vm.create_function("SetPlayerBuff", |lua, (this, index): (LuaTable, i64)| {
+            let now = lua.get_global::<f64>("__benilla_now").unwrap_or(0.0);
             let (spell_id, name, remaining_ms) = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 let hit = usize::try_from(index)
@@ -512,9 +510,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             // The text is `0x52fa50`'s, over the player's own GlobalStrings — never a string of
             // ours. Off an install the table is absent and the line simply does not render.
             let remaining = remaining_ms.and_then(|ms| {
-                let g = lua.globals();
-                super::tooltip::duration_text(ms, "SPELL_TIME_REMAINING", true, &|key| {
-                    g.get::<String>(key).ok()
+                super::tooltip::duration_text(ms, "SPELL_TIME_REMAINING", true, &mut |key: &str| {
+                    lua.get_global::<String>(key).ok()
                 })
             });
             set_spell_by_id(
@@ -528,30 +525,30 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 },
                 remaining,
             )
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&m, "SetPlayerBuff", &set_player_buff)?;
     // GameTooltip:SetUnitBuff(unit, index) / SetUnitDebuff(unit, index) — the target frame's aura
     // hover: the same aura variant (white AuraDescription), WITHOUT the duration-remaining line —
     // byte-verified, only SetPlayerBuff appends it (and no other unit has a duration on the 1.12
     // wire anyway). The index counts within the sign-filtered list, the UnitBuff/UnitDebuff
     // convention.
     for (verb, helpful) in [("SetUnitBuff", true), ("SetUnitDebuff", false)] {
-        m.set(
+        // `index` is `Value`, not `i64`, and that is a fidelity fix rather than laxity — the
+        // same correction `SetTexture` already carries. A C binding reads what it wants off
+        // the Lua stack: `lua_tonumber` on nil yields 0, which finds no aura and shows
+        // nothing. Typing it `i64` made us RAISE on a call the real client accepts silently.
+        //
+        // Found by the use-probe: `CT_AssistFrameDebuff1:OnEnter` calls
+        // `SetUnitDebuff(unit, this:GetID())` and the id is nil on a frame CT_UnitFrames
+        // created without one. It only fires on hover, so nothing before the probe saw it.
+        let unit_aura_fn = vm.create_function(
             verb,
-            // `index` is `Value`, not `i64`, and that is a fidelity fix rather than laxity — the
-            // same correction `SetTexture` already carries. A C binding reads what it wants off
-            // the Lua stack: `lua_tonumber` on nil yields 0, which finds no aura and shows
-            // nothing. Typing it `i64` made us RAISE on a call the real client accepts silently.
-            //
-            // Found by the use-probe: `CT_AssistFrameDebuff1:OnEnter` calls
-            // `SetUnitDebuff(unit, this:GetID())` and the id is nil on a frame CT_UnitFrames
-            // created without one. It only fires on hover, so nothing before the probe saw it.
-            lua.create_function(move |lua, (this, token, index): (Table, String, Value)| {
+            move |lua, (this, token, index): (LuaTable, String, LuaValue)| {
                 let index = match &index {
-                    Value::Integer(i) => *i,
-                    Value::Number(n) => *n as i64,
-                    Value::String(s) => s
-                        .to_str()
+                    LuaValue::Integer(i) => *i,
+                    LuaValue::Number(n) => *n as i64,
+                    LuaValue::String(s) => s
+                        .as_str()
                         .ok()
                         .and_then(|t| t.parse::<i64>().ok())
                         .unwrap_or(0),
@@ -581,8 +578,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     },
                     None,
                 )
-            })?,
+            },
         )?;
+        vm.table_set_function(&m, verb, &unit_aura_fn)?;
     }
     // GameTooltip:SetTrackingSpell() — the minimap tracking icon's hover: NAME gold over a white
     // (aura-)description, pinned by the director's reference A/B (2026-07-20: "Find Minerals"
@@ -591,47 +589,45 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // still isn't carved, so carve it in wow-re before extending BEYOND that shape. No
     // duration-remaining line (only SetPlayerBuff appends one), and no tracking active clears +
     // hides, like the SetUnitBuff miss path.
-    m.set(
-        "SetTrackingSpell",
-        lua.create_function(|lua, this: Table| {
-            let hit = {
-                let model = lua.app_data_mut::<Model>().expect("model app_data");
-                model
-                    .tracking
-                    .as_ref()
-                    .map(|t| (t.spell_id, t.name.clone()))
-            };
-            let (spell_id, fallback_name) = hit.unwrap_or((0, None));
-            let h = frame_handle_of(lua, &this)?;
-            {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                clear_content(&mut model, h);
-            }
-            fire_cleared(lua, h);
-            match spell_view_of(lua, spell_id) {
-                Some(v) => {
-                    append_line(lua, &this, (v.name.clone(), GOLD), None, false)?;
-                    let desc = if !v.aura_description.is_empty() {
-                        &v.aura_description
-                    } else {
-                        &v.description
-                    };
-                    if !desc.is_empty() {
-                        append_line(lua, &this, (desc.clone(), WHITE), None, true)?;
-                    }
-                }
-                None => {
-                    // The view hasn't landed (ask recorded; the re-enter repaints): the name
-                    // alone, in the same gold.
-                    if let Some(name) = fallback_name {
-                        append_line(lua, &this, (name, GOLD), None, false)?;
-                    }
+    let set_tracking_spell = vm.create_function("SetTrackingSpell", |lua, this: LuaTable| {
+        let hit = {
+            let model = lua.app_data_mut::<Model>().expect("model app_data");
+            model
+                .tracking
+                .as_ref()
+                .map(|t| (t.spell_id, t.name.clone()))
+        };
+        let (spell_id, fallback_name) = hit.unwrap_or((0, None));
+        let h = frame_handle_of_context(lua, &this)?;
+        {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            clear_content(&mut model, h);
+        }
+        fire_cleared(lua, h);
+        match spell_view_of(lua, spell_id) {
+            Some(v) => {
+                append_line(lua, &this, (v.name.clone(), GOLD), None, false)?;
+                let desc = if !v.aura_description.is_empty() {
+                    &v.aura_description
+                } else {
+                    &v.description
+                };
+                if !desc.is_empty() {
+                    append_line(lua, &this, (desc.clone(), WHITE), None, true)?;
                 }
             }
-            super::tooltip::show_or_hide_empty(lua, h);
-            Ok(())
-        })?,
-    )?;
+            None => {
+                // The view hasn't landed (ask recorded; the re-enter repaints): the name
+                // alone, in the same gold.
+                if let Some(name) = fallback_name {
+                    append_line(lua, &this, (name, GOLD), None, false)?;
+                }
+            }
+        }
+        super::tooltip::show_or_hide_empty(lua, h);
+        Ok(())
+    })?;
+    vm.table_set_function(&m, "SetTrackingSpell", &set_tracking_spell)?;
     // GameTooltip:SetAction(slot) — the action-bar hover: pure delegation by payload kind
     // (`0x5322a0`, byte-verified: SPELL 0x00 → the spell builder `0x52e610`, ITEM 0x80 → the item
     // builder `0x52b650`, MACRO 0x40 → `0x52b040`; wow-re `ui.md`'s SetAction dispatch).
@@ -647,9 +643,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // slot stock marks `rewardType = "spell"` (QuestFrameTemplates.xml:150, QuestLogFrame.xml:115;
     // bindings 0x535bb0 / 0x535c60, self only, 0 returns): the quest's reward spell by id through
     // the spell renderer, an empty tooltip when the quest rewards none.
-    m.set(
-        "SetQuestRewardSpell",
-        lua.create_function(|lua, this: Table| {
+    let set_quest_reward_spell =
+        vm.create_function("SetQuestRewardSpell", |lua, this: LuaTable| {
             let id = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 model
@@ -659,11 +654,10 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     .map(|s| (s.spell_id, s.name.clone()))
             };
             set_reward_spell(lua, &this, id)
-        })?,
-    )?;
-    m.set(
-        "SetQuestLogRewardSpell",
-        lua.create_function(|lua, this: Table| {
+        })?;
+    vm.table_set_function(&m, "SetQuestRewardSpell", &set_quest_reward_spell)?;
+    let set_quest_log_reward_spell =
+        vm.create_function("SetQuestLogRewardSpell", |lua, this: LuaTable| {
             let id = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 model
@@ -672,53 +666,58 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     .map(|s| (s.spell_id, s.name.clone()))
             };
             set_reward_spell(lua, &this, id)
-        })?,
-    )?;
-    m.set(
-        "SetAction",
-        lua.create_function(|lua, (this, slot): (Table, u32)| {
-            let action = {
-                let model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.actions.get(&slot).cloned()
-            };
-            let Some(a) = action else { return Ok(()) };
-            match a.kind {
-                0x00 => set_spell_by_id(
-                    lua,
-                    &this,
-                    a.action,
-                    None,
-                    SpellRenderOpts {
-                        show_rank: true,
-                        ..Default::default()
-                    },
-                    None,
-                ),
-                0x80 => {
-                    // Route through the shared item renderer (the id-keyed entry).
-                    let f: mlua::Function = this.get("BenillaSetItemById")?;
-                    f.call::<()>((this.clone(), a.action))
-                }
-                0x40 => {
-                    let h = frame_handle_of(lua, &this)?;
-                    let name = {
-                        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                        clear_content(&mut model, h);
-                        // The same 1..36 index lookup `GetActionText` and the bar's icon arm
-                        // make, so the three can never disagree about which macro a slot holds.
-                        model.macros.get(a.action as usize).map(|m| m.name.clone())
-                    };
-                    fire_cleared(lua, h);
-                    if let Some(name) = name {
-                        append_line(lua, &this, (name, WHITE), None, false)?;
-                    }
-                    super::tooltip::show_or_hide_empty(lua, h);
-                    Ok(())
-                }
-                _ => Ok(()),
+        })?;
+    vm.table_set_function(&m, "SetQuestLogRewardSpell", &set_quest_log_reward_spell)?;
+    let set_action = vm.create_function("SetAction", |lua, (this, slot): (LuaTable, u32)| {
+        let action = {
+            let model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.actions.get(&slot).cloned()
+        };
+        let Some(a) = action else {
+            let h = frame_handle_of_context(lua, &this)?;
+            super::tooltip::clear_empty_content(lua, h);
+            return Ok(());
+        };
+        match a.kind {
+            0x00 => set_spell_by_id(
+                lua,
+                &this,
+                a.action,
+                None,
+                SpellRenderOpts {
+                    show_rank: true,
+                    ..Default::default()
+                },
+                None,
+            ),
+            0x80 => {
+                // Route through the shared item renderer (the id-keyed entry).
+                lua.call_method::<_, ()>(&this, "BenillaSetItemById", (a.action,))
             }
-        })?,
-    )?;
+            0x40 => {
+                let h = frame_handle_of_context(lua, &this)?;
+                let name = {
+                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                    clear_content(&mut model, h);
+                    // The same 1..36 index lookup `GetActionText` and the bar's icon arm
+                    // make, so the three can never disagree about which macro a slot holds.
+                    model.macros.get(a.action as usize).map(|m| m.name.clone())
+                };
+                fire_cleared(lua, h);
+                if let Some(name) = name {
+                    append_line(lua, &this, (name, WHITE), None, false)?;
+                }
+                super::tooltip::show_or_hide_empty(lua, h);
+                Ok(())
+            }
+            _ => {
+                let h = frame_handle_of_context(lua, &this)?;
+                super::tooltip::clear_empty_content(lua, h);
+                Ok(())
+            }
+        }
+    })?;
+    vm.table_set_function(&m, "SetAction", &set_action)?;
 
     // GameTooltip:SetTrainerService(index) — the trainer detail-icon hover (ref
     // `Blizzard_TrainerUI.xml:452`, whose OnEnter is SetOwner(this,"ANCHOR_RIGHT") +
@@ -733,9 +732,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //
     // `index` is a **VISIBLE** row index (headers interleave), resolved through the same mapping
     // every other trainer getter uses; a header row is a no-op.
-    m.set(
+    let set_trainer_service = vm.create_function(
         "SetTrainerService",
-        lua.create_function(|lua, (this, index): (Table, usize)| {
+        |lua, (this, index): (LuaTable, usize)| {
             let subject = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 match super::trainer::service(&model, index) {
@@ -748,8 +747,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 // `0x52b650`. No fallback name: an item id of 0 or a template still in flight
                 // renders an EMPTY tooltip, which is the builder's own early-out.
                 TrainerTooltip::Item(item_id) => {
-                    let f: mlua::Function = this.get("BenillaSetItemById")?;
-                    f.call::<()>((this.clone(), item_id))
+                    lua.call_method::<_, ()>(&this, "BenillaSetItemById", (item_id,))
                 }
                 TrainerTooltip::Spell {
                     spell_id,
@@ -766,8 +764,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     None,
                 ),
             }
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetTrainerService", &set_trainer_service)?;
     // GameTooltip:SetCraftSpell(craftIndex) — the Craft window's detail-icon hover (ref
     // `CraftIcon`'s OnEnter, `Blizzard_CraftUI.xml:566`). `SetTrainerService`'s structural twin and
     // its law's opposite (wow-re `ui/scratch/trainer-service-tooltip-law.md` §4.1): a selector into
@@ -779,9 +778,9 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // two lines were eight-plus short, and on a `LEARN_SPELL` or `CREATE_ITEM` recipe it was
     // describing the wrong subject entirely. `craft_index` is a raw recipe position — the Craft
     // window is FLAT, with no headers to interleave (unlike the tradeskill list).
-    m.set(
+    let set_craft_spell = vm.create_function(
         "SetCraftSpell",
-        lua.create_function(|lua, (this, craft_index): (Table, usize)| {
+        |lua, (this, craft_index): (LuaTable, usize)| {
             let subject = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 let Some(c) = &model.craft else {
@@ -794,14 +793,14 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             };
             match subject {
                 CraftTooltip::Item(item_id) => {
-                    let f: mlua::Function = this.get("BenillaSetItemById")?;
-                    f.call::<()>((this.clone(), item_id))
+                    lua.call_method::<_, ()>(&this, "BenillaSetItemById", (item_id,))
                 }
                 CraftTooltip::Spell(spell_id) => {
                     set_spell_by_id(lua, &this, spell_id, None, SpellRenderOpts::default(), None)
                 }
             }
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetCraftSpell", &set_craft_spell)?;
     Ok(())
 }

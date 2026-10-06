@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const SPELL_MECHANIC: &str = "DBFilesClient\\SpellMechanic.dbc";
 const SPELL_MECHANIC_FIELDS: usize = 10;
@@ -64,7 +64,7 @@ fn schema() -> Schema {
 }
 
 /// Load SpellMechanic.dbc from the patch chain into a [`SpellMechanicCatalog`].
-pub fn load_spell_mechanic_catalog(chain: &mut Chain) -> Result<SpellMechanicCatalog> {
+pub fn load_spell_mechanic_catalog(chain: &mut impl FileSource) -> Result<SpellMechanicCatalog> {
     let bytes = chain
         .read_file(SPELL_MECHANIC)
         .with_context(|| format!("reading {SPELL_MECHANIC}"))?;

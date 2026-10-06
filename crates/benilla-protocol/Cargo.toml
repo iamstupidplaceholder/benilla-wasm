@@ -12,6 +12,7 @@ workspace = true
 anyhow.workspace = true
 clap.workspace = true
 benilla-srp = { path = "../benilla-srp" }
+benilla-time = { path = "../benilla-time" }
 flate2 = "1.0"
 sha1.workspace = true
 # `SessionEventKind` — the fieldless twin of `SessionEvent`, the key the app's packet-handler

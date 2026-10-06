@@ -640,7 +640,7 @@ fn desaturation_rides_the_extract_for_art_and_never_for_a_solid() {
 /// gets shipped (decision 1327's own residual). The extract quad is the other way to see it, but a
 /// cleared texture emits no quad at all, which is exactly the case these tests need to observe.
 fn desaturated(s: &UiScript, name: &str) -> bool {
-    let lua = s.lua();
+    let lua = s.vm();
     let model = lua.app_data_ref::<crate::script::Model>().expect("model");
     let id = *model.region_names.get(name).expect("region name");
     let h = *model.id_to_region.get(&id).expect("region handle");
@@ -658,7 +658,7 @@ fn desaturated(s: &UiScript, name: &str) -> bool {
 /// it is the half a plausible implementation drops.
 #[test]
 fn set_texture_clears_desaturation_unless_the_path_is_unchanged() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local f = CreateFrame("Frame", "ClrOwner")
@@ -700,7 +700,7 @@ fn set_texture_clears_desaturation_unless_the_path_is_unchanged() {
 /// truncated to an int, so `SetDesaturated(0)` clears where truthiness would have greyed.
 #[test]
 fn set_desaturated_takes_the_clients_argument_truth_table() {
-    let s = script();
+    let mut s = script();
     s.run(r#"f = CreateFrame("Frame", "ArgOwner") tex = f:CreateTexture("ArgTex", "ARTWORK")"#)
         .unwrap();
     let grey = |s: &UiScript| desaturated(s, "ArgTex");
@@ -794,7 +794,7 @@ fn a_vertex_colour_without_a_texture_draws_nothing() {
 /// must take the same default a missing one does, exactly as `lua_tonumber` of a non-number is 0.
 #[test]
 fn set_texture_ignores_arguments_past_the_path_like_the_client_does() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         f = CreateFrame("Frame", "SetTexArgs")
@@ -873,7 +873,7 @@ fn a_gradient_is_stored_whole_and_painted_as_its_midpoint() {
 /// FontString's `0xcf5400` is 32, both tail-calling the Region map and stopping there).
 #[test]
 fn the_two_region_leaves_answer_their_own_maps() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         LeafOwner = CreateFrame("Frame", "LeafOwner")
@@ -882,7 +882,7 @@ fn the_two_region_leaves_answer_their_own_maps() {
         "#,
     )
     .unwrap();
-    let has = |s: &crate::script::UiScript, obj: &str, m: &str| {
+    let has = |s: &mut crate::script::UiScript, obj: &str, m: &str| {
         s.eval::<String>(&format!("return type({obj}.{m})"))
             .unwrap()
             == "function"
@@ -900,14 +900,14 @@ fn the_two_region_leaves_answer_their_own_maps() {
         "GetTexCoordModifiesRect",
         "GetVertexColor",
     ] {
-        assert!(has(&s, "Tex", m), "a Texture answers {m}");
-        assert!(!has(&s, "Str", m), "a FontString must NOT answer {m}");
+        assert!(has(&mut s, "Tex", m), "a Texture answers {m}");
+        assert!(!has(&mut s, "Str", m), "a FontString must NOT answer {m}");
     }
     // `SetRotation` is 1.12's PLAYERMODEL verb (`0x84f1fc`/`0x505f00`), not a region one — it is in
     // neither leaf map, and ours used to put it on Texture.
     for leaf in ["Tex", "Str"] {
         assert!(
-            !has(&s, leaf, "SetRotation"),
+            !has(&mut s, leaf, "SetRotation"),
             "SetRotation is not a region method"
         );
     }
@@ -919,8 +919,8 @@ fn the_two_region_leaves_answer_their_own_maps() {
         "SetJustifyH",
         "SetAlphaGradient",
     ] {
-        assert!(has(&s, "Str", m), "a FontString answers {m}");
-        assert!(!has(&s, "Tex", m), "a Texture must NOT answer {m}");
+        assert!(has(&mut s, "Str", m), "a FontString answers {m}");
+        assert!(!has(&mut s, "Tex", m), "a Texture must NOT answer {m}");
     }
     // On BOTH — and each leaf registers its own copy in the client, so these are NOT on the Region
     // map and must not be hoisted into it.
@@ -933,14 +933,14 @@ fn the_two_region_leaves_answer_their_own_maps() {
         "SetDrawLayer",
     ] {
         assert!(
-            has(&s, "Tex", m) && has(&s, "Str", m),
+            has(&mut s, "Tex", m) && has(&mut s, "Str", m),
             "{m} is on both leaves"
         );
     }
     // The Region map reaches both, through each leaf's own fallback.
     for m in crate::script::REGION_MAP_METHODS {
         assert!(
-            has(&s, "Tex", m) && has(&s, "Str", m),
+            has(&mut s, "Tex", m) && has(&mut s, "Str", m),
             "{m} is the Region map"
         );
     }
@@ -951,21 +951,21 @@ fn the_two_region_leaves_answer_their_own_maps() {
     // `GetStringWidth` reads. Keeping the width and dropping the height is not an oversight: the
     // client really is asymmetric here.
     assert!(
-        !has(&s, "Str", "GetStringHeight"),
+        !has(&mut s, "Str", "GetStringHeight"),
         "1.12 has no GetStringHeight"
     );
     assert!(
-        has(&s, "Str", "GetStringWidth"),
+        has(&mut s, "Str", "GetStringWidth"),
         "…but it does have GetStringWidth"
     );
     assert!(
-        has(&s, "Str", "GetHeight"),
+        has(&mut s, "Str", "GetHeight"),
         "GetHeight is the replacement, via the Region map"
     );
 
     // The near-miss pair: Texture has SetGradientAlpha, FontString has SetAlphaGradient.
-    assert!(has(&s, "Tex", "SetGradientAlpha") && !has(&s, "Str", "SetGradientAlpha"));
-    assert!(has(&s, "Str", "SetAlphaGradient") && !has(&s, "Tex", "SetAlphaGradient"));
+    assert!(has(&mut s, "Tex", "SetGradientAlpha") && !has(&mut s, "Str", "SetGradientAlpha"));
+    assert!(has(&mut s, "Str", "SetAlphaGradient") && !has(&mut s, "Tex", "SetAlphaGradient"));
 }
 
 /// **`SetPortraitToTexture` is a GLOBAL in 1.12, not a Texture method.**
@@ -976,7 +976,7 @@ fn the_two_region_leaves_answer_their_own_maps() {
 /// global inside our VM.
 #[test]
 fn set_portrait_to_texture_is_a_global_taking_a_name() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         PortHost = CreateFrame("Frame", "PortHost")
@@ -1185,7 +1185,7 @@ fn the_constructors_string_arguments_are_four_shapes_not_one() {
     // Read off the arena — 1.12 publishes no `GetDrawLayer`, so there is no Lua getter to ask,
     // the same reason the sequence scrub is read this way in `modelframe`'s tests.
     let layer_of = |s: &UiScript, name: &str| {
-        let lua = s.lua();
+        let lua = s.vm();
         let model = lua.app_data_ref::<crate::script::Model>().expect("model");
         let id = *model.region_names.get(name).expect("published region");
         let rh = *model.id_to_region.get(&id).expect("live region");
@@ -1273,7 +1273,7 @@ fn set_portrait_texture_folds_the_token_to_lowercase() {
 /// line beneath it, and nothing ever cleared it again.
 #[test]
 fn an_empty_fontstring_reads_back_nil_and_an_edit_box_does_not() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local f = CreateFrame("Frame", "TextCell")
@@ -1282,30 +1282,30 @@ fn an_empty_fontstring_reads_back_nil_and_an_edit_box_does_not() {
     "#,
     )
     .unwrap();
-    let text_of = |s: &UiScript, which: &str| {
+    let text_of = |s: &mut UiScript, which: &str| {
         s.eval::<Option<String>>(&format!("return {which}:GetText()"))
             .unwrap()
     };
 
     // Never written, and every shape of an empty write, all nil.
-    assert_eq!(text_of(&s, "fresh"), None);
+    assert_eq!(text_of(&mut s, "fresh"), None);
     for write in [r#"fresh:SetText("")"#, r#"fresh:SetText(nil)"#] {
         s.run(write).unwrap();
-        assert_eq!(text_of(&s, "fresh"), None, "after `{write}`");
+        assert_eq!(text_of(&mut s, "fresh"), None, "after `{write}`");
     }
 
     // A string that HAS held text still reads nil once blanked — the substitution is the getter's,
     // so it does not matter that the cell keeps a (truncated) buffer.
     s.run(r#"held:SetText("In Conflict")"#).unwrap();
-    assert_eq!(text_of(&s, "held").as_deref(), Some("In Conflict"));
+    assert_eq!(text_of(&mut s, "held").as_deref(), Some("In Conflict"));
     s.run(r#"held:SetText("")"#).unwrap();
     assert_eq!(
-        text_of(&s, "held"),
+        text_of(&mut s, "held"),
         None,
         "a blanked FontString reads back nil, not an empty string"
     );
     s.run(r#"held:SetText("back"); held:SetText(nil)"#).unwrap();
-    assert_eq!(text_of(&s, "held"), None);
+    assert_eq!(text_of(&mut s, "held"), None);
 
     // Button:GetText carries the SAME substitution; Button:SetText(nil) is its own no-op guard.
     s.run(
@@ -1317,12 +1317,12 @@ fn an_empty_fontstring_reads_back_nil_and_an_edit_box_does_not() {
     )
     .unwrap();
     assert_eq!(
-        text_of(&s, "TextCellButton").as_deref(),
+        text_of(&mut s, "TextCellButton").as_deref(),
         Some("Accept"),
         "a nil never reaches the button's label (`0x778dcc`)"
     );
     s.run(r#"TextCellButton:SetText("")"#).unwrap();
-    assert_eq!(text_of(&s, "TextCellButton"), None, "an empty label is nil");
+    assert_eq!(text_of(&mut s, "TextCellButton"), None, "an empty label is nil");
 
     // And the EditBox is the counter-example that keeps this from being hoisted: stock
     // `MailFrame.lua` compares `GetText() == ""` and calls `strlen(GetText())` on one.
@@ -1334,7 +1334,7 @@ fn an_empty_fontstring_reads_back_nil_and_an_edit_box_does_not() {
     )
     .unwrap();
     assert_eq!(
-        text_of(&s, "TextCellEdit").as_deref(),
+        text_of(&mut s, "TextCellEdit").as_deref(),
         Some(""),
         "EditBox:GetText 0x7985c0 reads [edit+0x32c] straight through — no substitution"
     );
@@ -1405,7 +1405,7 @@ fn an_unresolvable_set_texture_keeps_the_art_the_region_had() {
 /// ctor's `[+0xd0] = 2` (`0x76fc64`).
 #[test]
 fn get_blend_mode_answers_one_string_and_defaults_to_the_ctors_blend() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         BlendOwner = CreateFrame("Frame", "BlendOwner")

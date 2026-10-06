@@ -78,30 +78,38 @@ use crate::target::Selection;
 use benilla_assets::materials::WowModelMaterial;
 
 mod framing;
+use framing::{PORTRAIT_FOV, body_frame, frame};
 pub(crate) use framing::{
-    attachment_point, glue_box_aspect, glue_canvas_bars, head_anchor, pane_projection,
-    PortraitAnchors, WowPortraitProjection,
+    PortraitAnchors, WowPortraitProjection, attachment_point, glue_box_aspect, glue_canvas_bars,
+    head_anchor, pane_projection,
 };
-use framing::{body_frame, frame, PORTRAIT_FOV};
-mod booth;
+pub(crate) mod booth;
+pub(crate) use booth::{face_booth_billboards, push_booth_mat_alpha};
 /// The translucency twins ride the *preview* shapes as well as the booth ones — one type for both
 /// halves of the same batch, so the entities-side assembly and the bake cannot disagree about what
 /// a batch can feather through.
 pub(crate) use booth::BoothTwins;
 use booth::{
-    clear_booth_rig, spawn_booth_effects, spawn_booth_model, spawn_booth_own_emitters,
     BoothBillboardSpec, BoothEffects, BoothInstance, BoothMotion, BoothPart, BoothRider,
+    clear_booth_rig, spawn_booth_effects, spawn_booth_model, spawn_booth_own_emitters,
 };
 mod dressup;
 pub(crate) use dressup::{DressUpBake, DressUpLook, DressUpPreview};
 mod glue_booth;
-pub(crate) use glue_booth::{
-    CreateLook, GhostKit, GlueLook, GluePetBake, GluePreview, GluePreviewBake, GlueScene, PetLook,
-    PreviewBillboard, PreviewEffects, PreviewPart, PreviewRider, SelectLook, GLUE_SLOT,
+pub(crate) use crate::portrait_contract::{
+    CreateLook, GLUE_SLOT, GlueLook, GluePreview, GlueScene, GlueScenePair, PetLook,
+    PortraitBillboard, PortraitEffects, PortraitImages, PortraitPart, PortraitRider, PortraitSeat,
+    PortraitSource, PortraitStandIn, SelectLook, StableBooth,
 };
+pub(crate) use glue_booth::{
+    GhostKit, GluePetBake, GluePreviewBake, PreviewBillboard, PreviewEffects, PreviewPart,
+    PreviewRider, CreateScene, pillarbox_glue_scene, sync_glue_scene,
+};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use glue_booth::{sync_glue_booth_web, sync_glue_pet_web};
 mod light;
-pub(crate) use light::{material_variant, VariantLane};
-use light::{model_pane_light, studio_light, BoothLight};
+use light::{BoothLight, model_pane_light, studio_light};
+pub(crate) use light::{VariantLane, material_variant};
 pub(crate) mod test_bake;
 
 /// The portrait slots we bake, each with its own render layer/camera: the player + target unit
@@ -286,158 +294,6 @@ const PORTRAIT_SIZE: u32 = 256;
 /// 512² covers it crisply with a little to spare (and, being sampled square, wants more than the
 /// portraits' 256² for the taller full-body subject).
 const PAPERDOLL_SIZE: u32 = 512;
-/// Stamped on every spawned unit-model part child by the attach path ([`crate::entities`]): the
-/// part's two mesh twins — the booth poses the **skinned** twin at Stand on its own throwaway
-/// skeleton (the ref bake, wow-re §4 D2), the **static** bind-pose twin serving the boneless
-/// fallback — and its **steady exterior material** (the child may currently wear the appear-fade
-/// blend or interior variant; a portrait always wants the steady look). The booth mirrors a unit's
-/// `PortraitPart` children — the exact dressed look standing in the world.
-#[derive(Component)]
-pub(crate) struct PortraitPart {
-    pub(crate) static_mesh: Handle<Mesh>,
-    /// `None` for a WMO-display part (never skins) — the booth then draws the static twin.
-    pub(crate) skinned_mesh: Option<Handle<Mesh>>,
-    pub(crate) material: Handle<WowModelMaterial>,
-}
-
-/// Stamped on every spawned **bone-rider** mesh child (helm / shoulder / held item —
-/// [`crate::entities::equipment`]): the mesh + steady material like [`PortraitPart`], plus where it
-/// sits — the body bone it rides and the attach-point offset under that bone. The posed booth
-/// seats the rider under its throwaway skeleton's joint (so it rides the Stand pose exactly like
-/// the world instance rides its gait); the ref resets the attach *sockets* the same way (RE C3).
-///
-/// It also rides a **mirror-only carrier** — a marker child that draws nothing — where the world
-/// geometry it names is not a unit descendant we can stamp: an item glow's own render batches, which
-/// the shared effect lane spawns under its own rig ([`crate::entities::item_glow`], decision 0822).
-/// A booth bakes those at the bind pose, like any other rider.
-#[derive(Component)]
-pub(crate) struct PortraitRider {
-    pub(crate) static_mesh: Handle<Mesh>,
-    pub(crate) material: Handle<WowModelMaterial>,
-    /// The body-skeleton bone the rider's joint entity belongs to.
-    pub(crate) bone: u16,
-    /// The attach point's Bevy-space offset under that bone ([`crate::entities::BoneAttach`]).
-    pub(crate) offset: Vec3,
-    /// The **M2 attachment id** this rider's model hangs from on the body — what
-    /// [`attach_reset`] filters on. `None` where the geometry is the host model's own and sits
-    /// in no attachment node at all (see [`PortraitBillboard::attach`]).
-    pub(crate) attach: Option<u16>,
-}
-
-/// Stamped on a lightweight **anchor child** the attach path plants under a unit for each
-/// camera-facing batch it dresses in. The visible world card is a *root-spawned* entity
-/// ([`benilla_world::billboard::BillboardCard`]), never a unit descendant, so it can't be mirrored; this
-/// marker rides the unit's tree purely so the portrait / paper-doll booths (which mirror the unit's
-/// dressed descendants) can rebuild the batch as a booth card ([`BoothBillboardSpec`] +
-/// [`booth::face_booth_billboards`]) — the same reconstruction the char-create glue path does from
-/// its own parts ([`PreviewBillboard`]). Carries the centred quad, its material, where it sits, and
-/// the billboard flag.
-///
-/// Three sources plant one, exactly as on the glue path (decision 0822):
-///
-/// - The character's own **eye-glow** (undead/night-elf, geoset 302 / geoset 0 — a fullbright quad
-///   on the eye bone), planted by [`crate::entities::attach`].
-/// - An **equipped item's** camera-facing batch — a wand's gem, the held torch's `GLOWWHITE32` halo
-///   (270 of the 2681 `Item\` models author one), planted by
-///   [`crate::entities::equipment`]'s attach.
-/// - An **item glow's** batch (decision 0805) — `Spells\Enchantments\Sparkle_A.m2` is one additive
-///   quad and nothing else — planted by [`crate::entities::item_glow`].
-#[derive(Component)]
-pub(crate) struct PortraitBillboard {
-    pub(crate) mesh: Handle<Mesh>,
-    pub(crate) material: Handle<WowModelMaterial>,
-    /// The BODY bone whose booth joint the card seats on — the eye bone for the character's own
-    /// glow, the item's attach-point bone for anything an item wears.
-    pub(crate) bone: u16,
-    pub(crate) seat: PortraitSeat,
-    pub(crate) kind: benilla_formats::BillboardKind,
-    /// The **M2 attachment id** the batch's model hangs from on the body, for [`attach_reset`].
-    /// `None` for a batch of the host model ITSELF (the character's own eye-glow): the reference's
-    /// reset walks the duplicate's *attachment list*, and a geoset batch of the body is not in it.
-    pub(crate) attach: Option<u16>,
-}
-
-/// Whose model a mirrored camera-facing batch belongs to — which decides both where its pivot comes
-/// from and whether a *mounted* unit's booth keeps it.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) enum PortraitSeat {
-    /// A batch of the **rigged host model** itself (the eye-glow). Its bone's joint frame already
-    /// bakes the bone pivot (the 0130 rig identity), so it needs no offset — and it belongs to that
-    /// model's body, so a mount's own glow card prunes with the mount's meshes (a portrait shows the
-    /// rider alone, never the horse — decision 0441).
-    Body,
-    /// A batch of a **rig-less rider** — an equipped item's, an item glow's — at its seat in the
-    /// bone's joint frame (Bevy axes): the attach point **plus the batch's own model-local pivot**,
-    /// because with no rig nothing else will bake that pivot. Collected like a [`PortraitRider`]
-    /// whatever the mount state: while mounted, the character's own joints re-root INSIDE the mount
-    /// subtree, and the rider's gear must survive that.
-    Rider(Vec3),
-}
-
-impl PortraitSeat {
-    /// The offset a booth seats this batch at under its bone's joint.
-    pub(crate) fn offset(self) -> Vec3 {
-        match self {
-            PortraitSeat::Body => Vec3::ZERO,
-            PortraitSeat::Rider(at) => at,
-        }
-    }
-}
-
-/// Stamped on an **effect-bearing model** riding a unit — the equipped item whose own emitters are
-/// its whole look (the R14 PVP pauldron's `SPARKLE` twinkle, the held torch's flame — decision 0813,
-/// `#bugs` B118) and the `ItemVisuals` glow a held weapon hangs on its own attachment points
-/// (decision 0805). The world emitters are *free* entities the owner contract walks
-/// ([`benilla_world::particles::spawn_emitter`]), never unit descendants, so — like [`PortraitBillboard`] —
-/// this marker is how a booth learns they exist at all: the mirror carries the emitter records plus
-/// the composed seat, and the booth spawns its own copies against its own camera
-/// ([`booth::spawn_booth_effects`]). The glue path's [`PreviewEffects`] is the same carry assembled
-/// from data instead of mirrored from entities.
-///
-/// Which booths act on it is a *fidelity* split, not a cost one — see
-/// [`booth::spawn_booth_effects`]: the body panes are live `<PlayerModel>` widgets in the reference,
-/// the round portraits a one-shot cached bake.
-#[derive(Component)]
-pub(crate) struct PortraitEffects {
-    /// The BODY bone whose booth joint the effect model's host seats on.
-    pub(crate) bone: u16,
-    /// The **M2 attachment id** the effect-bearing model hangs from on the body, for
-    /// [`attach_reset`]. Every publisher of this marker is an item's model, so it is always
-    /// `Some`; the option shape is the other two markers'.
-    pub(crate) attach: Option<u16>,
-    /// The host's offset in that bone's joint frame (Bevy axes) — the item's attach point, plus the
-    /// glow slot's offset on the item's own model when this is a glow.
-    pub(crate) offset: Vec3,
-    pub(crate) emitters: Vec<benilla_assets::ModelEmitter>,
-}
-
-/// Stamped on a **stand-in subject** — a bodiless entity that exists only to be mirrored, whose
-/// [`PortraitPart`] / [`PortraitBillboard`] children are assembled straight from the display cache
-/// ([`crate::entities::Creatures::display_mirror`]) instead of from a unit's attach path.
-///
-/// It is what lets a body booth be pointed at a creature that has **no world object at all** — the
-/// stable window's stabled pet, which is a row in the server's character-pet cache and a
-/// `CreatureDisplayInfo` id, nothing more. The alternative would have been a second bake path
-/// beside [`sync_body_booth`]; a subject entity means the *existing* one runs verbatim, so the
-/// summoned-pet case and the stabled case cannot drift apart in framing, lighting, yaw or settle.
-///
-/// It carries the display id because that is the one thing [`sync_body_booth`] otherwise reads off
-/// the unit's [`crate::entities::NetEntity`] — and a stand-in has none, by construction. Nothing
-/// else about it is a unit: no guid, no transform of consequence, no visibility, no descriptors.
-#[derive(Component)]
-pub(crate) struct PortraitStandIn(pub(crate) u32);
-
-/// What a portrait slot currently shows — the booth's live bake, or the ref's 2D stand-in file
-/// while a unit's model is still streaming in (RE C5).
-#[derive(Clone, PartialEq)]
-pub(crate) enum PortraitSource {
-    /// The slot's off-screen render target (the model bake).
-    Live(Handle<Image>),
-    /// A flat portrait BLP (`Interface\CharacterFrame\TemporaryPortrait-…`), resolved by the UI
-    /// extract through the standard sprite path.
-    File(String),
-}
-
 /// **The GUID-keyed bake cache** — `0xc0ce7c` (decision 1640; wow-re
 /// `ui/scratch/party-oor-stats-and-portrait-law.md` §4/§5, report B334).
 ///
@@ -494,12 +350,6 @@ impl PortraitBakes {
         }
     }
 }
-
-/// The bridge between the booth and the UI: unit token (`"player"`/`"target"`) → what its portrait
-/// region shows. The UI extract pass ([`crate::ui_script`]) reads it for a `SetPortraitTexture`-bound
-/// region; the booth writes it (Live ↔ File transitions included).
-#[derive(Resource, Default)]
-pub(crate) struct PortraitImages(pub(crate) HashMap<String, PortraitSource>);
 
 /// The paper-doll model pane's live input (decision 0208 §5): the bake **yaw** in radians — the
 /// ref's `Model:SetRotation` convention (rotate-left *decrements*; the pane's default is `0.61`, a
@@ -594,25 +444,6 @@ impl Default for PetDollBooth {
 /// [`sync_body_booth`] like every other body pane, which applies only [`framing::pane_root_scale`].
 /// Ramping the display arm alone would make **the same pet change size** the moment it was
 /// dismissed — one pane telling two stories.
-#[derive(Resource)]
-pub(crate) struct StableBooth {
-    pub(crate) yaw: f32,
-    pub(crate) unit: Option<Entity>,
-    pub(crate) display_id: Option<u32>,
-}
-
-impl Default for StableBooth {
-    fn default() -> Self {
-        Self {
-            // The reference's own `<PlayerModel>` default facing (UIParent.lua:1422), seeded again
-            // by `BenillaPaperDollModel_OnLoad` the moment the window loads.
-            yaw: 0.61,
-            unit: None,
-            display_id: None,
-        }
-    }
-}
-
 /// The key identifying what a booth currently has baked. Any change in the unit's dressed look
 /// (gear swap, appearance refresh, different unit) changes it → re-bake.
 #[derive(PartialEq)]
@@ -838,8 +669,7 @@ const BOOTH_SETTLE_FRAMES: u32 = 4;
 /// [`booth::BoothRig::finish`] inserts it beside the `RigPose`; [`booth::clear_booth_rig`]
 /// strips it with the rest. Policy, not machinery — which is why it lives here and not in
 /// `benilla_world::rig_anim` beside the marker it fences (the 1160 line).
-#[derive(bevy::prelude::Component)]
-pub(crate) struct StageRig;
+pub(crate) use crate::glue_scene_host::StageRig;
 
 /// How long a [`Booth::pending`] texture hold may keep the camera awake (wall secs) before it is
 /// declared never-landing and released ([`Booth::pending_since`]). Generous against a real load —
@@ -1157,13 +987,10 @@ fn feed_gx_aspect(
 /// touched); only the camera skips, so the held frame is always one the pose just produced.
 ///
 /// `boothHalfRate` is **benilla's own CVar** (the reference has no second view to rate-limit —
-/// its doll draws in the main pass, 1069's known rent). **Default ON (half-rate) — restored by
-/// 1607.** 1444 shipped it on; 1559 turned it off on the director's look-call (a full-rate doll
-/// reads as smoother); the 08-25 weak-GPU perf reports (B329) then measured what that costs — a
-/// body-pane booth's off-screen pass every frame, ~1.6 ms at 1600×900 and **7.6 ms at 4K**
-/// (`sess/perfregress` A/B), paid on exactly the weak GPUs that reported. The director retested
-/// the 30 fps doll and it reads fine, so the cheaper default is back. Full-rate is one
-/// `/script SetCVar("boothHalfRate", 0)` away for anyone who wants the smoother cadence.
+/// its doll draws in the main pass, 1069's known rent). **Default OFF (full-rate)** per the
+/// 2026-10-03 user preference for smoother character/pet panes. Hidden panes still sleep;
+/// only visible live panes pay the extra off-screen renders. Half-rate remains available
+/// through `/script SetCVar("boothHalfRate", 1)` for weaker GPUs.
 ///
 /// Half-rate no longer slows the item effects (why 1559's revert was safe to make, and this one).
 /// Booth-lane emitters used to freeze on the camera's own `is_active` bit and so ticked once per
@@ -1182,11 +1009,9 @@ pub(crate) struct PaneRate {
 }
 
 impl Default for PaneRate {
-    /// Half-rate (1607) — see the type's doc. `Default` is hand-written rather than derived so the
-    /// shipped default is not silently `false`; the welded `cvars::tests` assert pins it to the
-    /// registered CVar either way.
+    /// Full-rate — keep this explicit and synchronized with the registered CVar.
     fn default() -> Self {
-        Self { half: true }
+        Self { half: false }
     }
 }
 
@@ -1222,7 +1047,8 @@ impl Plugin for PortraitPlugin {
             .init_resource::<PetDollBooth>()
             .init_resource::<StableBooth>()
             .init_resource::<StableStandIn>()
-            .init_resource::<glue_booth::GluePreview>()
+            .init_resource::<GluePreview>()
+            .init_resource::<GlueScenePair>()
             .init_resource::<glue_booth::GluePreviewBake>()
             .init_resource::<glue_booth::GluePetBake>()
             .init_resource::<dressup::DressUpPreview>()
@@ -1262,13 +1088,19 @@ impl Plugin for PortraitPlugin {
                     // always baked against LAST frame's stage, which is one frame of the wrong
                     // character in the new race's scene on every click.
                     glue_booth::sync_glue_scene,
+                    #[cfg(not(target_arch = "wasm32"))]
                     glue_booth::sync_glue_booth,
+                    #[cfg(target_arch = "wasm32")]
+                    glue_booth::sync_glue_booth_web,
                     // The glue screens' FFX state, off the same look every screen already writes.
                     glue_booth::sync_glue_ffx,
                     // After the scene's framing: the viewport/clear its law decided (1619).
                     glue_booth::pillarbox_glue_scene,
                     // After the scene: the pet's seat and its light are the scene's to publish.
+                    #[cfg(not(target_arch = "wasm32"))]
                     glue_booth::sync_glue_pet,
+                    #[cfg(target_arch = "wasm32")]
+                    glue_booth::sync_glue_pet_web,
                     dressup::sync_dressup_booth,
                     // After the syncs, which are the only writers of the yaw it spends (1559).
                     booth::drive_booth_turn,
@@ -1923,7 +1755,6 @@ fn sync_portraits(
     mut wow_mats: ResMut<Assets<WowModelMaterial>>,
     mut env_cache: Local<Option<bool>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
     interact_npc: Res<crate::ui_session::InteractNpc>,
     mut party: PartyBooths,
 ) {
@@ -2180,7 +2011,6 @@ fn sync_portraits(
                         .as_ref()
                         .map(|ibp| (r.skeleton, ibp, r.animations))
                 }),
-                anim_data.as_deref().map(|a| &a.0),
                 BoothMotion::Frozen,
                 // Open hands, and NOT because "a still portrait sheaths its weapons" — it does
                 // not; it mirrors whatever the body holds, same as a pane. The reference's
@@ -2267,7 +2097,6 @@ fn sync_paperdoll(
     mut last_pose: Local<Option<(f32, f32)>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
     framing_in: BoothFraming,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
 ) {
     if test_mode(&mut env_cache) {
         return; // the test bake owns the booths (it drives the paper doll too, see `bake_test`)
@@ -2288,7 +2117,6 @@ fn sync_paperdoll(
         &look,
         &mut wow_mats,
         &mut cams,
-        anim_data.as_deref(),
         &framing_in.panes,
     );
 }
@@ -2310,7 +2138,6 @@ fn sync_inspect_booth(
     mut last_pose: Local<Option<(f32, f32)>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
     framing_in: BoothFraming,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
 ) {
     if test_mode(&mut env_cache) {
         return;
@@ -2331,7 +2158,6 @@ fn sync_inspect_booth(
         &look,
         &mut wow_mats,
         &mut cams,
-        anim_data.as_deref(),
         &framing_in.panes,
     );
 }
@@ -2353,7 +2179,6 @@ fn sync_petdoll_booth(
     mut last_pose: Local<Option<(f32, f32)>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
     framing_in: BoothFraming,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
 ) {
     if test_mode(&mut env_cache) {
         return;
@@ -2374,7 +2199,6 @@ fn sync_petdoll_booth(
         &look,
         &mut wow_mats,
         &mut cams,
-        anim_data.as_deref(),
         &framing_in.panes,
     );
 }
@@ -2482,7 +2306,6 @@ fn sync_stable_booth(
     mut last_pose: Local<Option<(f32, f32)>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
     framing_in: BoothFraming,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
 ) {
     if test_mode(&mut env_cache) {
         return;
@@ -2503,7 +2326,6 @@ fn sync_stable_booth(
         &look,
         &mut wow_mats,
         &mut cams,
-        anim_data.as_deref(),
         &framing_in.panes,
     );
 }
@@ -2533,7 +2355,6 @@ fn sync_body_booth(
     look: &DressedLook,
     wow_mats: &mut Assets<WowModelMaterial>,
     cams: &mut Query<(&BoothCam, &mut Transform, &mut Projection)>,
-    anim_data: Option<&crate::creature_anim::AnimData>,
     panes: &BoothPanes,
 ) {
     let Some(booth) = booths.0.get_mut(slot) else {
@@ -2703,7 +2524,6 @@ fn sync_body_booth(
                     .as_ref()
                     .map(|ibp| (r.skeleton, ibp, r.animations))
             }),
-            anim_data.map(|a| &a.0),
             // The pane ANIMATES: Stand loops and the global-sequence bones run, which is what the
             // reference's `<PlayerModel>` widget does (decision 0822 §4 read it as live-rendering
             // and left the pose as a look call; the director made that call — decision 1069).

@@ -16,10 +16,14 @@ use bevy::prelude::*;
 use benilla_formats::CreatureVoiceCatalog;
 use benilla_protocol::EntityKind;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::creature_anim::AnimSoundEvent;
 use crate::entities::mount::{MountBody, MountChild};
 use crate::net::{FieldChanged, NetEntity, ObjectStore, SelfPlayer};
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::kit::{
@@ -33,11 +37,12 @@ use super::{AudioListener, SoundConfig, SoundOutput};
 #[derive(Resource)]
 pub(super) struct CreatureVoices(pub(super) CreatureVoiceCatalog);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_creature_voices(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_creature_voice_catalog(&mut chain)
+        benilla_formats::load_creature_voice_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -571,7 +576,7 @@ fn creature_anim_vocals(
     units: Query<(&NetEntity, &GlobalTransform, Has<SelfPlayer>)>,
     // The class-5 window. A `Local` is exactly one instance, which is the point: the reference's
     // `[0xc4e0e4]` is a single timestamp for the whole world, not one per unit.
-    mut stand_window: Local<Option<std::time::Duration>>,
+    mut stand_window: Local<Option<benilla_time::Duration>>,
     time: Res<Time>,
     voices: Option<Res<CreatureVoices>>,
     kits: Option<ResMut<SoundKits>>,
@@ -697,20 +702,21 @@ fn fall_landing_vocals(
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, load_creature_voices.after(AssetSet::Open))
-        .add_systems(
-            Update,
-            (
-                death_vocals,
-                creature_anim_vocals,
-                ai_reaction_vocals,
-                pet_talk_vocals,
-                pet_dismiss_sounds,
-                fall_landing_vocals,
-                creature_body_loops,
-            )
-                .in_set(WorldStage::Present),
-        );
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_creature_voices.after(AssetSet::Open));
+    app.add_systems(
+        Update,
+        (
+            death_vocals,
+            creature_anim_vocals,
+            ai_reaction_vocals,
+            pet_talk_vocals,
+            pet_dismiss_sounds,
+            fall_landing_vocals,
+            creature_body_loops,
+        )
+            .in_set(WorldStage::Present),
+    );
 }
 
 #[cfg(test)]

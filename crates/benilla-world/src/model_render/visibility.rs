@@ -17,6 +17,73 @@ use crate::view::WorldCamera;
 use crate::wmo_portal::{WmoGroupVis, WmoPortalInstance};
 use benilla_assets::materials::WowModelMaterial;
 
+/// Camera-independent world sphere for the exact source transform/AABB ticks.
+/// Lives with the part, so despawn also frees the cache without a global roster.
+#[derive(Component)]
+pub(super) struct WorldBounds {
+    transform_tick: bevy::ecs::change_detection::Tick,
+    aabb_tick: Option<bevy::ecs::change_detection::Tick>,
+    center: Vec3,
+    radius: f32,
+}
+
+type BoundsDirty = Or<(
+    Changed<GlobalTransform>,
+    Changed<Aabb>,
+    Without<WorldBounds>,
+)>;
+
+pub(super) fn cache_world_bounds(
+    mut commands: Commands,
+    changed: Query<Entity, (With<ModelPart>, BoundsDirty)>,
+    mut removed: RemovedComponents<Aabb>,
+    mut parts: Query<(
+        &ModelPart,
+        Ref<GlobalTransform>,
+        Option<Ref<Aabb>>,
+        Option<&mut WorldBounds>,
+    )>,
+) {
+    for entity in changed.iter().chain(removed.read()) {
+        let Ok((part, xf, aabb, cached)) = parts.get_mut(entity) else {
+            continue;
+        };
+        if !matches!(part.kind, ModelKind::Doodad | ModelKind::Wmo) {
+            continue;
+        }
+        let transform_tick = xf.last_changed();
+        let aabb_tick = aabb.as_ref().map(|a| a.last_changed());
+        if cached
+            .as_ref()
+            .is_some_and(|c| c.transform_tick == transform_tick && c.aabb_tick == aabb_tick)
+        {
+            continue;
+        }
+        let (center, radius) = world_sphere(&xf, aabb.as_deref());
+        let bounds = WorldBounds {
+            transform_tick,
+            aabb_tick,
+            center,
+            radius,
+        };
+        if let Some(mut cached) = cached {
+            *cached = bounds;
+        } else {
+            commands.entity(entity).insert(bounds);
+        }
+    }
+}
+
+fn world_sphere(xf: &GlobalTransform, aabb: Option<&Aabb>) -> (Vec3, f32) {
+    match aabb {
+        Some(a) => (
+            xf.transform_point(Vec3::from(a.center)),
+            Vec3::from(a.half_extents).length() * xf.affine().matrix3.x_axis.length(),
+        ),
+        None => (xf.translation(), 0.0),
+    }
+}
+
 /// Show/hide each model submesh from the layer/type toggles **and** the faithful draw-distance cull.
 /// The toggles are a dev inspector; the distance test is real fidelity — in 1.12 every doodad/WMO
 /// **hard-pops** out past the `farclip` radius from the camera (no fade, no distance-LOD; the cull tests
@@ -79,12 +146,13 @@ pub(super) fn apply_model_visibility(
         Option<&DoodadFade>,
         Option<&mut MeshTag>,
         Option<&mut MeshMaterial3d<WowModelMaterial>>,
-        Option<&Aabb>,
+        Option<Ref<Aabb>>,
         Option<Ref<WmoGroupVis>>,
         Option<Ref<crate::doodad_anim::MatAnim>>,
         Has<crate::exterior_cull::ExteriorScene>,
         Option<Ref<super::FarSideOfWater>>,
         Option<&crate::billboard::BillboardCard>,
+        Option<Ref<WorldBounds>>,
     )>,
     // The building's own MLIQ surfaces (canals, dungeon pools, Ragefire's lava). They carry a
     // `WmoGroupVis` like every other piece of their group but no `ModelPart` — they are not model
@@ -153,6 +221,7 @@ pub(super) fn apply_model_visibility(
             exterior,
             far_side,
             card,
+            bounds,
         )| {
             if scene_still
                 && !unmarked.contains(&entity)
@@ -160,6 +229,8 @@ pub(super) fn apply_model_visibility(
                 && !group_vis.as_ref().is_some_and(|g| g.is_changed())
                 && !mat_anim.as_ref().is_some_and(|a| a.is_changed())
                 && !far_side.as_ref().is_some_and(|f| f.is_changed())
+                && !aabb.as_ref().is_some_and(|a| a.is_changed())
+                && !bounds.as_ref().is_some_and(|b| b.is_changed())
             {
                 return;
             }
@@ -171,7 +242,6 @@ pub(super) fn apply_model_visibility(
             // server's own visibility stream (already range-limited) and have separate unit-draw rules, so
             // they're not culled here.
             let distance_culled = matches!(part.kind, ModelKind::Doodad | ModelKind::Wmo);
-            let pos = xf.translation();
             // Cull by the NEAREST point of the submesh's bounding sphere, not its origin: an object
             // straddling the hard far-clip wall stays drawn so the per-pixel wall (terrain/wow_model.wgsl)
             // DISSOLVES it through the boundary, instead of the whole thing popping when its origin crosses
@@ -181,14 +251,16 @@ pub(super) fn apply_model_visibility(
             let in_range = match (distance_culled, cam_pos, cam_fwd) {
                 (false, _, _) | (_, None, _) | (_, _, None) => true,
                 (true, Some(c), Some(fwd)) => {
-                    let (center, radius) = match aabb {
-                        Some(a) => (
-                            xf.transform_point(Vec3::from(a.center)),
-                            Vec3::from(a.half_extents).length()
-                                * xf.affine().matrix3.x_axis.length(),
-                        ),
-                        None => (pos, 0.0),
-                    };
+                    // Exact source ticks also guard against a transform/bounds
+                    // writer running between cache preparation and this reader.
+                    let (center, radius) = bounds
+                        .as_ref()
+                        .filter(|b| {
+                            b.transform_tick == xf.last_changed()
+                                && b.aabb_tick == aabb.as_ref().map(|a| a.last_changed())
+                        })
+                        .map(|b| (b.center, b.radius))
+                        .unwrap_or_else(|| world_sphere(&xf, aabb.as_deref()));
                     // Planar depth along the camera-forward axis (the SAME coordinate the per-pixel wall
                     // uses) of the bound's nearest point — so the cull and the wall agree and the object
                     // dissolves through the boundary with no pop, even off-centre. The rule itself lives
@@ -250,7 +322,7 @@ pub(super) fn apply_model_visibility(
             // instead of overwriting it. Untagged content (units, GameObjects) is exempt by the
             // carved law; the camera's own building is exempt because it is not exterior to itself.
             let own_building = group_vis.is_some_and(|gv| Some(gv.instance) == own_instance);
-            let exterior_ok = !exterior || own_building || gate.admits(&xf, aabb);
+            let exterior_ok = !exterior || own_building || gate.admits(&xf, aabb.as_deref());
 
             // **A billboard card draws only while the model it is a batch OF draws** (decision
             // 1409). A card is split out to a world root because its transform belongs to the

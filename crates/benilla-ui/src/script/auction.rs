@@ -40,9 +40,9 @@
 //! records why the label follows the client rather than the server: it is a client artifact, and
 //! benilla renders what the director's client renders.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
-use super::binding_abi::flag;
+use super::binding_abi::neutral_flag;
 use super::cursor::{self, CursorPayload};
 use super::Model;
 
@@ -344,38 +344,30 @@ fn deposit_for(rate: u32, stack_value: u32, minutes: u32) -> u32 {
     u32::try_from(per_unit.saturating_mul(units)).unwrap_or(u32::MAX)
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumAuctionItems(type) → numBatchAuctions, totalAuctions. The pair is the whole paging
     // model: batch is what this packet carried (≤50), total is what matched before the cap.
-    g.set(
-        "GetNumAuctionItems",
-        lua.create_function(|lua, kind: String| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some((batch, total)) = list_index(&kind).and_then(|i| {
-                model
-                    .auction
-                    .as_ref()
-                    .map(|a| (a.lists[i].rows.len() as i64, i64::from(a.lists[i].total)))
-            }) else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Integer(0),
-                    Value::Integer(0),
-                ]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(batch),
-                Value::Integer(total.max(batch)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetNumAuctionItems", |lua, kind: String| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some((batch, total)) = list_index(&kind).and_then(|i| {
+            model
+                .auction
+                .as_ref()
+                .map(|a| (a.lists[i].rows.len() as i64, i64::from(a.lists[i].total)))
+        }) else {
+            return Ok(MultiValue::from(vec![Value::Integer(0), Value::Integer(0)]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::Integer(batch),
+            Value::Integer(total.max(batch)),
+        ]))
+    })?;
 
     // GetAuctionItemInfo(type, index) → the 12-tuple. `highBidder` is a FLAG, not a name — the
     // seller's name is the last return, and it is what the Browse "Seller" column shows.
-    g.set(
+    lua.register_function(
         "GetAuctionItemInfo",
-        lua.create_function(|lua, (kind, index): (String, usize)| {
+        |lua, (kind, index): (String, usize)| {
             let row = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 row_at(&model, &kind, index)
@@ -385,7 +377,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 // out-of-range index and an item-cache miss all share it, with a hard `count = 1`
                 // and `quality = -1` (wow-re §5 TU-3, one shared exit at `0x4cf1ec`). Callers
                 // destructure all twelve unguarded, so a short return throws.
-                return Ok(MultiValue::from_vec(vec![
+                return Ok(MultiValue::from(vec![
                     Value::Nil,         // name
                     Value::Nil,         // texture
                     Value::Integer(1),  // count
@@ -407,49 +399,47 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 super::item_stats::item_usable_by_id(&model, r.item_id)
             };
-            let opt_str = |s: &Option<String>| -> mlua::Result<Value> {
-                Ok(match s {
-                    Some(v) => Value::String(lua.create_string(v)?),
-                    None => Value::Nil,
-                })
+            let opt_str = |s: &Option<String>| match s {
+                Some(v) => Value::from(v.clone()),
+                None => Value::Nil,
             };
-            Ok(MultiValue::from_vec(vec![
-                opt_str(&r.name)?,
-                opt_str(&r.texture)?,
+            Ok(MultiValue::from(vec![
+                opt_str(&r.name),
+                opt_str(&r.texture),
                 Value::Integer(i64::from(r.count)),
                 match r.quality {
                     Some(q) => Value::Integer(i64::from(q)),
                     None => Value::Nil,
                 },
-                flag(can_use),
+                neutral_flag(can_use),
                 Value::Integer(i64::from(r.level)),
                 Value::Integer(i64::from(r.min_bid)),
                 Value::Integer(i64::from(r.min_increment)),
                 Value::Integer(i64::from(r.buyout_price)),
                 Value::Integer(i64::from(r.bid_amount)),
-                flag(r.high_bidder),
-                opt_str(&r.owner)?,
+                neutral_flag(r.high_bidder),
+                opt_str(&r.owner),
             ]))
-        })?,
+        },
     )?;
 
     // GetAuctionItemTimeLeft(type, index) → 1..4, the bucket the row's text and tooltip key off.
     // 0 for a row we have no answer for yet; the reference has no live countdown (its ticking
     // version is commented out), so this only moves when a fresh list lands.
-    g.set(
+    lua.register_function(
         "GetAuctionItemTimeLeft",
-        lua.create_function(|lua, (kind, index): (String, usize)| {
+        |lua, (kind, index): (String, usize)| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(row_at(&model, &kind, index).map_or(0, |r| i64::from(r.time_left)))
-        })?,
+        },
     )?;
 
     // GetAuctionItemLink(type, index) → the full item link. Auction rows carry enchant, random
     // property and suffix on the wire, so the app builds the complete link rather than the
     // zeroed-tail one the bag path settles for.
-    g.set(
+    lua.register_function(
         "GetAuctionItemLink",
-        lua.create_function(|lua, (kind, index): (String, usize)| {
+        |lua, (kind, index): (String, usize)| {
             let link = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 row_at(&model, &kind, index).and_then(|r| r.link)
@@ -457,10 +447,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // A miss returns NO values at all — not nil (wow-re §5 TU-3). `DressUpItemLink(nil)`
             // and `nil` reaching a chat insert behave differently from an empty argument list.
             Ok(match link {
-                Some(l) => MultiValue::from_vec(vec![Value::String(lua.create_string(&l)?)]),
+                Some(l) => MultiValue::from(vec![Value::from(l)]),
                 None => MultiValue::new(),
             })
-        })?,
+        },
     )?;
 
     // GetSelectedAuctionItem(type) → the 1-based selected row, or 0 for none.
@@ -469,32 +459,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // That indirection is the whole reason a re-sort cannot silently move the selection onto a
     // different auction: the id follows the row wherever the comparator puts it, and an auction
     // that has left the page simply stops resolving instead of pointing at its neighbour.
-    g.set(
-        "GetSelectedAuctionItem",
-        lua.create_function(|lua, kind: String| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(i) = list_index(&kind) else {
-                return Ok(0i64);
-            };
-            let id = model.auction_selected[i];
-            if id == 0 {
-                return Ok(0i64);
-            }
-            Ok(model.auction.as_ref().map_or(0, |a| {
-                a.lists[i]
-                    .rows
-                    .iter()
-                    .position(|r| r.auction_id == id)
-                    .map_or(0, |p| p as i64 + 1)
-            }))
-        })?,
-    )?;
+    lua.register_function("GetSelectedAuctionItem", |lua, kind: String| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(i) = list_index(&kind) else {
+            return Ok(0i64);
+        };
+        let id = model.auction_selected[i];
+        if id == 0 {
+            return Ok(0i64);
+        }
+        Ok(model.auction.as_ref().map_or(0, |a| {
+            a.lists[i]
+                .rows
+                .iter()
+                .position(|r| r.auction_id == id)
+                .map_or(0, |p| p as i64 + 1)
+        }))
+    })?;
 
     // SetSelectedAuctionItem(type, index) — takes a row position and remembers the auction it
     // names. An out-of-range index clears the selection rather than remembering a phantom.
-    g.set(
+    lua.register_function(
         "SetSelectedAuctionItem",
-        lua.create_function(|lua, (kind, index): (String, usize)| {
+        |lua, (kind, index): (String, usize)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let Some(i) = list_index(&kind) else {
                 return Ok(());
@@ -506,106 +493,94 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .map_or(0, |r| r.auction_id);
             model.auction_selected[i] = id;
             Ok(())
-        })?,
+        },
     )?;
 
     // SortAuctionItems(type, key) — queue the header click; the app owns the stacks and pushes the
     // reordered rows back. The reference raises on a bad type, and that Usage string is recorded,
     // so it is reproduced here rather than swallowed.
-    g.set(
-        "SortAuctionItems",
-        lua.create_function(|lua, (kind, key): (String, String)| {
-            let Some(i) = list_index(&kind) else {
-                return Err(mlua::Error::RuntimeError(
-                    "Usage: SortAuctionItems(\"type\", \"sort\")".into(),
-                ));
-            };
-            if !SORT_KEYS.contains(&key.as_str()) {
-                return Err(mlua::Error::RuntimeError(
-                    "Usage: SortAuctionItems(\"type\", \"sort\")".into(),
-                ));
-            }
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.auction_sorts.push((i, key));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SortAuctionItems", |lua, (kind, key): (String, String)| {
+        let Some(i) = list_index(&kind) else {
+            return Err(benilla_lua::Error::runtime(
+                "Usage: SortAuctionItems(\"type\", \"sort\")",
+            ));
+        };
+        if !SORT_KEYS.contains(&key.as_str()) {
+            return Err(benilla_lua::Error::runtime(
+                "Usage: SortAuctionItems(\"type\", \"sort\")",
+            ));
+        }
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.auction_sorts.push((i, key));
+        Ok(())
+    })?;
 
     // IsAuctionSortReversed(type, key) → 1/nil. Answers for ANY key the stack remembers, not just
     // the primary one — which is the whole reason a non-primary column's arrow can point down.
-    g.set(
+    lua.register_function(
         "IsAuctionSortReversed",
-        lua.create_function(|lua, (kind, key): (String, String)| {
+        |lua, (kind, key): (String, String)| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let rev = list_index(&kind)
                 .zip(model.auction.as_ref())
                 .is_some_and(|(i, a)| a.lists[i].reversed(&key));
-            Ok(flag(rev))
-        })?,
+            Ok(neutral_flag(rev))
+        },
     )?;
 
     // CanSendAuctionQuery() → 1/nil. Polled every frame by the Search button's OnUpdate, because
     // a throttled query is dropped silently and there is no failure event to react to.
-    g.set(
-        "CanSendAuctionQuery",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.auction_can_query))
-        })?,
-    )?;
+    lua.register_function("CanSendAuctionQuery", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(model.auction_can_query))
+    })?;
 
     // GetAuctionItemClasses() → the class names, in the reference's own menu order. The ORDER and
     // the set are structural (ten auctionable classes); every string is the player's own
     // ItemClass.dbc row, so none of Blizzard's text ships with us (decisions 1234/1260). Static —
     // pushed at login, read by the stock addon at its load (1971), no session required.
-    g.set(
-        "GetAuctionItemClasses",
-        lua.create_function(|lua, ()| {
-            let names: Vec<String> = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .auction_item_classes
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect()
-            };
-            let mut out = Vec::with_capacity(names.len());
-            for n in &names {
-                out.push(Value::String(lua.create_string(n)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetAuctionItemClasses", |lua, ()| {
+        let names: Vec<String> = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .auction_item_classes
+                .iter()
+                .map(|c| c.name.clone())
+                .collect()
+        };
+        let mut out = Vec::with_capacity(names.len());
+        for n in &names {
+            out.push(Value::from(n.clone()));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // GetAuctionItemSubClasses(classIndex) → the subclass names under a 1-based menu class. An
     // out-of-range index returns nothing, which is the reference's own bound-with-no-error.
-    g.set(
-        "GetAuctionItemSubClasses",
-        lua.create_function(|lua, class_index: usize| {
-            let names: Vec<String> = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                class_index
-                    .checked_sub(1)
-                    .and_then(|i| model.auction_item_classes.get(i))
-                    .map_or_else(Vec::new, |c| {
-                        c.subclasses.iter().map(|s| s.name.clone()).collect()
-                    })
-            };
-            let mut out = Vec::with_capacity(names.len());
-            for n in &names {
-                out.push(Value::String(lua.create_string(n)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetAuctionItemSubClasses", |lua, class_index: usize| {
+        let names: Vec<String> = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            class_index
+                .checked_sub(1)
+                .and_then(|i| model.auction_item_classes.get(i))
+                .map_or_else(Vec::new, |c| {
+                    c.subclasses.iter().map(|s| s.name.clone()).collect()
+                })
+        };
+        let mut out = Vec::with_capacity(names.len());
+        for n in &names {
+            out.push(Value::from(n.clone()));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // GetAuctionInvTypes(classIndex, subclassIndex) → the 14 inventory-slot GlobalString KEYS, or
     // nothing. The pair only decides WHETHER the list is offered — the list itself is fixed. Which
     // pairs offer it is pushed as data (`has_inv_types`), so decision 1511's INTERIM on that
     // predicate is corrected app-side, not here.
-    g.set(
+    lua.register_function(
         "GetAuctionInvTypes",
-        lua.create_function(|lua, (class_index, sub_index): (usize, usize)| {
+        |lua, (class_index, sub_index): (usize, usize)| {
             let offers = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 class_index
@@ -619,85 +594,76 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             let mut out = Vec::with_capacity(AUCTION_INV_TYPES.len());
             for key in AUCTION_INV_TYPES {
-                out.push(Value::String(lua.create_string(key)?));
+                out.push(Value::from(key));
             }
-            Ok(MultiValue::from_vec(out))
-        })?,
+            Ok(MultiValue::from(out))
+        },
     )?;
 
     // QueryAuctionItems(name, minLevel, maxLevel, invTypeIndex, classIndex, subclassIndex, page,
     // isUsable, qualityIndex) — nine arguments (TBC's tenth, exactMatch, does not exist on 5875).
     // The level boxes hand us strings, and every filter index is 1-based into the pushed tables;
     // the app turns those into the wire's class/subclass ids and its 0xFFFFFFFF sentinels.
-    g.set(
-        "QueryAuctionItems",
-        lua.create_function(|lua, args: MultiValue| {
-            let a: Vec<Value> = args.into_iter().collect();
-            let num = |i: usize| -> Option<u32> {
-                match a.get(i) {
-                    Some(Value::Integer(n)) => u32::try_from(*n).ok(),
-                    Some(Value::Number(n)) => (*n >= 0.0).then_some(*n as u32),
-                    // The min/max level boxes are edit boxes: their text arrives as a string.
-                    Some(Value::String(s)) => s.to_str().ok()?.trim().parse::<u32>().ok(),
-                    _ => None,
-                }
-            };
-            let name = match a.first() {
-                Some(Value::String(s)) => s.to_str().map(|s| s.to_string()).unwrap_or_default(),
-                _ => String::new(),
-            };
-            let truthy = |i: usize| {
-                !matches!(
-                    a.get(i),
-                    None | Some(Value::Nil) | Some(Value::Boolean(false))
-                )
-            };
-            // qualityIndex arrives as the dropdown's value: -1 for All, else the quality itself.
-            let quality = match a.get(8) {
-                Some(Value::Integer(n)) if *n >= 0 => u32::try_from(*n).ok(),
-                Some(Value::Number(n)) if *n >= 0.0 => Some(*n as u32),
+    lua.register_function("QueryAuctionItems", |lua, args: MultiValue| {
+        let a: Vec<Value> = args.into_iter().collect();
+        let num = |i: usize| -> Option<u32> {
+            match a.get(i) {
+                Some(Value::Integer(n)) => u32::try_from(*n).ok(),
+                Some(Value::Number(n)) => (*n >= 0.0).then_some(*n as u32),
+                // The min/max level boxes are edit boxes: their text arrives as a string.
+                Some(Value::String(s)) => s.as_str().ok()?.trim().parse::<u32>().ok(),
                 _ => None,
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.auction_query = Some(AuctionQuery {
-                name,
-                min_level: num(1).unwrap_or(0),
-                max_level: num(2).unwrap_or(0),
-                inv_type: num(3).filter(|n| *n > 0),
-                class: num(4).filter(|n| *n > 0),
-                sub_class: num(5).filter(|n| *n > 0),
-                quality,
-                page: num(6).unwrap_or(0),
-                usable_only: truthy(7),
-            });
-            Ok(())
-        })?,
-    )?;
+            }
+        };
+        let name = match a.first() {
+            Some(Value::String(s)) => s.as_str().map(|s| s.to_string()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let truthy = |i: usize| {
+            !matches!(
+                a.get(i),
+                None | Some(Value::Nil) | Some(Value::Boolean(false))
+            )
+        };
+        // qualityIndex arrives as the dropdown's value: -1 for All, else the quality itself.
+        let quality = match a.get(8) {
+            Some(Value::Integer(n)) if *n >= 0 => u32::try_from(*n).ok(),
+            Some(Value::Number(n)) if *n >= 0.0 => Some(*n as u32),
+            _ => None,
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.auction_query = Some(AuctionQuery {
+            name,
+            min_level: num(1).unwrap_or(0),
+            max_level: num(2).unwrap_or(0),
+            inv_type: num(3).filter(|n| *n > 0),
+            class: num(4).filter(|n| *n > 0),
+            sub_class: num(5).filter(|n| *n > 0),
+            quality,
+            page: num(6).unwrap_or(0),
+            usable_only: truthy(7),
+        });
+        Ok(())
+    })?;
 
     // GetOwnerAuctionItems([page]) / GetBidderAuctionItems([page]) — the other two tabs' fetches.
     // Neither is throttled the way Browse is; both default to page 0.
-    g.set(
-        "GetOwnerAuctionItems",
-        lua.create_function(|lua, page: Option<u32>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.auction_owner_query = Some(page.unwrap_or(0));
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "GetBidderAuctionItems",
-        lua.create_function(|lua, page: Option<u32>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.auction_bidder_query = Some(page.unwrap_or(0));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("GetOwnerAuctionItems", |lua, page: Option<u32>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.auction_owner_query = Some(page.unwrap_or(0));
+        Ok(())
+    })?;
+    lua.register_function("GetBidderAuctionItems", |lua, page: Option<u32>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.auction_bidder_query = Some(page.unwrap_or(0));
+        Ok(())
+    })?;
 
     // PlaceAuctionBid(type, index, bidAmount). A buyout is not a distinct verb — it is a bid of
     // exactly the buyout price, which is why the confirmation popup calls straight into this.
-    g.set(
+    lua.register_function(
         "PlaceAuctionBid",
-        lua.create_function(|lua, (kind, index, amount): (String, u32, u32)| {
+        |lua, (kind, index, amount): (String, u32, u32)| {
             let Some(list) = list_index(&kind) else {
                 return Ok(());
             };
@@ -708,13 +674,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 amount,
             });
             Ok(())
-        })?,
+        },
     )?;
 
     // StartAuction(minBid, buyoutPrice, runTime) — runTime in minutes.
-    g.set(
+    lua.register_function(
         "StartAuction",
-        lua.create_function(|lua, (min_bid, buyout, duration): (u32, u32, u32)| {
+        |lua, (min_bid, buyout, duration): (u32, u32, u32)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.auction_start = Some(AuctionStartRequest {
                 min_bid,
@@ -722,103 +688,85 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 duration,
             });
             Ok(())
-        })?,
+        },
     )?;
 
     // CancelAuction(index) — always an "owner" row.
-    g.set(
-        "CancelAuction",
-        lua.create_function(|lua, index: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.auction_cancels.push(index);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CancelAuction", |lua, index: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.auction_cancels.push(index);
+        Ok(())
+    })?;
 
     // GetAuctionHouseDepositRate() → the percentage, off AuctionHouse.dbc at this session's house.
     // The shipped reference addon never calls it; third-party addons may, so we ship it.
-    g.set(
-        "GetAuctionHouseDepositRate",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .auction
-                .as_ref()
-                .map_or(0, |a| i64::from(a.deposit_percent)))
-        })?,
-    )?;
+    lua.register_function("GetAuctionHouseDepositRate", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .auction
+            .as_ref()
+            .map_or(0, |a| i64::from(a.deposit_percent)))
+    })?;
 
     // CalculateAuctionDeposit(runTime) → copper. See `deposit_for` — this is the client's own
     // arithmetic, truncation included, not the server's charge.
-    g.set(
-        "CalculateAuctionDeposit",
-        lua.create_function(|lua, minutes: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let rate = model.auction.as_ref().map_or(0, |a| a.deposit_percent);
-            let stack_value = sell_item_info(&model).map_or(0, |(_, _, _, _, _, v)| v);
-            Ok(i64::from(deposit_for(rate, stack_value, minutes)))
-        })?,
-    )?;
+    lua.register_function("CalculateAuctionDeposit", |lua, minutes: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let rate = model.auction.as_ref().map_or(0, |a| a.deposit_percent);
+        let stack_value = sell_item_info(&model).map_or(0, |(_, _, _, _, _, v)| v);
+        Ok(i64::from(deposit_for(rate, stack_value, minutes)))
+    })?;
 
     // GetAuctionSellItemInfo() → name, texture, count, quality, canUse, price. SIX values ALWAYS —
     // the empty slot pushes a hard count of 1 and a quality of -1, never nils, because the
     // reference Lua reads that count unguarded the moment the slot empties.
-    g.set(
-        "GetAuctionSellItemInfo",
-        lua.create_function(|lua, ()| {
-            let info = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                sell_item_info(&model)
-            };
-            let Some((name, texture, count, quality, can_use, price)) = info else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Integer(1),
-                    Value::Integer(-1),
-                    Value::Nil,
-                    Value::Integer(0),
-                ]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                if name.is_empty() {
-                    Value::Nil
-                } else {
-                    Value::String(lua.create_string(&name)?)
-                },
-                match &texture {
-                    Some(t) => Value::String(lua.create_string(t)?),
-                    None => Value::Nil,
-                },
-                Value::Integer(i64::from(count)),
-                Value::Integer(quality),
-                flag(can_use),
-                Value::Integer(i64::from(price)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetAuctionSellItemInfo", |lua, ()| {
+        let info = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            sell_item_info(&model)
+        };
+        let Some((name, texture, count, quality, can_use, price)) = info else {
+            return Ok(MultiValue::from(vec![
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(1),
+                Value::Integer(-1),
+                Value::Nil,
+                Value::Integer(0),
+            ]));
+        };
+        Ok(MultiValue::from(vec![
+            if name.is_empty() {
+                Value::Nil
+            } else {
+                Value::from(name)
+            },
+            match &texture {
+                Some(t) => Value::from(t.clone()),
+                None => Value::Nil,
+            },
+            Value::Integer(i64::from(count)),
+            Value::Integer(quality),
+            neutral_flag(can_use),
+            Value::Integer(i64::from(price)),
+        ]))
+    })?;
 
     // ClickAuctionSellItemButton() — attach the cursor's item, or take back the attached one. The
     // mail send slot's exact shape (decision 0216's rails): every cursor write is followed by both
     // queues, which is the law that keeps CURSOR_UPDATE and ITEM_LOCK_CHANGED honest.
-    g.set(
-        "ClickAuctionSellItemButton",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            click_auction_sell_item(&mut model);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ClickAuctionSellItemButton", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        click_auction_sell_item(&mut model);
+        Ok(())
+    })?;
 
     // CloseAuctionHouse() — the client-side close. Vanilla sends nothing; the session simply ends.
-    g.set(
-        "CloseAuctionHouse",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.auction_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseAuctionHouse", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.auction_close = true;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -996,7 +944,7 @@ mod tests {
     /// empty row.
     #[test]
     fn a_missing_row_still_answers_twelve_values() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let n = s.arity(r#"GetAuctionItemInfo("list", 99)"#).unwrap();
         assert_eq!(n, 12, "twelve, even with no session open at all");
         let (count, quality): (i64, i64) = s

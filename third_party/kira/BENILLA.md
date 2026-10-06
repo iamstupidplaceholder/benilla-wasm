@@ -33,6 +33,13 @@ below the granularity the reference itself updates at.
 
 ## How to check
 
+Browser admission also adds `StaticSoundData::from_cursor_bounded` in
+`sound/static_sound/data/from_file.rs`: the same Symphonia decoder stops before
+appending a packet that exceeds the PCM residency budget. Existing native loaders
+delegate with an unlimited budget, preserving their behavior. This avoids a
+separate browser codec and prevents short-SFX delivery from allocating unbounded
+decoded data. Streaming's native decode thread has not yet been adapted.
+
 `git diff --no-index <registry>/kira-0.12.1/src/track/sub.rs third_party/kira/src/track/sub.rs`
 (after `sed 's/\r$//'` on the upstream copy) shows the patch and nothing else; every other file
 is byte-identical to the registry crate. The mixer's own tests (`cargo test -p benilla-app

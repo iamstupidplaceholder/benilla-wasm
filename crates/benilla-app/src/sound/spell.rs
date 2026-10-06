@@ -11,8 +11,11 @@
 use bevy::ecs::entity::EntityHashMap;
 use bevy::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::creature_anim::SpellKitSound;
 use crate::net::NetEntity;
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::WorldAssets;
 use benilla_world::schedule::WorldStage;
 

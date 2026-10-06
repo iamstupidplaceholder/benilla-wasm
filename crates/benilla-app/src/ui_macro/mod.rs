@@ -94,22 +94,29 @@ impl Plugin for UiMacroPlugin {
     }
 }
 
-/// Build the icon chooser's list once at startup — `SpellIcon.dbc` filtered by the client's own
+/// Build the icon chooser's list from archive enumeration, filtered by the client's own
 /// two prefixes ([`benilla_formats::load_macro_icons`], where the byte citations live). A failed
 /// load leaves the list empty: the popup then shows no icons and `MacroPopupOkayButton_Update`
 /// keeps OKAY disabled, which is a visible, diagnosable failure rather than a silent one.
 fn load_icon_catalog(
     script: Option<NonSendMut<UiScript>>,
     assets: Option<Res<WorldAssets>>,
+    delivered: Option<Res<MacroIcons>>,
     mut seeded: Local<crate::ui_script::VmMemo<bool>>,
 ) {
-    let (Some(mut script), Some(assets)) = (script, assets) else {
+    let Some(mut script) = script else {
         return;
     };
+    if delivered.is_none() && assets.is_none() {
+        return;
+    }
     if !seeded.claim(&script) {
         return;
     }
-    let loaded = {
+    let loaded = if let Some(icons) = delivered {
+        Ok(icons.0.clone())
+    } else {
+        let assets = assets.unwrap();
         let mut chain = assets.chain.lock_recover();
         benilla_formats::load_macro_icons(&mut chain)
     };
@@ -118,9 +125,14 @@ fn load_icon_catalog(
             info!("ui_macro: {} macro icons in the chooser", icons.len());
             script.set_macro_icons(icons);
         }
-        Err(e) => error!("ui_macro: SpellIcon.dbc failed — the icon chooser is empty: {e:#}"),
+        Err(e) => {
+            error!("ui_macro: archive icon enumeration failed — the icon chooser is empty: {e:#}")
+        }
     }
 }
+
+#[derive(Resource)]
+pub(crate) struct MacroIcons(pub(crate) Vec<String>);
 
 /// Who we are, for the per-character file: `(realm, character)` off the roster's own login pick.
 /// `None` until the roster and the pick agree — the load simply waits a frame. Shared with the
@@ -154,7 +166,7 @@ fn load_macros(
 
     let read = |path: &Option<std::path::PathBuf>| -> Vec<benilla_ui::script::MacroView> {
         let Some(path) = path else { return Vec::new() };
-        match std::fs::read_to_string(path) {
+        match crate::local_state::read_to_string(path) {
             Ok(text) => store::parse(&text),
             // Absent is the normal first-run case, not a failure; anything else is worth a line.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -216,7 +228,7 @@ fn rebind_macro_spells(
     mut bound: ResMut<MacroBoundSpells>,
     mut last_generation: Local<crate::ui_script::VmMemo<Option<u64>>>,
 ) {
-    let (Some(script), Some(table)) = (script, table) else {
+    let (Some(mut script), Some(table)) = (script, table) else {
         return;
     };
     // Session-keyed (1290): a fresh VM restarts its macro generation at 0, so a bare memo could

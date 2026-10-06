@@ -45,24 +45,6 @@ pub(crate) enum SoundCategory {
 /// The depleting variation pool of one kit (`0x45bb70` pick + `0x45bd40` rebalance): each pick
 /// decrements the chosen slot's remaining weight; when the pool empties it refills. With the
 /// data's typical all-1 weights this is exactly "no repeats until every variation played".
-struct PickState {
-    remaining: Vec<u32>,
-}
-
-/// xorshift32 — a plain deterministic PRNG. The client draws from the shared engine CRandom
-/// (cmath-owned); the *transform* of the draw is the fidelity surface, the generator is not.
-struct Rng(u32);
-
-impl Rng {
-    fn next(&mut self) -> u32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x
-    }
-}
 
 /// The kit catalog + play-side caches. Present only when the client data loaded.
 #[derive(Resource)]
@@ -71,15 +53,17 @@ pub(crate) struct SoundKits {
     /// Decoded SFX by (lowercased) path — kit variations are short files, decoded once and
     /// cheaply cloned per play (the frames are shared). The client's SoundFileDataCache analogue.
     cache: HashMap<String, StaticSoundData>,
-    pick: HashMap<u32, PickState>,
-    rng: Rng,
+    picker: super::selection::VariationPicker,
 }
 
 impl SoundKits {
+    pub(super) fn loaded_catalog(&self) -> Option<&SoundKitCatalog> {
+        Some(&self.catalog)
+    }
     /// One 32-bit draw off the kit player's own generator — the input to [`bark_chance_pass`].
     /// Shared with the per-shot volume/pitch variation draws, like the client's single stream.
     pub(super) fn roll(&mut self) -> u32 {
-        self.rng.next()
+        self.picker.roll()
     }
 
     /// The kit table itself, for the one consumer that must resolve ids **ahead of** playing them:
@@ -207,7 +191,7 @@ pub(super) enum Latch {
 /// **reproduce the probability, never the sequence.** So this takes any 32-bit draw — ours is the
 /// kit player's own xorshift ([`SoundKits::roll`]) — and only the arithmetic is faithful.
 pub(super) fn bark_chance_pass(threshold: u32, roll: u32) -> bool {
-    ((101u64 * u64::from(roll)) >> 32) as u32 <= threshold
+    super::selection::bark_chance_pass(threshold, roll)
 }
 
 /// The class-5 (`$FDX` stand) chance threshold: `0x8626d4[5] = 40` in the creature table and
@@ -231,9 +215,9 @@ pub(super) const STAND_CHANCE: u32 = 40;
 ///
 /// Class **1** (ExertionCritical) carries 100 in both twins, so a *critical* swing always grunts.
 /// That asymmetry is the audible shape of the pair: ordinary swings thin out, crits never do.
-pub(super) const EXERTION_CHANCE_CREATURE: u32 = 70;
+pub(super) const EXERTION_CHANCE_CREATURE: u32 = super::selection::EXERTION_CHANCE_CREATURE;
 /// The player twin of [`EXERTION_CHANCE_CREATURE`] — `0x86424c[0] = 35`.
-pub(super) const EXERTION_CHANCE_PLAYER: u32 = 35;
+pub(super) const EXERTION_CHANCE_PLAYER: u32 = super::selection::EXERTION_CHANCE_PLAYER;
 
 /// The class-2 (**ordinary injury**) chance thresholds — the victim's wound grunt, and the third
 /// and last rolled class (decision 2073). `0x8626d4[2] = 60` (creature) and `0x86424c[2] = 30`
@@ -254,16 +238,16 @@ pub(super) const EXERTION_CHANCE_PLAYER: u32 = 35;
 /// `[vtable+0x88]` → the roll `0x623520` / `0x62f940` → the 13-way column selector `0x623020`
 /// (`+0x0c/+0x10/+0x14` = DBC columns 3/4/5). wow-re
 /// `object-layer/scratch/wound-parry-gate-and-injury-vocal.md`.
-pub(super) const INJURY_CHANCE_CREATURE: u32 = 60;
+pub(super) const INJURY_CHANCE_CREATURE: u32 = super::selection::INJURY_CHANCE_CREATURE;
 /// The player twin of [`INJURY_CHANCE_CREATURE`] — `0x86424c[2] = 30`.
-pub(super) const INJURY_CHANCE_PLAYER: u32 = 30;
+pub(super) const INJURY_CHANCE_PLAYER: u32 = super::selection::INJURY_CHANCE_PLAYER;
 
 /// The class-5 cooldown: **10 000 ms on ONE global timestamp** (`0x623290`,
 /// `GetTickCount − [0xc4e0e4] − 0x2710`). Not per unit and not per class — a single window shared
 /// by every creature in the world, so one crocodile's croak silences every other creature's stand
 /// vocal for ten seconds. Stamped on an *allowed* attempt and **before** the column-is-zero bail,
 /// so a silent or distance-culled `$FDX` burns the window for everyone too.
-pub(super) const STAND_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+pub(super) const STAND_COOLDOWN: benilla_time::Duration = benilla_time::Duration::from_secs(10);
 
 /// A **voice bus** — the reference's per-bus concurrency domain, and the index into its
 /// compile-time cap table (wow-re `sound/scratch/voice-cap-and-headroom.md`, and
@@ -346,7 +330,7 @@ impl Bus {
 /// 87ce80  01000000 06000000 04000000 01000000
 /// 87ce90  02000000
 /// ```
-const BUS_CAP: [u32; 13] = [0x7fff_ffff, 1, 2, 2, 1, 1, 2, 2, 1, 6, 4, 1, 2];
+const BUS_CAP: [u32; 13] = super::selection::BUS_CAP;
 
 /// How many copies of **one kit** may sound at once, for the rows the reference leaves ungated by
 /// flag 0x20. See the gate in [`play_kit_ext`] for the measurement that set it, and decision 1560
@@ -358,14 +342,14 @@ const SAME_KIT_MAX: usize = 2;
 /// the pre-play gate `0x7a66a0`). Named rather than inlined so the tests read the *gate*, not a
 /// copy of it.
 fn no_duplicates_blocks(dedupe_exempt: bool, flags: u32, live_same_kit: usize) -> bool {
-    !dedupe_exempt && flags & sound_kit_flags::NO_DUPLICATES != 0 && live_same_kit > 0
+    super::selection::no_duplicates_blocks(dedupe_exempt, flags, live_same_kit)
 }
 
 /// [`SAME_KIT_MAX`], decision 1560's looser fallback for the 1 847 rows the reference left
 /// ungated. Both suppressors belong to the **one-shot lane**; see [`PlayExtras::dedupe_exempt`]
 /// for the caller that is exempt from them and why.
 fn same_kit_cap_blocks(dedupe_exempt: bool, live_same_kit: usize) -> bool {
-    !dedupe_exempt && live_same_kit >= SAME_KIT_MAX
+    super::selection::same_kit_cap_blocks(dedupe_exempt, live_same_kit)
 }
 
 /// The reference's **global voice ceiling** — the number this whole hunt came down to.
@@ -386,7 +370,7 @@ fn same_kit_cap_blocks(dedupe_exempt: bool, live_same_kit: usize) -> bool {
 /// The count covers **everything the device is mixing** — music and ambience included, because
 /// the reference's bus 0 (cap `INT_MAX`) is where zone music, ambience and the liquid loops all
 /// land, and they occupy FMOD channels like anything else. See [`SoundOutput::live_voices`].
-pub(crate) const SOFTWARE_CHANNELS: usize = 12;
+pub(crate) const SOFTWARE_CHANNELS: usize = super::voice_slot::SOFTWARE_CHANNELS;
 
 /// Make room for one more voice, or refuse. Returns `true` if the caller may start a sound.
 ///
@@ -468,15 +452,7 @@ fn stealable(looping: bool, latch: Latch) -> bool {
     !looping && latch == Latch::None
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum VoiceSlot {
-    /// Under the ceiling — just play.
-    Free,
-    /// At the ceiling; this channel index loses its slot.
-    Steal(usize),
-    /// At the ceiling and nothing live is quieter — drop the new sound.
-    Denied,
-}
+use super::voice_slot::VoiceSlot;
 
 /// The voice-cap decision, pure over `(index, amplitude)` of the **stealable** (non-looping) live
 /// channels — so the policy that decides what the player does and does not hear is testable
@@ -493,23 +469,14 @@ fn pick_voice_slot(
     live_voices: usize,
     candidate_amp: f32,
 ) -> VoiceSlot {
-    if live_voices < SOFTWARE_CHANNELS {
-        return VoiceSlot::Free;
-    }
-    match stealable.min_by(|a, b| a.1.total_cmp(&b.1)) {
-        Some((i, amp)) if amp < candidate_amp => VoiceSlot::Steal(i),
-        _ => VoiceSlot::Denied,
-    }
+    super::voice_slot::pick_voice_slot(stealable, live_voices, candidate_amp)
 }
 
 /// Is `bus` already carrying its cap's worth of live channels? Pure over the live buses, so the
 /// whole gate is testable without a device (the caps are the reference's, and getting one wrong
 /// silences a class of sound outright).
 fn bus_at_cap(live: impl Iterator<Item = Bus>, bus: Bus) -> bool {
-    let cap = BUS_CAP[usize::from(bus.0)];
-    // Bus 0's cap is `0x7FFFFFFF` — reachable only in principle, so skip the walk entirely. It is
-    // also where every unpinned play lands, which makes this the common path.
-    cap != BUS_CAP[0] && live.filter(|b| *b == bus).count() as u32 >= cap
+    super::selection::bus_at_cap(live.map(|b| b.0), bus.0)
 }
 
 /// The optional half of the client's full play surface — the extras [`play_kit_ext`] carries
@@ -731,21 +698,14 @@ pub(super) fn play_kit_ext(
 
     // Per-shot variation — separate DBC gates (B2): 0x800 volume, 0x400 pitch (no 5875 kit
     // sets 0x800, so volume variation is dormant in this build's data — the gate is faithful).
-    let v = if flags & sound_kit_flags::VARY_VOLUME != 0 {
-        let draw = math::variation_draw(kits.rng.next());
-        math::variation_volume(Some(draw), volume, mult)
-    } else {
-        math::variation_volume(None, volume, mult)
-    };
+    let v = kits.picker.volume(flags, volume, mult);
 
     let atten = d_sq.map_or(1.0, |d| {
         math::fmod_rolloff(d, min_dist) * near_field(d, cutoff)
     });
     let amp = config.category_amp(category) * v * atten;
     let mut data = data.volume(mixer::amp_to_db(amp));
-    if flags & sound_kit_flags::VARY_PITCH != 0 {
-        let draw = math::variation_draw(kits.rng.next());
-        let freq = math::variation_pitch_freq(draw);
+    if let Some(freq) = kits.picker.frequency(flags) {
         data = data.playback_rate(freq as f64 / data.sample_rate as f64);
     }
     let looping = force_loop || flags & sound_kit_flags::LOOPING != 0;
@@ -1042,8 +1002,7 @@ impl SoundKits {
         Self {
             catalog,
             cache: HashMap::new(),
-            pick: HashMap::new(),
-            rng: Rng(0x9e37_79b9),
+            picker: super::selection::VariationPicker::default(),
         }
     }
 
@@ -1057,44 +1016,13 @@ impl SoundKits {
     /// **streaming** consumers (zone music/ambience open the file as a stream instead of a decoded
     /// SFX; same depleting pick, same catalog). `None` when the kit is unknown or file-less.
     pub(super) fn pick_stream(&mut self, kit_id: u32) -> Option<(String, f32)> {
-        let kit = self.catalog.get(kit_id)?;
-        if kit.files.is_empty() {
-            return None;
-        }
-        let volume = kit.volume;
-        let weights: Vec<u32> = kit.files.iter().map(|(_, w)| *w).collect();
-        let pick = self.pick_variation(kit_id, &weights);
-        let path = self.catalog.get(kit_id)?.files[pick].0.clone();
-        Some((path, volume))
+        super::selection::pick_stream(&self.catalog, &mut self.picker, kit_id)
     }
 
     /// `0x45bb70`: weighted-random pick over the kit's *remaining* weight pool, refilled when
     /// exhausted (`0x45bd40`).
     fn pick_variation(&mut self, kit: u32, weights: &[u32]) -> usize {
-        if weights.len() == 1 {
-            return 0;
-        }
-        let st = self.pick.entry(kit).or_insert_with(|| PickState {
-            remaining: weights.to_vec(),
-        });
-        let mut total: u32 = st.remaining.iter().sum();
-        if total == 0 {
-            st.remaining.copy_from_slice(weights);
-            total = st.remaining.iter().sum();
-        }
-        if total == 0 {
-            return 0; // all-zero weights: degenerate data, take the first
-        }
-        let r = self.rng.next() % total;
-        let mut acc = 0u32;
-        for (i, w) in st.remaining.iter().enumerate() {
-            acc += w;
-            if acc > r {
-                st.remaining[i] -= 1;
-                return i;
-            }
-        }
-        st.remaining.len() - 1
+        self.picker.pick(kit, weights)
     }
 
     /// Decoded sound for a kit file, via the cache (whole-file chain read + decode on miss —
@@ -1128,7 +1056,7 @@ pub(super) fn load_sound_kits(mut commands: Commands, assets: Option<Res<WorldAs
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_sound_kit_catalog(&mut chain)
+        benilla_formats::load_sound_kit_catalog(&mut *chain)
     };
     match loaded {
         Ok(catalog) => {

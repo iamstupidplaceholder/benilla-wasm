@@ -259,8 +259,8 @@ fn reference_surface_by_class() -> BTreeMap<&'static str, BTreeSet<String>> {
 
 /// `class -> what this VM answers`, asked of a live instance of each.
 fn ours_by_class() -> BTreeMap<String, BTreeSet<String>> {
-    let script = UiScript::new().expect("VM");
-    let rows = widget_method_census(&script).expect("census");
+    let mut script = UiScript::new().expect("VM");
+    let rows = widget_method_census(&mut script).expect("census");
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (class, method) in rows {
         assert_ne!(

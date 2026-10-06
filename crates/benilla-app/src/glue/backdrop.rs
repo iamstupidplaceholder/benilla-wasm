@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 
-use benilla_assets::{sprite_image, sprite_image_tiled, WorldAssets};
+use benilla_assets::{sprite_image, sprite_image_tiled, SpriteAssets};
 
 /// `UI-Tooltip-Background`'s native size (the tile-period → `stretch_value` conversion).
 const TOOLTIP_BG_NATIVE: f32 = 64.0;
@@ -62,7 +62,7 @@ pub(crate) fn split_backdrop_edges(e: usize, strip: &[u8]) -> [Vec<u8>; 8] {
 
 /// Load one edge file and split it ([`split_backdrop_edges`]); the cell size is the strip's height.
 pub(super) fn backdrop_edges(
-    assets: &mut WorldAssets,
+    assets: &mut impl SpriteAssets,
     path: &str,
     images: &mut Assets<Image>,
 ) -> Option<BackdropEdges> {

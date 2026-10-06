@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 /// How many `swingType` values the reference's cache holds — `0x457f63 cmp ecx,3 / jge` bails
@@ -55,7 +56,7 @@ fn schema() -> Schema {
 }
 
 /// Read `WeaponSwingSounds2.dbc` off the patch chain into the reference's cache shape.
-pub fn load_weapon_swing_catalog(chain: &mut Chain) -> Result<WeaponSwingCatalog> {
+pub fn load_weapon_swing_catalog(chain: &mut impl crate::FileSource) -> Result<WeaponSwingCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\WeaponSwingSounds2.dbc")
         .context("reading WeaponSwingSounds2.dbc")?;

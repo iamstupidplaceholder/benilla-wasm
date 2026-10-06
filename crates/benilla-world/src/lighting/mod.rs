@@ -17,6 +17,7 @@ mod prop_probes; // the per-instance interior-prop SH probe table (slot ↔ Mesh
 mod resolve; // the per-frame time-of-day sample into WowLighting + the WMO interior-fog crossfade
 mod sh; // the model SH light-probe coefficient math
 pub use blob::LightBlob;
+pub(crate) use global_light::light_blob_bytes;
 pub use global_light::{new_shared_light_buffer, LightRooms, SharedLightBuffer, WorldPointLight};
 pub use prop_probes::{PropProbeSlot, PropProbes, MAX_PROP_PROBES};
 // The std430 layout itself — row indices, byte sizes, region offsets and the folds that fill them
@@ -230,6 +231,15 @@ pub(crate) fn quantize_glow(glow: f32) -> f32 {
 /// day). Loaded once in `setup_lighting`.
 #[derive(Resource)]
 pub(crate) struct LightSampler(pub(crate) LightCatalog);
+
+/// Publish a decoded production light catalog into the runtime sampler.
+///
+/// Native startup decodes the catalog synchronously from [`benilla_assets::WorldAssets`]. Browser
+/// hosts deliver the same five DBC files asynchronously through Bevy's `AssetServer`, then call
+/// this seam. Sampling, fog, sun motion and shader uploads remain entirely inside this module.
+pub fn publish_light_catalog(commands: &mut Commands, catalog: LightCatalog) {
+    commands.insert_resource(LightSampler(catalog));
+}
 
 /// Where the time-of-day currently driving lighting comes from — a readout for the debug panel.
 #[derive(Default, Clone, Copy, PartialEq, Debug)]

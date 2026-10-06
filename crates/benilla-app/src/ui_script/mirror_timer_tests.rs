@@ -15,23 +15,23 @@ use super::test_ui::load_ui as load_xml;
 fn harness() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // The bars' START driver: `UIParent_OnEvent`'s MIRROR_TIMER_START arm is what calls
     // `MirrorTimer_Show`, which is where the reference keeps it (UIParent.lua l.97 + l.374-377)
     // and where window 7 moved ours back to. Without this file the event reaches nothing.
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
     // `STATICPOPUP_NUMDIALOGS`, which the reference's own `MirrorTimer_Show` bounds its free-bar
     // search by (MirrorTimer.lua l.32 — a copy-paste from StaticPopup.lua, and its own bug). A
     // session without it searches `1, nil` and finds no free bar at all, so this is not scenery.
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\MirrorTimer.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MirrorTimer.xml");
     s
 }
 
@@ -58,24 +58,24 @@ fn start(
     );
 }
 
-fn shown(s: &UiScript, frame: &str) -> bool {
+fn shown(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsShown()"))
         .unwrap()
 }
 
-fn bar_value(s: &UiScript, frame: &str) -> f64 {
+fn bar_value(s: &mut UiScript, frame: &str) -> f64 {
     s.eval::<f64>(&format!("return {frame}StatusBar:GetValue()"))
         .unwrap()
 }
 
-fn bar_max(s: &UiScript, frame: &str) -> f64 {
+fn bar_max(s: &mut UiScript, frame: &str) -> f64 {
     s.eval::<f64>(&format!(
         "local lo, hi = {frame}StatusBar:GetMinMaxValues(); return hi"
     ))
     .unwrap()
 }
 
-fn bar_color(s: &UiScript, frame: &str) -> (f64, f64, f64) {
+fn bar_color(s: &mut UiScript, frame: &str) -> (f64, f64, f64) {
     s.eval::<(f64, f64, f64)>(&format!(
         "local r, g, b = {frame}StatusBar:GetStatusBarColor(); return r, g, b"
     ))
@@ -84,7 +84,7 @@ fn bar_color(s: &UiScript, frame: &str) -> (f64, f64, f64) {
 
 /// `Option`, not `String`: a blank caption reads back **nil**, because `FontString:GetText
 /// 0x79d690` substitutes nil for an empty string (decision 2110).
-fn caption(s: &UiScript, frame: &str) -> Option<String> {
+fn caption(s: &mut UiScript, frame: &str) -> Option<String> {
     s.eval::<Option<String>>(&format!("return {frame}Text:GetText()"))
         .unwrap()
 }
@@ -110,7 +110,7 @@ fn the_three_timers_load_hidden() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
     for i in 1..=3 {
-        assert!(!shown(&s, &format!("MirrorTimer{i}")), "MirrorTimer{i}");
+        assert!(!shown(&mut s, &format!("MirrorTimer{i}")), "MirrorTimer{i}");
     }
     assert!(
         tex_quad(&frame(&mut s, 0.016), "UI-CastingBar-Border").is_none(),
@@ -126,14 +126,14 @@ fn breath_takes_the_first_bar_in_the_reference_blue() {
     let mut s = harness();
     start(&mut s, "BREATH", 45_000, 60_000, -1, "Breath");
 
-    assert!(shown(&s, "MirrorTimer1"));
-    assert!(!shown(&s, "MirrorTimer2"), "only one timer is running");
-    assert_eq!(caption(&s, "MirrorTimer1").as_deref(), Some("Breath"));
+    assert!(shown(&mut s, "MirrorTimer1"));
+    assert!(!shown(&mut s, "MirrorTimer2"), "only one timer is running");
+    assert_eq!(caption(&mut s, "MirrorTimer1").as_deref(), Some("Breath"));
     // Milliseconds on the wire, seconds in the bar — the reference's `/1000` on both.
-    assert_eq!(bar_value(&s, "MirrorTimer1"), 45.0);
-    assert_eq!(bar_max(&s, "MirrorTimer1"), 60.0);
+    assert_eq!(bar_value(&mut s, "MirrorTimer1"), 45.0);
+    assert_eq!(bar_max(&mut s, "MirrorTimer1"), 60.0);
     // MirrorTimerColors["BREATH"]
-    let (r, g, b) = bar_color(&s, "MirrorTimer1");
+    let (r, g, b) = bar_color(&mut s, "MirrorTimer1");
     assert!(
         (r - 0.0).abs() < 1e-6 && (g - 0.5).abs() < 1e-6 && (b - 1.0).abs() < 1e-6,
         "reference blue, got ({r}, {g}, {b})"
@@ -148,9 +148,9 @@ fn fatigue_is_the_reference_yellow_under_its_own_caption() {
     let mut s = harness();
     start(&mut s, "EXHAUSTION", 60_000, 60_000, -1, "Fatigue");
 
-    assert!(shown(&s, "MirrorTimer1"));
-    assert_eq!(caption(&s, "MirrorTimer1").as_deref(), Some("Fatigue"));
-    let (r, g, b) = bar_color(&s, "MirrorTimer1");
+    assert!(shown(&mut s, "MirrorTimer1"));
+    assert_eq!(caption(&mut s, "MirrorTimer1").as_deref(), Some("Fatigue"));
+    let (r, g, b) = bar_color(&mut s, "MirrorTimer1");
     assert!(
         (r - 1.0).abs() < 1e-6 && (g - 0.9).abs() < 1e-6 && (b - 0.0).abs() < 1e-6,
         "reference yellow, got ({r}, {g}, {b})"
@@ -168,7 +168,7 @@ fn the_bar_drains_at_the_servers_signed_rate() {
     for _ in 0..100 {
         frame(&mut s, 0.05); // 5 s of client time, in reference-sized ticks
     }
-    let after = bar_value(&s, "MirrorTimer1");
+    let after = bar_value(&mut s, "MirrorTimer1");
     assert!(
         (after - 40.0).abs() < 0.05,
         "5 s at scale -1 should land near 40, got {after}"
@@ -180,7 +180,7 @@ fn the_bar_drains_at_the_servers_signed_rate() {
     for _ in 0..20 {
         frame(&mut s, 0.05); // 1 s
     }
-    let refilled = bar_value(&s, "MirrorTimer1");
+    let refilled = bar_value(&mut s, "MirrorTimer1");
     assert!(
         (refilled - 50.0).abs() < 0.5,
         "1 s at scale +10 should climb ~10 bar-seconds to ~50, got {refilled}"
@@ -207,7 +207,7 @@ fn a_paused_timer_holds_its_value() {
         frame(&mut s, 0.05);
     }
     assert_eq!(
-        bar_value(&s, "MirrorTimer1"),
+        bar_value(&mut s, "MirrorTimer1"),
         45.0,
         "frozen: no integration at all"
     );
@@ -232,7 +232,7 @@ fn a_paused_timer_holds_its_value() {
         frame(&mut s, 0.05);
     }
     assert_eq!(
-        bar_value(&s, "MirrorTimer1"),
+        bar_value(&mut s, "MirrorTimer1"),
         45.0,
         "the reference's own bugged branch cannot unfreeze a bar"
     );
@@ -253,16 +253,16 @@ fn two_timers_stack_and_restate_in_place() {
     start(&mut s, "EXHAUSTION", 60_000, 60_000, -1, "Fatigue");
     start(&mut s, "BREATH", 45_000, 60_000, -1, "Breath");
 
-    assert!(shown(&s, "MirrorTimer1") && shown(&s, "MirrorTimer2"));
-    assert!(!shown(&s, "MirrorTimer3"));
-    assert_eq!(caption(&s, "MirrorTimer1").as_deref(), Some("Fatigue"));
-    assert_eq!(caption(&s, "MirrorTimer2").as_deref(), Some("Breath"));
+    assert!(shown(&mut s, "MirrorTimer1") && shown(&mut s, "MirrorTimer2"));
+    assert!(!shown(&mut s, "MirrorTimer3"));
+    assert_eq!(caption(&mut s, "MirrorTimer1").as_deref(), Some("Fatigue"));
+    assert_eq!(caption(&mut s, "MirrorTimer2").as_deref(), Some("Breath"));
 
     // The server re-sends breath on every change; it must reuse frame 2, not take frame 3.
     start(&mut s, "BREATH", 30_000, 60_000, -1, "Breath");
-    assert!(!shown(&s, "MirrorTimer3"), "re-state must not take a frame");
-    assert_eq!(bar_value(&s, "MirrorTimer2"), 30.0);
-    assert_eq!(bar_value(&s, "MirrorTimer1"), 60.0, "fatigue untouched");
+    assert!(!shown(&mut s, "MirrorTimer3"), "re-state must not take a frame");
+    assert_eq!(bar_value(&mut s, "MirrorTimer2"), 30.0);
+    assert_eq!(bar_value(&mut s, "MirrorTimer1"), 60.0, "fatigue untouched");
 }
 
 /// STOP hides only the named timer and hands its frame back to the pool.
@@ -277,14 +277,14 @@ fn stop_hides_that_timer_and_frees_its_frame() {
         "MIRROR_TIMER_STOP",
         vec![ScriptValue::Str("EXHAUSTION".into())],
     );
-    assert!(!shown(&s, "MirrorTimer1"), "fatigue's frame released");
-    assert!(shown(&s, "MirrorTimer2"), "breath untouched");
+    assert!(!shown(&mut s, "MirrorTimer1"), "fatigue's frame released");
+    assert!(shown(&mut s, "MirrorTimer2"), "breath untouched");
 
     // The freed frame is reusable: a fresh timer takes it back.
     start(&mut s, "FEIGNDEATH", 10_000, 10_000, -1, "");
-    assert!(shown(&s, "MirrorTimer1"));
+    assert!(shown(&mut s, "MirrorTimer1"));
     assert_eq!(
-        caption(&s, "MirrorTimer1"),
+        caption(&mut s, "MirrorTimer1"),
         None,
         "no FEIGNDEATH_LABEL exists in the 1.12 GlobalStrings, and a blank caption reads nil"
     );
@@ -301,7 +301,7 @@ fn entering_the_world_clears_every_bar() {
 
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
     for i in 1..=3 {
-        assert!(!shown(&s, &format!("MirrorTimer{i}")), "MirrorTimer{i}");
+        assert!(!shown(&mut s, &format!("MirrorTimer{i}")), "MirrorTimer{i}");
     }
 }
 
@@ -316,8 +316,8 @@ fn a_stop_for_an_idle_timer_touches_nothing() {
         "MIRROR_TIMER_STOP",
         vec![ScriptValue::Str("EXHAUSTION".into())],
     );
-    assert!(shown(&s, "MirrorTimer1"), "breath's bar survives");
-    assert_eq!(bar_value(&s, "MirrorTimer1"), 45.0);
+    assert!(shown(&mut s, "MirrorTimer1"), "breath's bar survives");
+    assert_eq!(bar_value(&mut s, "MirrorTimer1"), 45.0);
 }
 
 /// The paint half. A running timer must actually put its chrome and its fill on screen — the

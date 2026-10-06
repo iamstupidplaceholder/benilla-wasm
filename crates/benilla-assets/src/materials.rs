@@ -27,6 +27,8 @@
 
 use bevy::image::Image;
 use bevy::mesh::MeshVertexBufferLayoutRef;
+#[cfg(target_arch = "wasm32")]
+use bevy::pbr::Material;
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
     MeshPipelineKey,
@@ -37,6 +39,8 @@ use bevy::render::render_resource::{
     CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError,
 };
 use bevy::shader::ShaderRef;
+
+use crate::gpu_table::GpuTable;
 
 /// Compile the four WGSL files into the binary and register them under
 /// `embedded://benilla_assets/shaders/…`. Call **after** Bevy's `AssetPlugin` (it fills the
@@ -62,8 +66,26 @@ pub const WDL_WGSL: &str = include_str!("shaders/wdl.wgsl");
 /// Source: <https://wowdev.wiki/M2/Rendering> § Alpha Testing.
 pub const VANILLA_ALPHA_KEY_REF: f32 = 224.0 / 255.0;
 
-/// `StandardMaterial` + our per-tile layer-blend extension.
-pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
+/// Native keeps the existing `StandardMaterial` base. The browser terrain shader is fully custom
+/// and reads none of that base's PBR textures, so carrying its six texture bindings into the GLES
+/// pipeline layout only burns scarce WebGL2 texture slots. `wgpu-hal`'s GLES backend has a fixed
+/// 16-entry combined texture/sampler map; the otherwise-unused base bindings pushed a real terrain
+/// texture to slot 16 when the first ADT pipeline was compiled.
+#[cfg(not(target_arch = "wasm32"))]
+pub type TerrainBaseMaterial = StandardMaterial;
+
+/// Binding-free base for the browser's fully custom terrain shader. Render state remains the
+/// `Material` default (opaque, forward, back-face culled), matching the native terrain base.
+#[cfg(target_arch = "wasm32")]
+#[derive(Asset, AsBindGroup, Clone, TypePath, Default)]
+pub struct TerrainBaseMaterial {}
+
+#[cfg(target_arch = "wasm32")]
+impl Material for TerrainBaseMaterial {}
+
+/// Per-tile layer-blend material. Only the base representation differs by target; the production
+/// extension, terrain shader and streamed scene stay shared.
+pub type TerrainMaterial = ExtendedMaterial<TerrainBaseMaterial, TerrainExtension>;
 
 /// World models (doodads/WMO/creatures/GameObjects) lit by the **same WoW lighting as terrain** —
 /// `tex × saturate(ambient + diffuse·N·L) × scale` in gamma space — instead of PBR. Reuses
@@ -153,6 +175,7 @@ impl From<&WowModelExt> for WowModelKey {
 /// regardless of `visibility(fragment)`, so the only effective lever for the BUFFER count is the
 /// number of bindings — pack, don't narrow.) The WGSL struct order **must** match the field order
 /// below (each Vec4 is 16 bytes, no implicit padding).
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Asset, AsBindGroup, Clone, TypePath)]
 #[bind_group_data(WowModelKey)]
 pub struct WowModelExt {
@@ -223,7 +246,137 @@ pub struct WowModelExt {
     /// own clusterable buffer is fragment-only in the view layout, so the lights ride our buffer).
     /// Set once, never mutated.
     #[storage(90, read_only, buffer, visibility(vertex, fragment))]
-    pub light_buf: Buffer,
+    pub light_buf: GpuTable,
+}
+
+/// WebGL representation of the same production model-material contract.
+/// Field names and order intentionally match the native definition above;
+/// only `AsBindGroup` differs, and is implemented manually below.
+#[cfg(target_arch = "wasm32")]
+#[derive(Asset, Clone, TypePath)]
+pub struct WowModelExt {
+    pub clutter_fade: Vec4,
+    pub model_flags: Vec4,
+    pub sun_scale: Vec4,
+    pub tint: Vec4,
+    pub sidn: Vec4,
+    pub anim_slots: Vec4,
+    pub light_buf: GpuTable,
+}
+
+// `AsBindGroup`'s derive only accepts `Handle<Image>` for sampled textures.  The
+// WebGL table is deliberately a renderer-owned raw texture so its identity is
+// stable while the existing range writers update it in place; bind that one
+// field manually and pack the unchanged material uniforms exactly as the
+// derive does on native.
+#[cfg(target_arch = "wasm32")]
+mod web_model_bind_group {
+    use bevy::{
+        ecs::system::SystemParamItem,
+        prelude::Vec4,
+        render::render_resource::{
+            encase::{internal::WriteInto, ShaderType},
+            AsBindGroup, AsBindGroupError, BindGroupLayout, BindGroupLayoutEntry, BindingResources,
+            BindingType, BufferBindingType, OwnedBindingResource, OwnedData, ShaderStages,
+            TextureSampleType, TextureViewDimension, UnpreparedBindGroup,
+        },
+    };
+
+    use super::{WowModelExt, WowModelKey};
+
+    #[derive(Clone, Copy, ShaderType)]
+    struct WebModelParams {
+        clutter_fade: Vec4,
+        model_flags: Vec4,
+        sun_scale: Vec4,
+        tint: Vec4,
+        sidn: Vec4,
+        anim_slots: Vec4,
+    }
+
+    impl From<&WowModelExt> for WebModelParams {
+        fn from(value: &WowModelExt) -> Self {
+            Self {
+                clutter_fade: value.clutter_fade,
+                model_flags: value.model_flags,
+                sun_scale: value.sun_scale,
+                tint: value.tint,
+                sidn: value.sidn,
+                anim_slots: value.anim_slots,
+            }
+        }
+    }
+
+    impl AsBindGroup for WowModelExt {
+        type Data = WowModelKey;
+        type Param = ();
+
+        fn label() -> &'static str {
+            "wow_model_web_bind_group"
+        }
+
+        fn bind_group_data(&self) -> Self::Data {
+            self.into()
+        }
+
+        fn unprepared_bind_group(
+            &self,
+            _layout: &BindGroupLayout,
+            _render_device: &bevy::render::renderer::RenderDevice,
+            _param: &mut SystemParamItem<'_, '_, Self::Param>,
+            _force_no_bindless: bool,
+        ) -> Result<UnpreparedBindGroup, AsBindGroupError> {
+            let params = WebModelParams::from(self);
+            let mut bytes = Vec::new();
+            params.write_into(
+                &mut bevy::render::render_resource::encase::internal::Writer::new(
+                    &params, &mut bytes, 0,
+                )
+                .expect("WebModelParams has a valid uniform layout"),
+            );
+            bytes.resize(WebModelParams::min_size().get() as usize, 0);
+            Ok(UnpreparedBindGroup {
+                bindings: BindingResources(vec![
+                    (
+                        90,
+                        OwnedBindingResource::TextureView(
+                            TextureViewDimension::D2,
+                            self.light_buf.view().clone(),
+                        ),
+                    ),
+                    (100, OwnedBindingResource::Data(OwnedData(bytes))),
+                ]),
+            })
+        }
+
+        fn bind_group_layout_entries(
+            _render_device: &bevy::render::renderer::RenderDevice,
+            _force_no_bindless: bool,
+        ) -> Vec<BindGroupLayoutEntry> {
+            vec![
+                BindGroupLayoutEntry {
+                    binding: 90,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Uint,
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 100,
+                    visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(WebModelParams::min_size()),
+                    },
+                    count: None,
+                },
+            ]
+        }
+    }
 }
 
 impl MaterialExtension for WowModelExt {
@@ -250,6 +403,16 @@ impl MaterialExtension for WowModelExt {
         layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("WOW_LIGHT_TEXTURE".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("WOW_LIGHT_TEXTURE".into());
+            }
+        }
         // The owned-palette skinning path (decision 0720): a mesh carrying the WOW joint
         // attributes (the skinned twin — `crate::build_skinned_submesh_mesh`) compiles
         // the WOW_RIG_SKIN vertex path, which skins from the shared buffer's palette region by
@@ -516,12 +679,16 @@ pub type LiquidMaterial = ExtendedMaterial<StandardMaterial, LiquidExt>;
 /// models; this material carries only what genuinely varies per material. **The Vec4 uniforms merge
 /// onto one binding (102)** (same packing trick as the other extensions). WGSL struct order must
 /// match the field order.
-#[derive(Asset, AsBindGroup, Clone, TypePath)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(AsBindGroup))]
+#[derive(Asset, Clone, TypePath)]
 pub struct LiquidExt {
     /// The kind's animated frames (`lake_a`/`fast_a`/`ocean_h`), stacked as `2d_array` layers
     /// (`Rgba8Unorm`, repeat-sampled). RGB near-black; alpha = the ripple/wave → transparency.
-    #[texture(100, dimension = "2d_array", visibility(fragment))]
-    #[sampler(101, visibility(fragment))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        texture(100, dimension = "2d_array", visibility(fragment))
+    )]
+    #[cfg_attr(not(target_arch = "wasm32"), sampler(101, visibility(fragment)))]
     pub frames: Handle<Image>,
     /// The per-material constants that pick which *lanes* of the shared light this surface reads.
     /// None of them is a light value; all four are fixed at material creation.
@@ -538,27 +705,30 @@ pub struct LiquidExt {
     ///   draws under the once-a-frame scene submit.
     /// - `w` = the sun-sheen **shininess** (`lighting::WATER_SHININESS`) for the `ocean0_s.bls`
     ///   `secondary` Blinn term — water's own exponent, not the shared row-3 terrain shininess.
-    #[uniform(102)]
+    #[cfg_attr(not(target_arch = "wasm32"), uniform(102))]
     pub kind: Vec4,
     /// - `x` = **which renderer** this surface belongs to (`liquid::surface::LiquidPath`): `0` = ADT
     ///   MCLQ (`ocean0_s.bls`), `1` = WMO exterior (`MapObjExtWater0.bls`), `2` = WMO interior
     ///   (fixed-function, unlit). The reference has three liquid renderers with genuinely different
     ///   combines, stage counts and opacity sources; this is which one `liquid.wgsl` runs.
     /// - `y`/`z`/`w` reserved.
-    #[uniform(102)]
+    #[cfg_attr(not(target_arch = "wasm32"), uniform(102))]
     pub path: Vec4,
     /// `x` = reserved (frame 0), `y` = frame count, `z` = scroll flag, `w` = clock enable —
     /// the shader derives frame index and scroll from `globals.time` (liquid.wgsl `anim_time`);
     /// nothing mutates this uniform after build.
-    #[uniform(102)]
+    #[cfg_attr(not(target_arch = "wasm32"), uniform(102))]
     pub anim: Vec4,
     /// **The shared global light** (`lighting::global_light`): the one storage buffer terrain and the
     /// models already read, now liquid's source too. `liquid.wgsl` reads rows 0-5 (light + scene fog +
     /// farclip), 13-16 (the two water swatches) and 18/19 (the interior fog block). Read in BOTH
     /// stages — the vertex stage evaluates the faithful per-vertex sun sheen. Set once at material
     /// creation, never mutated.
-    #[storage(90, read_only, buffer, visibility(vertex, fragment))]
-    pub light_buf: Buffer,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        storage(90, read_only, buffer, visibility(vertex, fragment))
+    )]
+    pub light_buf: GpuTable,
 }
 
 impl MaterialExtension for LiquidExt {
@@ -590,6 +760,16 @@ impl MaterialExtension for LiquidExt {
         if let Some(ds) = descriptor.depth_stencil.as_mut() {
             ds.bias.constant = 0;
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("WOW_LIGHT_TEXTURE".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("WOW_LIGHT_TEXTURE".into());
+            }
+        }
         Ok(())
     }
 }
@@ -611,16 +791,29 @@ impl MaterialExtension for LiquidExt {
 ///
 /// Textures + sampler ARE fragment-narrowable (the macro respects `visibility(fragment)` there)
 /// so the splat / alpha / shadow arrays stay fragment-only.
-#[derive(Asset, AsBindGroup, Clone, TypePath)]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(Asset, AsBindGroup, Clone, TypePath)
+)]
+#[cfg_attr(target_arch = "wasm32", derive(Asset, Clone, TypePath))]
 pub struct TerrainExtension {
-    #[texture(100, dimension = "2d_array", visibility(fragment))]
-    #[sampler(105, visibility(fragment))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        texture(100, dimension = "2d_array", visibility(fragment))
+    )]
+    #[cfg_attr(not(target_arch = "wasm32"), sampler(105, visibility(fragment)))]
     pub layer_array: Handle<Image>,
-    #[texture(104, dimension = "2d_array", visibility(fragment))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        texture(104, dimension = "2d_array", visibility(fragment))
+    )]
     pub alpha_array: Handle<Image>,
     /// Per-chunk MCSH baked shadow maps (one R8 layer each, `R` = shadowed). The merged mesh's
     /// `UV1.y` carries the layer index, or `-1` for a chunk with no shadow map. Shares sampler 105.
-    #[texture(110, dimension = "2d_array", visibility(fragment))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        texture(110, dimension = "2d_array", visibility(fragment))
+    )]
     pub shadow_array: Handle<Image>,
 
     // ------------------------------------------------------------------------------------------
@@ -628,7 +821,7 @@ pub struct TerrainExtension {
     // in the SAME order (each Vec4 16 bytes, no padding). Reordering is a breaking change.
     // ------------------------------------------------------------------------------------------
     /// `x` = texture tiling factor (repeats per chunk); other lanes unused.
-    #[uniform(106)]
+    #[cfg_attr(not(target_arch = "wasm32"), uniform(106))]
     pub params: Vec4,
 
     /// **The shared global light** (`lighting::global_light`): one persistent storage buffer all
@@ -636,8 +829,161 @@ pub struct TerrainExtension {
     /// per-material light/fog uniforms (ambient/diffuse/sun/spec + fog) that `apply_wow_lighting`
     /// re-pushed every frame (re-creating every bind group). Set once at tile spawn, never mutated.
     /// `terrain.wgsl` reads it as `var<storage, read> wow_light` (rows 0-5: light + fog + farclip).
-    #[storage(90, read_only, buffer)]
-    pub light_buf: Buffer,
+    #[cfg_attr(not(target_arch = "wasm32"), storage(90, read_only, buffer))]
+    pub light_buf: GpuTable,
+}
+
+#[cfg(target_arch = "wasm32")]
+mod web_terrain_bind_group {
+    use bevy::{
+        ecs::system::{lifetimeless::SRes, SystemParamItem},
+        prelude::Vec4,
+        render::{
+            render_asset::RenderAssets,
+            render_resource::{
+                encase::{internal::WriteInto, ShaderType},
+                AsBindGroup, AsBindGroupError, BindGroupLayout, BindGroupLayoutEntry,
+                BindingResources, BindingType, BufferBindingType, OwnedBindingResource, OwnedData,
+                SamplerBindingType, ShaderStages, TextureSampleType, TextureViewDimension,
+                UnpreparedBindGroup,
+            },
+            texture::{FallbackImage, GpuImage},
+        },
+    };
+
+    use super::TerrainExtension;
+
+    #[derive(Clone, Copy, ShaderType)]
+    struct TerrainParams {
+        params: Vec4,
+    }
+
+    impl AsBindGroup for TerrainExtension {
+        type Data = ();
+        type Param = (SRes<RenderAssets<GpuImage>>, SRes<FallbackImage>);
+
+        fn label() -> &'static str {
+            "terrain_web_bind_group"
+        }
+
+        fn bind_group_data(&self) -> Self::Data {}
+
+        fn unprepared_bind_group(
+            &self,
+            _layout: &BindGroupLayout,
+            _render_device: &bevy::render::renderer::RenderDevice,
+            (images, _fallback): &mut SystemParamItem<'_, '_, Self::Param>,
+            _force_no_bindless: bool,
+        ) -> Result<UnpreparedBindGroup, AsBindGroupError> {
+            let layer = images
+                .get(&self.layer_array)
+                .ok_or(AsBindGroupError::RetryNextUpdate)?;
+            let alpha = images
+                .get(&self.alpha_array)
+                .ok_or(AsBindGroupError::RetryNextUpdate)?;
+            let shadow = images
+                .get(&self.shadow_array)
+                .ok_or(AsBindGroupError::RetryNextUpdate)?;
+            let params = TerrainParams {
+                params: self.params,
+            };
+            let mut bytes = Vec::new();
+            params.write_into(
+                &mut bevy::render::render_resource::encase::internal::Writer::new(
+                    &params, &mut bytes, 0,
+                )
+                .expect("TerrainParams has a valid uniform layout"),
+            );
+            bytes.resize(TerrainParams::min_size().get() as usize, 0);
+            Ok(UnpreparedBindGroup {
+                bindings: BindingResources(vec![
+                    (
+                        90,
+                        OwnedBindingResource::TextureView(
+                            TextureViewDimension::D2,
+                            self.light_buf.view().clone(),
+                        ),
+                    ),
+                    (
+                        100,
+                        OwnedBindingResource::TextureView(
+                            TextureViewDimension::D2Array,
+                            layer.texture_view.clone(),
+                        ),
+                    ),
+                    (
+                        104,
+                        OwnedBindingResource::TextureView(
+                            TextureViewDimension::D2Array,
+                            alpha.texture_view.clone(),
+                        ),
+                    ),
+                    (
+                        105,
+                        OwnedBindingResource::Sampler(
+                            SamplerBindingType::Filtering,
+                            layer.sampler.clone(),
+                        ),
+                    ),
+                    (106, OwnedBindingResource::Data(OwnedData(bytes))),
+                    (
+                        110,
+                        OwnedBindingResource::TextureView(
+                            TextureViewDimension::D2Array,
+                            shadow.texture_view.clone(),
+                        ),
+                    ),
+                ]),
+            })
+        }
+
+        fn bind_group_layout_entries(
+            _render_device: &bevy::render::renderer::RenderDevice,
+            _force_no_bindless: bool,
+        ) -> Vec<BindGroupLayoutEntry> {
+            let sampled_array = |binding| BindGroupLayoutEntry {
+                binding,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            };
+            vec![
+                BindGroupLayoutEntry {
+                    binding: 90,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Uint,
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                sampled_array(100),
+                sampled_array(104),
+                BindGroupLayoutEntry {
+                    binding: 105,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 106,
+                    visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(TerrainParams::min_size()),
+                    },
+                    count: None,
+                },
+                sampled_array(110),
+            ]
+        }
+    }
 }
 
 impl MaterialExtension for TerrainExtension {
@@ -648,6 +994,25 @@ impl MaterialExtension for TerrainExtension {
     }
     fn fragment_shader() -> ShaderRef {
         "embedded://benilla_assets/shaders/terrain.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("WOW_LIGHT_TEXTURE".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("WOW_LIGHT_TEXTURE".into());
+            }
+        }
+        Ok(())
     }
 }
 

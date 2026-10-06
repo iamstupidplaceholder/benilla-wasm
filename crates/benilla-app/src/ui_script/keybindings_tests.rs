@@ -72,7 +72,7 @@ pub(crate) fn harness() -> UiScript {
         if file == "KeyBindingsPage.xml" || file == "OptionsFrame.xml" {
             super::test_ui::load_ui_strict(&s, file);
         } else {
-            super::test_ui::load_ui(&s, file);
+            super::test_ui::load_ui(&mut s, file);
         }
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
@@ -80,7 +80,7 @@ pub(crate) fn harness() -> UiScript {
 }
 
 /// A label as the page resolves it: the GlobalStrings global named `token`, else `raw`.
-pub(crate) fn label(s: &UiScript, token: &str, raw: &str) -> String {
+pub(crate) fn label(s: &mut UiScript, token: &str, raw: &str) -> String {
     s.eval::<String>(&format!(r#"return KeyBindings_String("{token}", "{raw}")"#))
         .unwrap()
 }
@@ -126,7 +126,7 @@ fn the_page_is_an_options_category_with_the_collapsed_honest_tree() {
         let text = s
             .eval::<String>(&format!("return {ROW}{}HeaderText:GetText()", i + 1))
             .unwrap();
-        assert_eq!(text, label(&s, token, token), "section {}", i + 1);
+        assert_eq!(text, label(&mut s, token, token), "section {}", i + 1);
     }
     assert!(
         !s.eval::<bool>(&format!("return {ROW}{}:IsVisible()", expected.len() + 1))
@@ -140,12 +140,12 @@ fn the_page_is_an_options_category_with_the_collapsed_honest_tree() {
     assert_eq!(
         s.eval::<String>(&format!("return {ROW}2Description:GetText()"))
             .unwrap(),
-        label(&s, "BINDING_NAME_MOVEANDSTEER", "MOVEANDSTEER")
+        label(&mut s, "BINDING_NAME_MOVEANDSTEER", "MOVEANDSTEER")
     );
     assert_eq!(
         s.eval::<String>(&format!("return {ROW}2Key1ButtonText:GetText()"))
             .unwrap(),
-        label(&s, "KEY_BUTTON3", "BUTTON3")
+        label(&mut s, "KEY_BUTTON3", "BUTTON3")
     );
     // The same rows with the strings pinned by hand, so the expectation is literal 1.12 text.
     s.run(
@@ -175,7 +175,7 @@ fn the_page_is_an_options_category_with_the_collapsed_honest_tree() {
     assert_eq!(
         s.eval::<String>(&format!("return {ROW}2HeaderText:GetText()"))
             .unwrap(),
-        label(&s, "BINDING_HEADER_CHAT", "BINDING_HEADER_CHAT")
+        label(&mut s, "BINDING_HEADER_CHAT", "BINDING_HEADER_CHAT")
     );
     // Leaving the page hides its body and the Unbind button.
     s.run(r#"BenillaOptionsFrame_SelectCategory("Controls")"#)
@@ -240,7 +240,7 @@ fn the_capture_flow_binds_steals_and_refuses_like_112() {
         s.eval::<String>(r#"return GetBindingAction("T")"#).unwrap(),
         "MOVEFORWARD"
     );
-    let victim = label(&s, "BINDING_NAME_ATTACKTARGET", "ATTACKTARGET");
+    let victim = label(&mut s, "BINDING_NAME_ATTACKTARGET", "ATTACKTARGET");
     assert!(
         s.eval::<String>("return BenillaOptionsFrameContainerBodyKeybindingsOutput:GetText()")
             .unwrap()
@@ -265,7 +265,7 @@ fn the_capture_flow_binds_steals_and_refuses_like_112() {
             .unwrap(),
         format!(
             "|cffff0000{} Function is Now Unbound!|r",
-            label(&s, "BINDING_NAME_CAMERAZOOMIN", "CAMERAZOOMIN")
+            label(&mut s, "BINDING_NAME_CAMERAZOOMIN", "CAMERAZOOMIN")
         )
     );
     // The refusal that IS there is the key-string validator, and this is the page arm that
@@ -309,7 +309,7 @@ fn unbind_reset_and_the_live_commit_replace_okay_cancel() {
     assert_eq!(
         s.eval::<String>(&format!("return {ROW}9Description:GetText()"))
             .unwrap(),
-        label(&s, "BINDING_NAME_JUMP", "JUMP")
+        label(&mut s, "BINDING_NAME_JUMP", "JUMP")
     );
     s.run(&format!("{ROW}9Key1Button:Click()")).unwrap();
     s.run("BenillaOptionsFrameContainerUnbind:Click()").unwrap();
@@ -463,7 +463,7 @@ fn search_surfaces_bindings_as_live_rows_under_the_redirect_head() {
 
 #[test]
 fn the_action_bar_abbreviation_is_the_refs_own_getbindingtext() {
-    let s = harness();
+    let mut s = harness();
     // ref UIParent.lua:1819 transcribed (UIParent.xml): one modifier abbreviates…
     assert_eq!(
         s.eval::<String>(r#"return GetBindingText("SHIFT-2", "KEY_", 1)"#)
@@ -580,7 +580,7 @@ fn the_wheel_bubbles_from_the_rows_and_the_bar_rides_the_gutter() {
     // which is the half the eye judges: 5 units of cap above the up arrow, 4 below the down arrow.
     const TROUGH: &str = "BenillaOptionsFrameContainerBodyKeybindingsScrollFrameScrollBarTrough";
     let bar = format!("{SF}ScrollBar");
-    let g = |f: &str, m: &str| s.eval::<f64>(&format!("return {f}:{m}()")).unwrap();
+    let mut g = |f: &str, m: &str| s.eval::<f64>(&format!("return {f}:{m}()")).unwrap();
     assert!(
         s.eval::<bool>(&format!("return {TROUGH}:IsVisible()"))
             .unwrap(),
@@ -598,7 +598,7 @@ fn the_wheel_bubbles_from_the_rows_and_the_bar_rides_the_gutter() {
             < 0.01
     );
     // A list that FITS shows neither.
-    let set_all = |s: &UiScript, open: bool| {
+    let set_all = |s: &mut UiScript, open: bool| {
         s.run(&format!(
             "for i = 1, table.getn(KeyBindingsPage.sections) do KeyBindings_ExpandSection(i, {}) end
              KeyBindingsPage_Update()",
@@ -606,18 +606,18 @@ fn the_wheel_bubbles_from_the_rows_and_the_bar_rides_the_gutter() {
         ))
         .unwrap();
     };
-    set_all(&s, false);
+    set_all(&mut s, false);
     for f in [format!("{SF}ScrollBar"), TROUGH.to_string()] {
         assert!(
             !s.eval::<bool>(&format!("return {f}:IsVisible()")).unwrap(),
             "{f} goes away when the list fits"
         );
     }
-    set_all(&s, true);
+    set_all(&mut s, true);
     s.resolve();
 
     // A spin over a row NAME — the dead zone when the handler lived on the sibling.
-    let steer = label(&s, "BINDING_NAME_MOVEANDSTEER", "MOVEANDSTEER");
+    let steer = label(&mut s, "BINDING_NAME_MOVEANDSTEER", "MOVEANDSTEER");
     let quads = s.extract();
     let (wx, wy) = quads
         .iter()
@@ -733,7 +733,7 @@ fn the_pet_lane_is_registered_under_the_action_bar_header() {
     // Page side: search finds it and paints a live row with the capsule filled.
     // The search tags are the DISPLAY names uppercased (era AddSearchTags), so the query is the
     // label the app's strings give the row, not its token.
-    let query = label(&s, "BINDING_NAME_BONUSACTIONBUTTON1", "BONUSACTIONBUTTON1").to_lowercase();
+    let query = label(&mut s, "BINDING_NAME_BONUSACTIONBUTTON1", "BONUSACTIONBUTTON1").to_lowercase();
     s.run(&format!(
         r#"BenillaOptionsFrameSearchBox:SetText("{query}")"#
     ))
@@ -747,7 +747,7 @@ fn the_pet_lane_is_registered_under_the_action_bar_header() {
             "return BenillaOptionsFrameContainerBodyKeybindSearch1Description:GetText()"
         )
         .unwrap(),
-        label(&s, "BINDING_NAME_BONUSACTIONBUTTON1", "BONUSACTIONBUTTON1"),
+        label(&mut s, "BINDING_NAME_BONUSACTIONBUTTON1", "BONUSACTIONBUTTON1"),
         "the row wears the app's own string"
     );
     assert_eq!(
@@ -769,7 +769,7 @@ fn the_pet_lane_is_registered_under_the_action_bar_header() {
 fn every_command_body_compiles() {
     use crate::bindings::commands::Kind;
 
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     for spec in SPECS {
         let bodies: Vec<&str> = match &spec.kind {
             Kind::Held | Kind::Host => Vec::new(),

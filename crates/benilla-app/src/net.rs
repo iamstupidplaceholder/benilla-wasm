@@ -15,7 +15,8 @@
 //! covers in one frame. Coordinates cross from raw WoW into Bevy space here (`wow_to_bevy`).
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+
+use benilla_time::{Duration, Instant};
 
 use benilla_protocol::{
     messages::WhoRequest, EntityKind, JumpInfo, MoveMode, MoveSpeeds, ObjectFields, SessionEvent,
@@ -28,20 +29,30 @@ use benilla_world::schedule::WorldStage;
 
 mod apply;
 pub(crate) mod handlers;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod io;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/net.rs"]
 pub(crate) mod io;
 mod motion;
+mod object_stream;
+mod ping;
+#[cfg(feature = "port-gates")]
+pub(crate) mod port_gates;
+mod query_cache;
+mod session_entry;
 
 pub(crate) use apply::apply_net_updates;
-use apply::tag_self_player;
 pub(crate) use handlers::NetHandlerApp;
+use object_stream::tag_self_player;
 
 // The per-frame motion model lives in [`motion`]: `RemoteMotion`/`Spline` are re-exported for the
 // crate (the animation selector reads them); the integration systems + pose helpers stay `pub(super)`
 // and are pulled in here for the plugin + the event bridge.
 pub(crate) use io::LoginRequest;
+use motion::sample_splines;
 use motion::{
     drain_pending_moves, extrapolate_remote_units, ground_clamp_creatures, mark_swimming_creatures,
-    sample_splines,
 };
 // The client-local facing turn. `pub(crate)` because the shuffle latch it produces is read in
 // `creature_anim`, and the cross-seam test that pins the pair runs both systems in one app.
@@ -84,10 +95,13 @@ impl Plugin for NetPlugin {
         crate::query_cache::register::<crate::names::NameCache>(app);
         crate::query_cache::register::<crate::go_templates::GameObjectTemplates>(app);
         crate::query_cache::register::<crate::items::Items>(app);
-        let handles = io::spawn_net(io::NetConfig::from_env(), self.connect);
+        let handles = io::spawn_net(app, io::NetConfig::from_env(), self.connect);
         if !self.connect {
             app.insert_resource(NetOffline);
         }
+        init_net_resources(app);
+        session_entry::register(app);
+        object_stream::register(app);
         // In the wire-drain stage, because that is what it is the product of. The lighting
         // resolve is ordered after that stage so it always reads THIS frame's clock rather than
         // whichever way the executor happened to break the tie.
@@ -114,10 +128,6 @@ impl Plugin for NetPlugin {
             .init_resource::<HomeBind>()
             .init_resource::<PlayedTimeAnswer>()
             .init_resource::<Proficiencies>()
-            .init_resource::<crate::names::NameCache>()
-            .init_resource::<crate::go_templates::GameObjectTemplates>()
-            .init_resource::<crate::items::Items>()
-            .init_resource::<crate::world_state::WorldStates>()
             .add_message::<TeleportMessage>()
             .add_message::<FieldChanged>()
             .add_message::<SelfMoveMessage>()
@@ -142,43 +152,35 @@ impl Plugin for NetPlugin {
             .add_message::<LoginStageMessage>()
             .add_message::<LoginQueuedMessage>()
             .add_message::<LoginFailedMessage>()
-            .add_message::<DisconnectedMessage>()
-            .add_systems(
-                Update,
-                (
-                    apply_net_updates,
-                    tag_self_player,
-                    sample_splines,
-                    // Derive each creature's swim state from the water over its feet (the wire never
-                    // carries it for creatures) — before the clamp, so a swimmer is exempt same-frame.
-                    mark_swimming_creatures,
-                    // After `sample_splines` writes the raw spline Z: re-ground walking units onto our
-                    // terrain (the client discards a ground spline's Z — decision 0059); a swimming
-                    // creature keeps its wire Z (its path runs through the water volume).
-                    ground_clamp_creatures,
-                    // Fire due scheduled relays (decision 0601) before the extrapolator advances
-                    // the freshly-applied state and reconcile-lerps toward the next queued head.
-                    drain_pending_moves,
-                    extrapolate_remote_units,
-                    // The client-local facing turn runs here — after the movers (spline / remote)
-                    // have set their poses, so a turn reads the goal's fresh position this frame.
-                    // A stationary unit squares up on its target, and the NPC whose interaction
-                    // window is open turns to face us (decision 1467).
-                    drive_display_facing,
-                )
-                    .chain()
-                    .in_set(WorldStage::Net),
-                // `InteractNpc`'s writer (`ui_session::feed_interact_npc`) seats itself INSIDE
-                // this chain — after `apply_net_updates`, before `drive_display_facing` — and
-                // declares both edges itself. It used to sit ahead of the whole chain, which
-                // read the window state one frame late; harmless for an ~8-frame facing ease,
-                // and exactly the frame the `"npc"` unit token was stale on when a window's
-                // own `MERCHANT_SHOW` handler read it (decision 2022).
+            .add_message::<DisconnectedMessage>();
+
+        app.add_systems(
+            Update,
+            (
+                apply_net_updates,
+                tag_self_player,
+                sample_splines,
+                mark_swimming_creatures,
+                ground_clamp_creatures,
+                drain_pending_moves,
+                extrapolate_remote_units,
+                drive_display_facing,
             )
-            // Not part of the movement chain above: one send on the world-enter message.
-            .add_systems(Update, send_query_time.in_set(WorldStage::Net))
+                .chain()
+                .in_set(WorldStage::Net),
+        );
+        app.add_systems(Update, send_query_time.in_set(WorldStage::Net))
             .add_systems(Update, population_pulse.in_set(WorldStage::Net));
     }
+}
+
+fn init_net_resources(app: &mut App) {
+    // These stores belong to the shared production consumers, not the IO backend.
+    // Browser entity systems need them even before the first world packet arrives.
+    app.init_resource::<crate::names::NameCache>()
+        .init_resource::<crate::go_templates::GameObjectTemplates>()
+        .init_resource::<crate::items::Items>()
+        .init_resource::<crate::world_state::WorldStates>();
 }
 
 /// The population pulse (`WOW_MOVE_TRACE_TAGS=pop`): once a second, one trace line with the count
@@ -892,6 +894,10 @@ pub(crate) static CAST_TRACE: std::sync::LazyLock<bool> =
 /// writer thread needs no shared state.
 #[derive(Debug)]
 pub(crate) enum ClientCommand {
+    /// Abort the real transport locally; not a protocol packet or a successful logout.
+    Disconnect {
+        reason: String,
+    },
     /// A self-movement packet: the [`MoveKind`] opcode + the live CMovement `flags` + our pose, plus the
     /// airborne clock (`fall_time`, ms) and ballistic launch tail (`jump`) while jumping/falling. The
     /// `flags` set the base directional/turn/walk bits, `JUMPING` while airborne, and `ON_TRANSPORT`

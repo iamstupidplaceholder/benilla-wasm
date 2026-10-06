@@ -324,7 +324,7 @@ fn no_bottom_band_frame_overlaps_a_raised_bar() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
 
     // Open every bag window. The stack only exists once something is in it, and an EMPTY stack is
@@ -381,15 +381,15 @@ fn no_bottom_band_frame_overlaps_a_raised_bar() {
         s.resolve();
 
         for bar in &raised {
-            if !shown(&s, bar) {
+            if !shown(&mut s, bar) {
                 continue;
             }
-            let bar_rect = rect(&s, bar);
+            let bar_rect = rect(&mut s, bar);
             for victim in TENANTS {
-                if !shown(&s, victim) {
+                if !shown(&mut s, victim) {
                     continue;
                 }
-                let v = rect(&s, victim);
+                let v = rect(&mut s, victim);
                 pairs += 1;
                 assert!(
                     !overlaps(bar_rect, v),
@@ -411,7 +411,7 @@ fn no_bottom_band_frame_overlaps_a_raised_bar() {
     );
 }
 
-fn shown(s: &UiScript, name: &str) -> bool {
+fn shown(s: &mut UiScript, name: &str) -> bool {
     s.eval::<bool>(&format!(
         "return {name} and {name}:IsShown() and true or false"
     ))
@@ -419,7 +419,7 @@ fn shown(s: &UiScript, name: &str) -> bool {
 }
 
 /// `(left, bottom, right, top)` in screen pixels.
-fn rect(s: &UiScript, name: &str) -> (f32, f32, f32, f32) {
+fn rect(s: &mut UiScript, name: &str) -> (f32, f32, f32, f32) {
     s.eval::<(f32, f32, f32, f32)>(&format!(
         "return {name}:GetLeft(), {name}:GetBottom(), {name}:GetRight(), {name}:GetTop()"
     ))
@@ -472,7 +472,7 @@ fn the_item_push_card_shares_the_band_with_a_raised_bar_exactly_as_the_reference
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     // The card is the stock `<Model>` since 2015, sized by its file's box once the facts land
     // (`ForcedBackpackItem.m2`: one 1000 ms clamp; the box 0.02707 × 0.07962 model units).
@@ -502,7 +502,7 @@ fn the_item_push_card_shares_the_band_with_a_raised_bar_exactly_as_the_reference
     s.tick(0.133); // the opaque peak — the instant the card is most visible
     s.resolve();
     assert!(
-        shown(&s, "MainMenuBarBackpackButtonItemAnim"),
+        shown(&mut s, "MainMenuBarBackpackButtonItemAnim"),
         "the card plays"
     );
 
@@ -510,8 +510,8 @@ fn the_item_push_card_shares_the_band_with_a_raised_bar_exactly_as_the_reference
     // 42.41 × 124.72 hung off the button's BOTTOMRIGHT (−10, 0) — and the card the file's keys
     // put inside it at its opaque peak is the reference's 48.9..93.1 above the screen floor
     // (0887 measured that quad by hand; it sits inside this band).
-    let card = rect(&s, "MainMenuBarBackpackButtonItemAnim");
-    let bar = rect(&s, "MultiBarBottomRight");
+    let card = rect(&mut s, "MainMenuBarBackpackButtonItemAnim");
+    let bar = rect(&mut s, "MultiBarBottomRight");
     assert!(
         (card.2 - card.0 - 42.41).abs() < 0.05 && (card.3 - card.1 - 124.72).abs() < 0.05,
         "the pane's rect is the file's box: {card:?}"

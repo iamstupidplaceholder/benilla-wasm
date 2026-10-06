@@ -19,7 +19,7 @@ fn joined() -> crate::script::UiScript {
 /// position in JOIN order — not a DBC id, not an alphabetical rank.
 #[test]
 fn a_joined_channel_answers_its_slot_name_and_instance() {
-    let s = joined();
+    let mut s = joined();
     let (id, name, instance): (i64, String, i64) = s.eval("return GetChannelName(2)").unwrap();
     assert_eq!(id, 2, "the 1-based slot in join order");
     assert_eq!(name, "Trade - City");
@@ -34,7 +34,7 @@ fn a_joined_channel_answers_its_slot_name_and_instance() {
 /// City")`), and `_LazyPig` passes `"world"` for a channel the server names `"World"`.
 #[test]
 fn the_name_form_resolves_case_insensitively_to_the_same_slot() {
-    let s = joined();
+    let mut s = joined();
     let by_name: i64 = s.eval("return GetChannelName('world')").unwrap();
     let by_index: i64 = s.eval("return GetChannelName(1)").unwrap();
     assert_eq!(by_name, 1);
@@ -61,7 +61,7 @@ fn the_name_form_resolves_case_insensitively_to_the_same_slot() {
 /// thing that must not raise.
 #[test]
 fn a_channel_that_is_not_joined_answers_the_number_zero_never_nil() {
-    let s = joined();
+    let mut s = joined();
 
     let id: i64 = s.eval("return GetChannelName('NoSuchChannel')").unwrap();
     assert_eq!(id, 0);
@@ -94,7 +94,7 @@ fn a_channel_that_is_not_joined_answers_the_number_zero_never_nil() {
 /// coercion makes that work; ours must not treat it as a channel literally named "1".
 #[test]
 fn a_numeric_string_resolves_as_an_index_not_as_a_name() {
-    let s = joined();
+    let mut s = joined();
     let id: i64 = s.eval("return GetChannelName('2')").unwrap();
     assert_eq!(id, 2, "the `/2` slash-command path depends on this");
 }
@@ -104,7 +104,7 @@ fn a_numeric_string_resolves_as_an_index_not_as_a_name() {
 /// and the verb must still answer 0 rather than raise on an empty list.
 #[test]
 fn nothing_is_joined_before_the_server_confirms_it() {
-    let s = script();
+    let mut s = script();
     let id: i64 = s.eval("return GetChannelName('World')").unwrap();
     assert_eq!(id, 0);
 }
@@ -119,7 +119,7 @@ fn nothing_is_joined_before_the_server_confirms_it() {
 /// `type(value) == "number"` to spot an id, so the values must interleave rather than nest.
 #[test]
 fn get_channel_list_is_a_flat_slot_name_vararg_in_join_order() {
-    let s = joined();
+    let mut s = joined();
 
     // Exactly two pairs for two joined channels — the arity `FCFDropDown_LoadChannels` steps over.
     assert_eq!(s.arity("GetChannelList()").unwrap(), 4);
@@ -147,7 +147,7 @@ fn get_channel_list_is_a_flat_slot_name_vararg_in_join_order() {
 
     // No channels joined is ZERO returns, so `{ GetChannelList() }` is an empty table rather than
     // a table of nils — every consumer above already handles that shape.
-    let empty = crate::script::tests::common::script();
+    let mut empty = crate::script::tests::common::script();
     assert_eq!(empty.arity("GetChannelList()").unwrap(), 0);
 }
 
@@ -161,7 +161,7 @@ fn get_channel_list_is_a_flat_slot_name_vararg_in_join_order() {
 /// files the reference client itself wrote in this repo's install.
 #[test]
 fn the_guild_recruitment_mode_boots_auto_and_answers_a_number() {
-    let s = script();
+    let mut s = script();
     assert_eq!(
         s.eval::<f64>("return GetGuildRecruitmentMode()").unwrap(),
         1.0,
@@ -190,7 +190,7 @@ fn the_guild_recruitment_mode_boots_auto_and_answers_a_number() {
 /// Success pushes **0 values**, not nil.
 #[test]
 fn the_guild_recruitment_setter_gates_its_argument_the_way_the_reference_does() {
-    let s = script();
+    let mut s = script();
 
     // A numeric string is a number to `lua_isnumber`.
     s.run(r#"SetGuildRecruitmentMode("0")"#).unwrap();

@@ -33,7 +33,7 @@ use std::sync::Arc;
 /// Ring depth in seconds of stereo audio. Deep enough that only a wedged writer drops samples.
 const RING_SECONDS: usize = 8;
 /// Writer wake cadence. Also the upper bound on audio lost at a hard kill.
-const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+const FLUSH_EVERY: benilla_time::Duration = benilla_time::Duration::from_millis(250);
 
 /// Install the tap on `main_track_builder` if `$WOW_MIX_TAP` names a path. Returns the builder
 /// unchanged otherwise. `sample_rate` is the device rate the mixer negotiated — the WAV header

@@ -46,7 +46,7 @@ mod loader_tests {
                 </Minimap>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
 
         // 1–8 wear the arrow, 9 wears the player model — the authored spelling, unchanged.
@@ -124,7 +124,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         s.resolve();
 
@@ -164,7 +164,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report2 = load(&s, &doc2, &no_files);
+        let report2 = load(&mut s, &doc2, &no_files);
         assert!(report2.errors.is_empty(), "{:?}", report2.errors);
         assert!(s.eval::<bool>("return Confused ~= nil").unwrap());
         assert!(s
@@ -209,7 +209,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         s.resolve();
 
@@ -288,7 +288,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         s.resolve();
 
@@ -369,7 +369,7 @@ mod loader_tests {
             </Ui>"#,
         );
 
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert_eq!(report.frames, 2, "parent + child materialized");
 
@@ -387,7 +387,7 @@ mod loader_tests {
         assert_eq!(s.eval::<String>("return ParentLoaded").unwrap(), "MyFrame");
 
         // Bottom-up: the child's OnLoad ran before the parent's (rf26).
-        let order: Vec<String> = s.eval("return loadorder").unwrap();
+        let order: Vec<String> = s.eval_sequence("return loadorder").unwrap();
         assert_eq!(order, vec!["child".to_string(), "parent".to_string()]);
 
         // resolve()+extract(): the texture quad sits at MyFrame's anchored rect.
@@ -415,7 +415,7 @@ mod loader_tests {
     /// declared 125×21 and rendered 80×22, wrapping its label onto two lines.)
     #[test]
     fn instance_size_overrides_template_size() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Button name="SizedTemplate" virtual="true">
@@ -426,7 +426,7 @@ mod loader_tests {
                 </Button>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert_eq!(
             s.eval::<f32>("return SizedInstance:GetWidth()").unwrap(),
@@ -461,7 +461,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
         assert_eq!(s.eval::<f32>("return PinChild:GetLeft()").unwrap(), 40.0);
@@ -482,7 +482,7 @@ mod loader_tests {
     /// The mixed document is the point: one `<Include>` of each kind, in one file, both landing.
     #[test]
     fn include_runs_a_lua_target_and_still_parses_an_xml_one() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let provider = |path: &str| -> Option<Vec<u8>> {
             match path {
                 "libs/Lib.lua" => Some(b"IncludedLua = 41 + 1".to_vec()),
@@ -500,7 +500,7 @@ mod loader_tests {
                 <Frame name="FromMain"/>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &provider);
+        let report = load(&mut s, &doc, &provider);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(
             s.eval::<i64>("return IncludedLua").unwrap(),
@@ -523,7 +523,7 @@ mod loader_tests {
     /// `eax` never read), so one bad library must not cost the frames declared after it.
     #[test]
     fn a_raising_lua_include_does_not_take_the_rest_of_the_document() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let provider = |path: &str| -> Option<Vec<u8>> {
             match path {
                 "Bad.lua" => Some(b"error('library exploded')".to_vec()),
@@ -536,7 +536,7 @@ mod loader_tests {
                 <Frame name="AfterTheBadInclude"/>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &provider);
+        let report = load(&mut s, &doc, &provider);
         assert_eq!(
             report.errors.len(),
             1,
@@ -553,7 +553,7 @@ mod loader_tests {
     /// `<Include>` resolved through an in-memory provider closure.
     #[test]
     fn include_resolves_through_provider() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let provider = |path: &str| -> Option<Vec<u8>> {
             match path {
                 "Sub.xml" => Some(br#"<Ui><Frame name="FromInclude"/></Ui>"#.to_vec()),
@@ -566,7 +566,7 @@ mod loader_tests {
                 <Frame name="FromMain"/>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &provider);
+        let report = load(&mut s, &doc, &provider);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(report.frames, 2);
         assert!(s
@@ -593,7 +593,7 @@ mod loader_tests {
                  <Frame name="After"/>
                </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(
             report.errors.is_empty(),
             "nothing raised on the XML door: {:?}",
@@ -623,7 +623,7 @@ mod loader_tests {
     /// beside its XML twin so the asymmetry is a test rather than a comment.
     #[test]
     fn the_lua_setframestrata_still_raises_on_the_same_value() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(r#"f = CreateFrame("Frame", "Loud")"#).unwrap();
         let err = s
             .run(r#"f:SetFrameStrata("ARTWORK")"#)
@@ -638,7 +638,7 @@ mod loader_tests {
     /// re-implementation gets backwards, so it is the half asserted first.
     #[test]
     fn framexml_debug_is_a_get_or_set_and_gates_the_loader_traces() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = || parse(r#"<Ui><Frame name="Traced"/></Ui>"#);
 
         assert_eq!(
@@ -647,12 +647,12 @@ mod loader_tests {
             "boots 0"
         );
         assert!(
-            load(&s, &doc(), &no_files).traces.is_empty(),
+            load(&mut s, &doc(), &no_files).traces.is_empty(),
             "and off means no trace at all"
         );
 
         assert_eq!(s.eval::<i32>("return FrameXML_Debug(1)").unwrap(), 1);
-        let on = load(&s, &doc(), &no_files);
+        let on = load(&mut s, &doc(), &no_files);
         assert!(
             on.traces
                 .iter()
@@ -671,7 +671,7 @@ mod loader_tests {
             0,
             "…but 0 is TRUTHY in Lua, so it really does disable it"
         );
-        assert!(load(&s, &doc(), &no_files).traces.is_empty());
+        assert!(load(&mut s, &doc(), &no_files).traces.is_empty());
         // …and the stored value is truncated toward zero, `0x40a2b0`'s conversion.
         assert_eq!(s.eval::<i32>("return FrameXML_Debug(1.9)").unwrap(), 1);
     }
@@ -687,9 +687,9 @@ mod loader_tests {
     /// `errors`, which is the list whose entries reach the player's red error dialog.
     #[test]
     fn missing_include_is_a_missing_file_not_an_error_and_continues() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(r#"<Ui><Include file="Nope.xml"/><Frame name="Still"/></Ui>"#);
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(
             report.missing_files.iter().any(|e| e.contains("Nope.xml")),
             "an unresolved include drops a whole document and says so: {report:?}"
@@ -710,9 +710,9 @@ mod loader_tests {
     /// normally rather than throwing.
     #[test]
     fn missing_script_file_is_a_missing_file_not_an_error_and_continues() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(r#"<Ui><Script file="Nope.lua"/><Frame name="Still"/></Ui>"#);
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(
             report.missing_files.iter().any(|e| e.contains("Nope.lua")),
             "{report:?}"
@@ -726,12 +726,12 @@ mod loader_tests {
     /// quiet list is only correct because the raise keeps its own.
     #[test]
     fn a_script_file_that_raises_is_still_an_error() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(r#"<Ui><Script file="Boom.lua"/><Frame name="Still"/></Ui>"#);
         let files = |req: &str| -> Option<Vec<u8>> {
             (req == "Boom.lua").then(|| b"error('boom')".to_vec())
         };
-        let report = load(&s, &doc, &files);
+        let report = load(&mut s, &doc, &files);
         assert!(
             report.errors.iter().any(|e| e.contains("Boom.lua")),
             "a chunk that raised is an error, not a missing file: {report:?}"
@@ -763,7 +763,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         // Child $parent-name resolved to PFInner and published.
         assert!(s.eval::<bool>("return PFInner ~= nil").unwrap());
@@ -819,7 +819,7 @@ mod loader_tests {
                 </Button>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         s.resolve();
         let (hl_right, text_left): (f64, f64) = s
@@ -845,7 +845,7 @@ mod loader_tests {
     /// frame is still built with a working handler.
     #[test]
     fn bad_handler_is_an_error_and_load_continues() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Frame name="Broken">
@@ -856,7 +856,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert_eq!(report.frames, 2, "both frames still created");
         assert!(
             report.errors.iter().any(|e| e.contains("compiling")),
@@ -878,11 +878,11 @@ mod loader_tests {
     /// waiting.
     #[test]
     fn unsupported_script_name_is_a_warning() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui><Frame name="Keyed"><Scripts><OnAttributeChanged>x = 1</OnAttributeChanged></Scripts></Frame></Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert_eq!(report.frames, 1);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(report
@@ -900,14 +900,14 @@ mod loader_tests {
     /// and the walk carries on to the next sibling.
     #[test]
     fn an_unknown_xml_frame_type_is_logged_and_its_node_skipped() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                  <Bogus name="X"><Frames><Frame name="Inside"/></Frames></Bogus>
                  <Frame name="Real"/>
                </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(
             report.errors.is_empty(),
             "nothing raised on the XML door: {:?}",
@@ -936,14 +936,14 @@ mod loader_tests {
     /// frame types, logged. The file's real reading as bindings is `0x51f400`'s, which runs anyway.
     #[test]
     fn a_bindings_document_loaded_as_framexml_raises_nothing() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Bindings>
                  <Binding name="MONKEYDEV_STEPUP" header="MONKEYDEV">MonkeyStep_Inc()</Binding>
                  <Binding name="MONKEYDEV_STEPDOWN">MonkeyStep_Dec()</Binding>
                </Bindings>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(
             report
@@ -965,10 +965,10 @@ mod loader_tests {
     /// type, so it logs and builds nothing (decisions 1984, 2191) where `CreateFrame` raises.
     #[test]
     fn a_second_xml_world_frame_is_logged_not_raised() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(r#"CreateFrame("WorldFrame", "WorldFrame")"#).unwrap();
         let report = load(
-            &s,
+            &mut s,
             &parse(r#"<Ui><WorldFrame name="Another"/></Ui>"#),
             &no_files,
         );
@@ -1006,9 +1006,9 @@ mod loader_tests {
                 .ok()
         };
 
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = framexml::parse(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let report = load(&s, &doc, &provider);
+        let report = load(&mut s, &doc, &provider);
 
         eprintln!("== {path}: {} frames materialized ==", report.frames);
         for e in &report.errors {
@@ -1043,7 +1043,7 @@ mod loader_tests {
                 </StatusBar>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         let ok: bool = s
@@ -1101,7 +1101,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
         let plate = s
@@ -1142,7 +1142,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
         // LEFT→LEFT at (0,0): left edge at the page's left, vertically on the page's centerline
@@ -1183,7 +1183,7 @@ mod loader_tests {
                 </Button>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
         let scoped = s
@@ -1216,7 +1216,7 @@ mod loader_tests {
     /// and every `debugstack` frame that handler produced.
     #[test]
     fn an_xml_handler_chunk_is_named_by_its_frame_and_handler() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             "<Ui>\n\
              <Button name=\"NamedBtn\">\n\
@@ -1237,12 +1237,12 @@ mod loader_tests {
              </Button>\n\
              </Ui>",
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         s.run(r#"Made = CreateFrame("Button", "Made", nil, "ProbeTmpl")"#)
             .unwrap();
 
-        let raised = |lua: &str| -> String {
+        let mut raised = |lua: &str| -> String {
             s.eval::<String>(&format!("local ok, e = pcall({lua}) return tostring(e)"))
                 .unwrap()
         };
@@ -1280,11 +1280,11 @@ mod loader_tests {
     /// the two arms cannot drift into each other.
     #[test]
     fn an_inline_script_chunk_is_named_for_the_document_not_as_a_file() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             "<Ui>\n<Script file=\"Sibling.lua\"/>\n<Script>\nBenillaInline = ({}).missing.deeper\n</Script>\n</Ui>",
         );
-        let report = load_in(&s, &doc, "Interface/AddOns/Probe/Probe.xml", &|p: &str| {
+        let report = load_in(&mut s, &doc, "Interface/AddOns/Probe/Probe.xml", &|p: &str| {
             (p == "Interface/AddOns/Probe/Sibling.lua")
                 .then(|| b"BenillaFile = ({}).missing.deeper".to_vec())
         });
@@ -1334,7 +1334,7 @@ mod loader_tests {
                 </CheckButton>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         let ok: bool = s
@@ -1394,7 +1394,7 @@ mod loader_tests {
                 </Button>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         // Hover the button's far-right end — the highlight still sits at the anchored TOPLEFT.
@@ -1440,7 +1440,7 @@ mod loader_tests {
                 </EditBox>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         // letters=5 landed; numeric abort rejects a non-digit insert wholesale.
@@ -1476,7 +1476,7 @@ mod loader_tests {
     /// Both directions asserted, because a presence-blind reader passes the `true` half.
     #[test]
     fn an_editbox_flag_written_false_in_xml_turns_the_flag_off() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <EditBox name="OptOut" autoFocus="false"/>
@@ -1484,7 +1484,7 @@ mod loader_tests {
                 <EditBox name="Silent"/>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         // The box is hidden first so the Show() is a real transition; an autoFocus box takes the
@@ -1525,7 +1525,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
         let tex = s
@@ -1548,7 +1548,7 @@ mod loader_tests {
     /// face + one value from the root and overrides another mid-chain (last-wins merge).
     #[test]
     fn font_inherits_chain_resolves_height_and_color_two_levels() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Font name="Base" font="Fonts\FRIZQT__.TTF" virtual="true">
@@ -1563,7 +1563,7 @@ mod loader_tests {
                 </Font>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         let base = s.font_object("Base").expect("Base registered");
@@ -1604,7 +1604,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
 
@@ -1662,7 +1662,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert!(
             report.warnings.iter().any(|w| w.contains("NoSuchFont")),
@@ -1721,7 +1721,7 @@ mod loader_tests {
                 </EditBox>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         // Type into the focused box.
@@ -1789,7 +1789,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         let left = |s: &mut UiScript, f: &str| {
             s.resolve();
@@ -1825,7 +1825,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
         let quads = s.extract();
@@ -1853,7 +1853,7 @@ mod loader_tests {
                 </Button>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         s.resolve();
 
@@ -1880,7 +1880,7 @@ mod loader_tests {
     /// never auto-enables (verified negative there).
     #[test]
     fn scripts_block_mouse_handlers_auto_enable_mouse() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Frame name="Hoverable">
@@ -1891,14 +1891,14 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert!(
-            s.eval::<bool>("return Hoverable:IsMouseEnabled()").unwrap(),
+            s.eval_truthy("return Hoverable:IsMouseEnabled()").unwrap(),
             "an XML mouse handler arms EnableMouse like the attribute would"
         );
         assert!(
-            !s.eval::<bool>("return DropTarget:IsMouseEnabled()")
+            !s.eval_truthy("return DropTarget:IsMouseEnabled()")
                 .unwrap(),
             "OnDragStop is outside the kind-2 name set"
         );
@@ -1906,7 +1906,7 @@ mod loader_tests {
         s.run("rt = CreateFrame('Frame', 'Rt'); rt:SetScript('OnEnter', function() end)")
             .unwrap();
         assert!(
-            !s.eval::<bool>("return Rt:IsMouseEnabled()").unwrap(),
+            !s.eval_truthy("return Rt:IsMouseEnabled()").unwrap(),
             "a runtime-created frame still needs an explicit EnableMouse"
         );
     }
@@ -1961,7 +1961,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
 
         // 1 · THE GLOBAL. `$parent` resolved against the instantiated button and published in `_G`
@@ -2085,7 +2085,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
 
         // 1 · The anchor — the whole mechanism, read straight off the label.
@@ -2185,7 +2185,7 @@ mod loader_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
 
         let texts: Vec<String> = s
@@ -2265,7 +2265,7 @@ mod loader_tests {
                 </SimpleHTML>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         assert_eq!(s.eval::<String>("return LOADED").unwrap(), "PageText");
@@ -2292,7 +2292,7 @@ mod loader_tests {
         // …and NEITHER became a region. A `<FontString>` handled by the generic special-fontstring
         // pass would leave an unanchored, textless string on the frame here.
         let regions = {
-            let lua = s.lua();
+            let lua = s.vm();
             let model = lua
                 .app_data_ref::<crate::script::Model>()
                 .expect("model app_data");
@@ -2307,7 +2307,7 @@ mod loader_tests {
         )
         .unwrap();
         let (kinds, fonts, widths) = {
-            let lua = s.lua();
+            let lua = s.vm();
             let model = lua
                 .app_data_ref::<crate::script::Model>()
                 .expect("model app_data");
@@ -2363,7 +2363,7 @@ mod loader_tests {
                 </Button>
             </Ui>"#,
         );
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
         assert!(
@@ -2402,7 +2402,7 @@ mod layer_blend_tests {
     /// selection glow rendered as an opaque gray bar — the 0109 look fix).
     #[test]
     fn layers_texture_alpha_mode_add_reaches_the_quad() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Frame name="GlowHost">
@@ -2417,7 +2417,7 @@ mod layer_blend_tests {
             </Ui>"#,
         )
         .unwrap();
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         let mut s = s;
         s.set_screen_size(800.0, 600.0);
@@ -2453,7 +2453,7 @@ mod region_template_tests {
     /// 0×0 with no file: shown, positioned by the runtime SetPoint, and invisible).
     #[test]
     fn layers_texture_inherits_a_virtual_texture_template() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Texture name="BranchTemplate" file="Interface\Branches" virtual="true">
@@ -2473,7 +2473,7 @@ mod region_template_tests {
             </Ui>"#,
         )
         .unwrap();
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert!(
             report.warnings.is_empty(),
@@ -2514,7 +2514,7 @@ mod region_template_tests {
     /// the region-template gate must pass it through untouched (no "unknown template" warning).
     #[test]
     fn fontstring_font_object_inherits_stays_out_of_the_template_path() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Font name="GameFontNormal" font="Fonts\FRIZQT__.TTF" virtual="true">
@@ -2530,7 +2530,7 @@ mod region_template_tests {
             </Ui>"#,
         )
         .unwrap();
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert!(
             report.warnings.is_empty(),
@@ -2560,7 +2560,7 @@ mod region_template_tests {
     /// used to be a warn-once gap here — a NARROWING fix, like the unit-token fold (1247).
     #[test]
     fn a_font_object_inherits_resolves_whatever_its_case() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Font name="GameFontHighlightSmall" font="Fonts\FRIZQT__.TTF" virtual="true">
@@ -2576,7 +2576,7 @@ mod region_template_tests {
             </Ui>"#,
         )
         .unwrap();
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert!(
             report.warnings.is_empty(),
@@ -2598,7 +2598,7 @@ mod region_template_tests {
     /// `EQL3_QuestWatchLine<i>` inherits the template.
     #[test]
     fn a_fontstring_template_carries_the_font_object_it_inherits() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Font name="GameFontHighlight" font="Fonts\FRIZQT__.TTF" virtual="true">
@@ -2616,7 +2616,7 @@ mod region_template_tests {
             </Ui>"#,
         )
         .unwrap();
-        let report = load(&s, &doc, &no_files);
+        let report = load(&mut s, &doc, &no_files);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert_eq!(s.eval::<String>("return Line1:GetText()").unwrap(), "one");
         assert_eq!(
@@ -2655,7 +2655,7 @@ mod chunk_name_tests {
     /// to the block's own offset, so the number is the number you scroll to.
     #[test]
     fn a_script_raise_names_its_own_file_and_line() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         // `error()` with no level prefixes "chunkname:line:" — exactly what a real raise carries.
         let doc = parse(
             "<Ui>\n\
@@ -2666,7 +2666,7 @@ mod chunk_name_tests {
              </Script>\n\
              </Ui>",
         );
-        let report = load_in(&s, &doc, "Bagnon/src/main.xml", &no_files);
+        let report = load_in(&mut s, &doc, "Bagnon/src/main.xml", &no_files);
         let err = report.errors.join("\n");
         // The file, in the shape an addon's own `debugstack()` matches (backslashes, no `@`).
         // The `:<Scripts>` suffix and the `[string "…"]` wrapper are the reference's own
@@ -2688,13 +2688,13 @@ mod chunk_name_tests {
     /// directory used to be, so depth-1 and depth-5 each report themselves.
     #[test]
     fn an_included_documents_script_names_the_included_file() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let inner = "<Ui>\n<Script>\nerror(\"inner\")\n</Script>\n</Ui>";
         let files = |req: &str| -> Option<Vec<u8>> {
             (req == "Addon/sub/inner.xml").then(|| inner.as_bytes().to_vec())
         };
         let doc = parse("<Ui>\n<Include file=\"sub\\inner.xml\"/>\n</Ui>");
-        let report = load_in(&s, &doc, "Addon/outer.xml", &files);
+        let report = load_in(&mut s, &doc, "Addon/outer.xml", &files);
         let err = report.errors.join("\n");
         assert!(
             err.contains("Addon\\sub\\inner.xml:<Scripts>\"]:3:"),
@@ -2713,7 +2713,7 @@ mod chunk_name_tests {
     /// own range instead, which is what this pins.
     #[test]
     fn a_cdata_script_block_reports_the_files_line() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             "<Ui>\n\
              <Frame name=\"A\"/>\n\
@@ -2724,7 +2724,7 @@ mod chunk_name_tests {
              ]]></Script>\n\
              </Ui>",
         );
-        let report = load_in(&s, &doc, "Ours/Bag.xml", &no_files);
+        let report = load_in(&mut s, &doc, "Ours/Bag.xml", &no_files);
         let err = report.errors.join("\n");
         assert!(
             err.contains("Ours\\Bag.xml:<Scripts>\"]:6:"),
@@ -2735,12 +2735,12 @@ mod chunk_name_tests {
     /// A `<Script file=>` chunk is named after the file it loaded, not the document that named it.
     #[test]
     fn a_script_file_chunk_is_named_after_that_file() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let files = |req: &str| -> Option<Vec<u8>> {
             (req == "Addon/code.lua").then(|| b"\nerror(\"from lua\")\n".to_vec())
         };
         let doc = parse("<Ui>\n<Script file=\"code.lua\"/>\n</Ui>");
-        let report = load_in(&s, &doc, "Addon/host.xml", &files);
+        let report = load_in(&mut s, &doc, "Addon/host.xml", &files);
         let err = report.errors.join("\n");
         assert!(
             err.contains("Addon\\code.lua:2:"),
@@ -2761,7 +2761,7 @@ mod chunk_name_tests {
     /// Both spellings are asserted, because the fallback must not cost the engine's own call.
     #[test]
     fn a_script_captured_and_called_with_no_arguments_still_sees_its_frame() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let doc = parse(
             r#"<Ui>
                 <Frame name="Hooked" hidden="true">
@@ -2771,7 +2771,7 @@ mod chunk_name_tests {
                 </Frame>
             </Ui>"#,
         );
-        let report = load_in(&s, &doc, "Test.xml", &no_files);
+        let report = load_in(&mut s, &doc, "Test.xml", &no_files);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
 
         // The engine's own call: `self` is passed and `this` is set — the modern spelling.

@@ -119,8 +119,8 @@ fn start_moving_on_a_frame_that_is_not_movable_raises_and_moves_nothing() {
     )
     .unwrap();
     s.resolve();
-    assert!(!s.eval::<bool>("return FixedPanel:IsMovable()").unwrap());
-    assert!(!s.eval::<bool>("return ok").unwrap(), "StartMoving raised");
+    assert!(!s.eval_truthy("return FixedPanel:IsMovable()").unwrap());
+    assert!(!s.eval_truthy("return ok").unwrap(), "StartMoving raised");
     assert!(
         s.eval::<String>("return tostring(err)")
             .unwrap()
@@ -271,10 +271,11 @@ fn the_three_flags_default_off_round_trip_and_user_placed_is_guarded() {
     )
     .unwrap();
     let all = |s: &mut UiScript| {
-        s.eval::<(bool, bool, bool)>(
-            "return FlagPanel:IsMovable(), FlagPanel:IsResizable(), FlagPanel:IsUserPlaced()",
+        (
+            s.eval_truthy("return FlagPanel:IsMovable()").unwrap(),
+            s.eval_truthy("return FlagPanel:IsResizable()").unwrap(),
+            s.eval_truthy("return FlagPanel:IsUserPlaced()").unwrap(),
         )
-        .unwrap()
     };
     assert_eq!(
         all(&mut s),
@@ -284,11 +285,11 @@ fn the_three_flags_default_off_round_trip_and_user_placed_is_guarded() {
 
     // SetUserPlaced before either flag: refused, exactly like the reference.
     assert!(
-        !s.eval::<bool>("return (pcall(function() FlagPanel:SetUserPlaced(true) end))")
+        !s.eval_truthy("return (pcall(function() FlagPanel:SetUserPlaced(true) end))")
             .unwrap(),
         "SetUserPlaced on a frame that is neither movable nor resizable raises"
     );
-    assert!(!s.eval::<bool>("return FlagPanel:IsUserPlaced()").unwrap());
+    assert!(!s.eval_truthy("return FlagPanel:IsUserPlaced()").unwrap());
 
     s.run("FlagPanel:SetResizable(true) FlagPanel:SetUserPlaced(true)")
         .unwrap();
@@ -309,7 +310,7 @@ fn the_three_flags_default_off_round_trip_and_user_placed_is_guarded() {
     s.resolve();
     s.run("FlagPanel:StartMoving()").unwrap();
     assert!(
-        s.eval::<bool>("return FlagPanel:IsUserPlaced()").unwrap(),
+        s.eval_truthy("return FlagPanel:IsUserPlaced()").unwrap(),
         "StartMoving sets the userPlaced bit"
     );
     s.run("FlagPanel:StopMovingOrSizing()").unwrap();
@@ -321,7 +322,7 @@ fn the_three_flags_default_off_round_trip_and_user_placed_is_guarded() {
 /// movable undraggable while `SetMovable` worked fine from Lua.
 #[test]
 fn the_xml_movable_and_resizable_attributes_reach_the_methods() {
-    let s = script();
+    let mut s = script();
     let doc = crate::framexml::parse(
         r#"<Ui>
              <Frame name="XmlMovable" movable="true" resizable="true">
@@ -333,7 +334,7 @@ fn the_xml_movable_and_resizable_attributes_reach_the_methods() {
            </Ui>"#,
     )
     .expect("valid FrameXML");
-    let report = crate::loader::load(&s, &doc, &|_| None);
+    let report = crate::loader::load(&mut s, &doc, &|_| None);
     assert!(
         !report
             .warnings
@@ -343,8 +344,10 @@ fn the_xml_movable_and_resizable_attributes_reach_the_methods() {
         report.warnings
     );
     assert_eq!(
-        s.eval::<(bool, bool)>("return XmlMovable:IsMovable(), XmlMovable:IsResizable()")
-            .unwrap(),
+        (
+            s.eval_truthy("return XmlMovable:IsMovable()").unwrap(),
+            s.eval_truthy("return XmlMovable:IsResizable()").unwrap(),
+        ),
         (true, true)
     );
 }
@@ -582,7 +585,7 @@ fn a_title_region_drag_swallows_the_press_and_ends_on_release() {
     // the no-gate reading VERIFIED (the movable bit is simply not read on
     // 0x7662c0->0x765320->0x7652b0->0x768430); a title region on a non-movable frame is the case
     // that tells it apart from `StartMoving`, which raises "Frame %s is not movable".
-    assert!(!s.eval::<bool>("return TP:IsMovable()").unwrap());
+    assert!(!s.eval_truthy("return TP:IsMovable()").unwrap());
 }
 
 /// A region's rect getters answer in its OWNER's units — screen ÷ the owner's effective scale —
@@ -646,7 +649,7 @@ fn the_write_filter_is_user_placed_and_movable_or_resizable() {
 
     s.run("CachePanel:SetResizable(false)").unwrap();
     assert!(
-        s.eval::<bool>("return CachePanel:IsUserPlaced()").unwrap(),
+        s.eval_truthy("return CachePanel:IsUserPlaced()").unwrap(),
         "the stamp itself survives the flag going away — nothing clears it"
     );
     assert!(
@@ -697,25 +700,30 @@ fn the_apply_seats_position_behind_movable_and_size_behind_resizable() {
         s.restore_user_placed_layouts([row(name)]);
     }
     s.resolve();
-    let read = |s: &UiScript, n: &str| {
-        s.eval::<(f64, f64, f64, bool)>(&format!(
-            "local f = getglobal('{n}') \
-             return f:GetLeft(), f:GetWidth(), f:GetHeight(), f:IsUserPlaced()"
-        ))
-        .unwrap()
+    let read = |s: &mut UiScript, n: &str| {
+        let (left, width, height): (f64, f64, f64) = s
+            .eval(&format!(
+                "local f = getglobal('{n}') \
+                 return f:GetLeft(), f:GetWidth(), f:GetHeight()"
+            ))
+            .unwrap();
+        let user_placed = s
+            .eval_truthy(&format!("return getglobal('{n}'):IsUserPlaced()"))
+            .unwrap();
+        (left, width, height, user_placed)
     };
     assert_eq!(
-        read(&s, "Neither"),
+        read(&mut s, "Neither"),
         (10.0, 50.0, 50.0, false),
         "neither flag: the row is inert, and leaves no stamp behind either"
     );
     assert_eq!(
-        read(&s, "Movable"),
+        read(&mut s, "Movable"),
         (300.0, 50.0, 50.0, true),
         "movable: seated at the saved position, still its authored size"
     );
     assert_eq!(
-        read(&s, "Sizable"),
+        read(&mut s, "Sizable"),
         (10.0, 200.0, 80.0, true),
         "resizable: given the saved size, left on its authored anchors"
     );

@@ -64,7 +64,7 @@ fn the_whole_shipped_manifest_loads_without_errors() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
@@ -103,7 +103,7 @@ fn loading_the_shipped_ui_queues_no_sounds() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
     assert_eq!(
@@ -132,7 +132,7 @@ fn pet_bar_vm() -> benilla_ui::script::UiScript {
     let mut s = benilla_ui::script::UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     super::pet_bar_tests::load_pet_bar(&s);
-    super::pet_bar_tests::declare_token_strings(&s);
+    super::pet_bar_tests::declare_token_strings(&mut s);
     s.set_pet_actions(true, true, true, super::pet_bar_tests::hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
     for _ in 0..3 {
@@ -214,13 +214,13 @@ fn the_autocast_brackets_reach_each_buttons_corners() {
     }
     // The spell book's overlay is the reference's own template resized by SpellBookAdapters.xml's
     // script (1952/2014), so its number is measured off a VM, not read off an XML.
-    let s = super::spellbook_tests::spellbook_ui(1024.0, 768.0);
+    let mut s = super::spellbook_tests::spellbook_ui(1024.0, 768.0);
     let (overlay, button): (f32, f32) = s
         .eval("return SpellButton1AutoCastable:GetWidth(), SpellButton1:GetWidth()")
         .unwrap();
     found.push(("SpellButton1AutoCastable".into(), overlay * ART, button));
     // The pet button's overlay is the reference's own template (1953) — measured the same way.
-    let s = pet_bar_vm();
+    let mut s = pet_bar_vm();
     let (overlay, button): (f32, f32) = s
         .eval("return PetActionButton1AutoCastable:GetWidth(), PetActionButton1:GetWidth()")
         .unwrap();
@@ -261,7 +261,7 @@ fn the_shine_panes_ask_for_the_rims_we_meant() {
         .eval("return SpellButton1AutoCast:GetModelScale(), SpellButton1AutoCast:GetWidth()")
         .unwrap();
     found.push(("SpellButton1AutoCast".into(), 0.02 * 1280.0 * scale, view));
-    let s = pet_bar_vm();
+    let mut s = pet_bar_vm();
     let (scale, view): (f32, f32) = s
         .eval(
             "return PetActionButton1AutoCast:GetModelScale(), PetActionButton1AutoCast:GetWidth()",
@@ -597,7 +597,7 @@ fn every_shipped_text_attribute_answers_against_the_real_global_strings() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let s = benilla_ui::script::UiScript::new().expect("VM");
+    let mut s = benilla_ui::script::UiScript::new().expect("VM");
     s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
 
     // The loader's own shape test, restated here so the two can't drift apart silently.
@@ -621,7 +621,7 @@ fn every_shipped_text_attribute_answers_against_the_real_global_strings() {
             .match_indices("text=\"")
             .filter_map(|(i, m)| text[i + m.len()..].split('"').next())
         {
-            let resolved = s.lua().globals().get::<String>(value).ok();
+            let resolved = s.global_string(value);
             if key_shaped(value) {
                 assert!(
                     resolved.is_some_and(|t| !t.is_empty()),
@@ -796,7 +796,7 @@ fn every_texture_frame_outranks_its_status_bars() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     // Every unit-frame family painting at once: the frames hide themselves without a unit, and a
     // hidden frame emits no quads to read a level from.
@@ -899,7 +899,7 @@ fn the_boot_phase_materializes_no_frames() {
     // The font registry is manifest entry 0 and comes off the chain since 1888, so this reads
     // through `test_ui::load_ui` rather than joining `assets/ui` — the file is not ours any more.
     // `load_ui` returns the same `report.frames` this asserted on and fails on any loader error.
-    let frames = super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
+    let frames = super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
     assert_eq!(
         frames, 0,
         "the boot-phase load materialized {frames} frame(s) — the login screen is meant to carry none"
@@ -939,9 +939,9 @@ fn the_font_registry_alone_covers_the_whole_bake_plan() {
                     ..Default::default()
                 }),
             );
-            let _ = super::load_default_ui(&s);
+            let _ = super::load_default_ui(&mut s);
         } else {
-            let _ = super::load_font_registry(&s);
+            let _ = super::load_font_registry(&mut s);
         }
         s.font_objects()
             .iter()
@@ -993,7 +993,7 @@ fn the_shipped_ui_takes_variables_loaded_without_a_script_error() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "loader errors: {failures:?}");
     let _ = s.errors(); // drain anything the load itself logged; this test is about the event
     s.fire_event("VARIABLES_LOADED", vec![]);
@@ -1033,7 +1033,7 @@ fn every_shipped_font_object_is_published_as_a_lua_global() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "loader errors: {failures:?}");
 
     // Collect the declared names straight out of the MANIFEST's own entries, so the sweep cannot
@@ -1122,7 +1122,7 @@ fn the_inheritable_reference_templates_confer_their_shape() {
             ..Default::default()
         }),
     );
-    assert!(super::load_default_ui(&s).is_empty());
+    assert!(super::load_default_ui(&mut s).is_empty());
 
     // `CT_UnitFrames/CT_TargetFrame.xml:4` builds its own virtual template on top of this one, so
     // the inherit has to work through a second hop as well as directly.
@@ -1186,7 +1186,7 @@ fn the_inspect_cursor_pair_takes_both_arms() {
             ..Default::default()
         }),
     );
-    assert!(super::load_default_ui(&s).is_empty());
+    assert!(super::load_default_ui(&mut s).is_empty());
 
     // Both exist as functions — the shape a caller checks before hooking.
     assert_eq!(
@@ -1262,7 +1262,7 @@ fn a_cinematic_leaves_nothing_of_the_interface_on_screen() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
 
@@ -1286,7 +1286,7 @@ fn a_cinematic_leaves_nothing_of_the_interface_on_screen() {
         .into_iter()
         .map(String::from),
     );
-    let visible = |s: &benilla_ui::script::UiScript, n: &str| -> bool {
+    let visible = |s: &mut benilla_ui::script::UiScript, n: &str| -> bool {
         s.eval::<i64>(&format!(
             "local f = getglobal(\"{n}\") \
              if not f or not f.IsVisible then return 0 end \
@@ -1297,7 +1297,7 @@ fn a_cinematic_leaves_nothing_of_the_interface_on_screen() {
     };
 
     // The sweep is only worth anything if there was something to hide in the first place.
-    let before = names.iter().filter(|n| visible(&s, n)).count();
+    let before = names.iter().filter(|n| visible(&mut s, n)).count();
     assert!(
         // 50 until 1938 took the three bar files stock, 20 until 1974 took the minimap cluster
         // (its 22 named frames were most of what this sweep counted), 12 until 1987 took the
@@ -1315,7 +1315,7 @@ fn a_cinematic_leaves_nothing_of_the_interface_on_screen() {
     let mut after: Vec<&str> = names
         .iter()
         .map(String::as_str)
-        .filter(|n| visible(&s, n))
+        .filter(|n| visible(&mut s, n))
         .collect();
     after.sort_unstable();
     assert_eq!(
@@ -1329,7 +1329,7 @@ fn a_cinematic_leaves_nothing_of_the_interface_on_screen() {
     s.set_in_cinematic(false);
     s.fire_event("CINEMATIC_STOP", vec![]);
     s.resolve();
-    let restored = names.iter().filter(|n| visible(&s, n)).count();
+    let restored = names.iter().filter(|n| visible(&mut s, n)).count();
     assert_eq!(
         restored, before,
         "the interface comes back exactly as it was"
@@ -1367,7 +1367,7 @@ fn every_declared_parent_really_attaches() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
 
@@ -1508,7 +1508,7 @@ fn the_shipped_manifest_opens_the_macro_icon_picker() {
         r"Interface\Icons\Ability_Ambush".into(),
         r"Interface\Icons\Ability_Backstab".into(),
     ]);
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
     let _ = s.errors();
@@ -1563,7 +1563,7 @@ fn the_stock_interface_options_window_loads_hidden_and_ours_is_still_the_players
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
 
     // 1 · the reference's own frame, by the children only it declares.
@@ -1615,7 +1615,7 @@ fn the_stock_interface_options_window_loads_hidden_and_ours_is_still_the_players
 
     // 3 · the order proof.
     let rows: Vec<String> = s
-        .eval::<Vec<String>>(
+        .eval_sequence::<String>(
             "local out = {} \
              for _, k in ipairs({ \"SHOW_MULTIBAR1_TEXT\", \"SHOW_MULTIBAR2_TEXT\", \
                  \"SHOW_MULTIBAR3_TEXT\", \"SHOW_MULTIBAR4_TEXT\", \"ALWAYS_SHOW_MULTIBARS_TEXT\" }) do \
@@ -1688,7 +1688,7 @@ fn the_stock_sound_options_window_loads_hidden_and_the_alias_is_gone() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
 
     // 1 · the reference's own frame, by the children only it declares — and this list IS the set
@@ -1849,7 +1849,7 @@ fn the_stock_video_options_window_loads_hidden_and_owns_its_own_name() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
 
     // 1 · the reference's own frame, by the children only it declares — and this list IS what
@@ -2094,7 +2094,7 @@ fn the_display_brightness_pair_speaks_the_reference_slider_unit() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = benilla_ui::script::UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
 
     // The reference registers `gamma = "1.0"` (our table spells it `"1.000000"`, the spelling
@@ -2149,7 +2149,7 @@ fn the_display_brightness_pair_speaks_the_reference_slider_unit() {
     s.eval::<()>("SetGamma(0)").unwrap();
     let row = "BenillaOptionsFrameContainerBodyGraphicsRowBrightness";
     let bounds = s
-        .eval::<Vec<f64>>(&format!(
+        .eval_sequence::<f64>(&format!(
             "local r = getglobal({row:?}) \
              local sl = getglobal({row:?} .. \"ControlSlider\") \
              local lo, hi = sl:GetMinMaxValues() \
@@ -2205,7 +2205,7 @@ fn the_video_windows_ten_composed_names_stay_nil() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = benilla_ui::script::UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
 
     for name in [
@@ -2280,7 +2280,7 @@ fn the_stock_options_windows_load_and_save_are_reachable_for_addons() {
             ..Default::default()
         }),
     );
-    assert!(super::load_default_ui(&s).is_empty());
+    assert!(super::load_default_ui(&mut s).is_empty());
 
     // The Okay path, whole: 69 check buttons, four sliders, four dropdowns, the multibar toggles
     // and the combat-text tail. Driven through the reference's OWN caller — `UIOptionsFrameOkay`'s

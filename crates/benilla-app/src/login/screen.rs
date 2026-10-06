@@ -26,7 +26,6 @@ use crate::glue::widgets::{
 };
 use crate::glue_strings::GlueStrings;
 use crate::portrait::{PortraitImages, PortraitSource, GLUE_SLOT};
-use benilla_assets::WorldAssets;
 
 use super::{ClientState, Field, LoginForm};
 
@@ -38,6 +37,152 @@ const DISABLED_GREY: Color = Color::srgb(0.5, 0.5, 0.5);
 const BOX_BORDER: Color = Color::srgb(0.8, 0.8, 0.8);
 const BOX_FILL: Color = Color::srgb(0.09, 0.09, 0.09);
 
+/// GlueDropDownMenuTemplate: 32-high frame, a 25|115|25 label plate
+/// at TOPLEFT (0,+17), white text at RIGHT (-43,+2), and a 24-square
+/// UI-ChatIcon-ScrollDown button at TOPRIGHT (-16,-18) of the plate.
+/// Reuse the original art already admitted for the AddOns dropdown.
+#[cfg(target_arch = "wasm32")]
+fn locale_field(
+    parent: &mut ChildSpawnerCommands,
+    art: &GlueArt,
+    font: &Handle<Font>,
+    label: &str,
+    s: f32,
+) {
+    let (Some((sheet, size)), Some(up), Some(down)) = (
+        &art.label_frame,
+        &art.dropdown_arrow_up,
+        &art.dropdown_arrow_down,
+    ) else {
+        return;
+    };
+    parent
+        .spawn((abs(s, 0.0, 0.0, 165.0, 32.0),))
+        .with_children(|field| {
+            let mut left = 0.0;
+            for (w, tc) in [
+                (25.0, [0.0, 0.1953125, 0.0, 1.0]),
+                (115.0, [0.1953125, 0.8046875, 0.0, 1.0]),
+                (25.0, [0.8046875, 1.0, 0.0, 1.0]),
+            ] {
+                field.spawn((
+                    ImageNode {
+                        image: sheet.clone(),
+                        rect: Some(crate::glue::art::tc_rect(*size, tc)),
+                        ..default()
+                    },
+                    abs(s, left, -17.0, w, 64.0),
+                ));
+                left += w;
+            }
+            outlined_text(
+                field,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(10.0 * s),
+                    top: Val::Px(-17.0 * s),
+                    width: Val::Px(112.0 * s),
+                    height: Val::Px(60.0 * s),
+                    justify_content: JustifyContent::FlexEnd,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                (),
+                (),
+                GlueText {
+                    text: label,
+                    size: 12.0,
+                    color: Color::WHITE,
+                    wrap: false,
+                },
+                font,
+                s,
+            );
+            field
+                .spawn((
+                    Button,
+                    LoginAction::ToggleLocale,
+                    abs(s, 125.0, 1.0, 24.0, 24.0),
+                    ImageNode::new(up.clone()),
+                    ArtSwap {
+                        up: up.clone(),
+                        down: down.clone(),
+                    },
+                ))
+                .with_children(|arrow| {
+                    if let Some(hi) = &art.mouse_hilight {
+                        arrow.spawn((
+                            Hilight,
+                            Visibility::Hidden,
+                            MaterialNode(hi.clone()),
+                            overlay(),
+                        ));
+                    }
+                });
+        });
+}
+
+/// Glue dropdown list rows are 16 units high, not full-size action buttons.
+#[cfg(target_arch = "wasm32")]
+fn locale_row(
+    parent: &mut ChildSpawnerCommands,
+    art: &GlueArt,
+    font: &Handle<Font>,
+    action: LoginAction,
+    label: &str,
+    selected: bool,
+    s: f32,
+) {
+    parent
+        .spawn((
+            Button,
+            action,
+            Node {
+                width: Val::Px(165.0 * s),
+                height: Val::Px(16.0 * s),
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|row| {
+            if let Some(hi) = &art.quest_hilight {
+                row.spawn((
+                    Hilight,
+                    Visibility::Hidden,
+                    MaterialNode(hi.clone()),
+                    overlay(),
+                ));
+            }
+            if selected {
+                if let Some(check) = &art.checkbox {
+                    row.spawn((
+                        ImageNode::new(check.checked.clone()),
+                        abs(s, 0.0, -4.0, 24.0, 24.0),
+                    ));
+                }
+            }
+            outlined_text(
+                row,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(24.0 * s),
+                    width: Val::Px(141.0 * s),
+                    ..default()
+                },
+                (),
+                (),
+                GlueText {
+                    text: label,
+                    size: 12.0,
+                    color: Color::WHITE,
+                    wrap: false,
+                },
+                font,
+                s,
+            );
+        });
+}
+
 /// One clickable control on the screen.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LoginAction {
@@ -46,6 +191,12 @@ pub(crate) enum LoginAction {
     Login,
     Quit,
     ToggleSave,
+    #[cfg(target_arch = "wasm32")]
+    ToggleSavePassword,
+    #[cfg(target_arch = "wasm32")]
+    ToggleLocale,
+    #[cfg(target_arch = "wasm32")]
+    SelectLocale(usize),
     /// Open the realmlist editor (decision 1667) — on the button and on the address readout under
     /// it, so clicking the address you want to change does what it looks like it does.
     Realmlist,
@@ -58,6 +209,8 @@ pub(crate) enum LoginAction {
 pub(super) struct LoginUi {
     with_art: bool,
     s: f32,
+    #[cfg(target_arch = "wasm32")]
+    locale_revision: u64,
 }
 /// The account box's row items (segments + carets — [`refresh_boxes`] paints them through
 /// [`paint_glue_field`]).
@@ -68,7 +221,7 @@ pub(super) struct AccountText;
 pub(super) struct PasswordText;
 /// The checkbox's checked overlay (visibility = the form's save flag).
 #[derive(Component)]
-pub(super) struct CheckMark;
+pub(super) struct CheckMark(LoginAction);
 /// The checkbox's hover highlight (driven by [`refresh_checkbox`] — the checkbox isn't a
 /// `GlueBtn`, so the shared button pass doesn't cover it).
 #[derive(Component)]
@@ -86,18 +239,19 @@ pub(super) fn materialize_screen(
     existing: Query<(Entity, &LoginUi)>,
     assets: Res<AssetServer>,
     portraits: Res<PortraitImages>,
-    mut art: ResMut<GlueArt>,
-    world_assets: Option<ResMut<WorldAssets>>,
-    mut images: ResMut<Assets<Image>>,
-    mut add_mats: ResMut<Assets<crate::glue::add_material::AddUiMaterial>>,
+    art: Res<GlueArt>,
     strings: Option<Res<GlueStrings>>,
     form: Res<LoginForm>,
     realmlist: Res<crate::realmlist::Realmlist>,
     window: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
 ) {
-    if let Some(mut wa) = world_assets {
-        art.ensure_loaded(&mut wa, &mut images, &mut add_mats);
+    // Browser client data arrives asynchronously. Do not let the native
+    // one-second artless fallback bake temporary captions into a tree that has
+    // no reason to rebuild if only the string table arrives later.
+    #[cfg(target_arch = "wasm32")]
+    if strings.is_none() {
+        return;
     }
     let with_art = art.button_up.is_some();
     let s = crate::glue::screen_scale(window.single().ok());
@@ -105,7 +259,10 @@ pub(super) fn materialize_screen(
         Ok((root, ui)) => {
             // Rebuild when the art lands after an early artless spawn, or when a window resize
             // (mac fullscreen, a drag) has changed the glue scale the tree was baked at.
-            if (!ui.with_art && with_art) || ui.s != s {
+            let rebuild = (!ui.with_art && with_art) || ui.s != s;
+            #[cfg(target_arch = "wasm32")]
+            let rebuild = rebuild || ui.locale_revision != form.locale.revision;
+            if rebuild {
                 commands.entity(root).despawn();
                 spawn_screen(
                     &mut commands,
@@ -163,8 +320,11 @@ fn spawn_screen(
             LoginUi {
                 with_art: art.button_up.is_some(),
                 s,
+                #[cfg(target_arch = "wasm32")]
+                locale_revision: form.locale.revision,
             },
             GlobalZIndex(SCREEN_Z),
+            crate::glue::widgets::StartupChrome,
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
@@ -394,6 +554,7 @@ fn spawn_screen(
             });
 
         // Quit (`GlueButtonSmallTemplate` 150×38 at BOTTOMRIGHT (−5,29)).
+        #[cfg(not(target_arch = "wasm32"))]
         ui.spawn((Node {
             position_type: PositionType::Absolute,
             right: px(5.0),
@@ -436,6 +597,7 @@ fn spawn_screen(
         // list already fetched, which is a different act from repointing the client at a different
         // logon server. "Realmlist" is what the file, the CVar and every private server's setup
         // page call it, in every locale.
+        #[cfg(not(target_arch = "wasm32"))]
         ui.spawn((Node {
             position_type: PositionType::Absolute,
             right: px(5.0),
@@ -464,6 +626,7 @@ fn spawn_screen(
                 }
             });
         // `AccountLoginRealmName`'s seat, right-justified by being anchored on its right edge.
+        #[cfg(not(target_arch = "wasm32"))]
         outlined_text(
             ui,
             Node {
@@ -484,98 +647,224 @@ fn spawn_screen(
             s,
         );
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            use benilla_formats::locales::locale_label;
+            let available = form.locale.codes.contains(&form.locale.selected);
+            let label = format!(
+                "{}{}",
+                locale_label(&form.locale.selected),
+                if available {
+                    ""
+                } else {
+                    crate::web_config::text(" [not detected]", " [не найден]")
+                }
+            );
+            ui.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: px(17.0),
+                top: px(562.0),
+                ..default()
+            })
+            .with_children(|slot| {
+                locale_field(slot, art, &font, &label, s);
+            });
+            outlined_text(
+                ui,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(21.0),
+                    top: px(598.0),
+                    width: px(280.0),
+                    ..default()
+                },
+                (),
+                (),
+                GlueText {
+                    text: &form.locale.status,
+                    size: 10.0,
+                    color: GOLD,
+                    wrap: true,
+                },
+                &font,
+                s,
+            );
+            if form.locale.open {
+                // Open upward, avoiding the persistence checkboxes and footer.
+                // A higher local Z keeps rows above login chrome hit targets.
+                ui.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(17.0),
+                        top: px(562.0 - 16.0 * (form.locale.codes.len() + 1) as f32 - 30.0),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::new(px(5.0), px(10.0), px(15.0), px(15.0)),
+                        ..default()
+                    },
+                    ZIndex(20),
+                ))
+                .with_children(|rows| {
+                    if let (Some(bg), Some(border)) = (&art.dialog_bg, &art.dialog_border) {
+                        rows.spawn((
+                            crate::glue::backdrop::tiled_bg_node(bg.clone(), 32.0, s, Color::WHITE),
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(11.0),
+                                right: px(12.0),
+                                top: px(12.0),
+                                bottom: px(11.0),
+                                ..default()
+                            },
+                        ));
+                        crate::glue::backdrop::backdrop_border(rows, border, 32.0, Color::WHITE);
+                    }
+                    outlined_text(
+                        rows,
+                        Node {
+                            width: px(165.0),
+                            height: px(16.0),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        (),
+                        (),
+                        GlueText {
+                            text: strings.text("LANGUAGES", "Languages"),
+                            size: 12.0,
+                            color: GOLD,
+                            wrap: false,
+                        },
+                        &font,
+                        s,
+                    );
+                    for (index, code) in form.locale.codes.iter().enumerate() {
+                        let label = locale_label(code);
+                        locale_row(
+                            rows,
+                            art,
+                            &font,
+                            LoginAction::SelectLocale(index),
+                            label,
+                            *code == form.locale.selected,
+                            s,
+                        );
+                    }
+                });
+            }
+        }
+
         // The Remember Account Name checkbox (20×20 at the resolved absolute (17, top 653) —
         // the ref anchors it under the Community button we cut; the spot is the same) + its
         // 10 px shadowed gold label at LEFT+24.
-        ui.spawn((Node {
-            position_type: PositionType::Absolute,
-            left: px(17.0),
-            top: px(653.0),
-            height: px(20.0),
-            align_items: AlignItems::Center,
-            flex_direction: FlexDirection::Row,
-            ..default()
-        },))
-            .with_children(|row| {
-                let mut b = row.spawn((
-                    LoginAction::ToggleSave,
-                    Button,
-                    Node {
-                        width: px(20.0),
-                        height: px(20.0),
-                        ..default()
-                    },
-                ));
-                match &art.checkbox {
-                    Some(check) => {
-                        b.insert((
-                            ImageNode::new(check.up.clone()),
-                            ArtSwap {
-                                up: check.up.clone(),
-                                down: check.down.clone(),
-                            },
-                        ));
-                        b.with_children(|inner| {
-                            inner.spawn((
-                                CheckMark,
-                                if form.save {
-                                    Visibility::Inherited
-                                } else {
-                                    Visibility::Hidden
+        for (top, action, checked, label) in [
+            (
+                653.0,
+                LoginAction::ToggleSave,
+                form.save,
+                strings.text("SAVE_ACCOUNT_NAME", "Remember Account Name"),
+            ),
+            #[cfg(target_arch = "wasm32")]
+            (
+                679.0,
+                LoginAction::ToggleSavePassword,
+                form.save_password,
+                if crate::web_config::active_locale() == "ruRU" {
+                    "Сохранить пароль (в этом браузере)"
+                } else {
+                    "Remember Password (stored on this browser)"
+                },
+            ),
+        ] {
+            ui.spawn((Node {
+                position_type: PositionType::Absolute,
+                left: px(17.0),
+                top: px(top),
+                height: px(20.0),
+                align_items: AlignItems::Center,
+                flex_direction: FlexDirection::Row,
+                ..default()
+            },))
+                .with_children(|row| {
+                    let mut b = row.spawn((
+                        action,
+                        Button,
+                        Node {
+                            width: px(20.0),
+                            height: px(20.0),
+                            ..default()
+                        },
+                    ));
+                    match &art.checkbox {
+                        Some(check) => {
+                            b.insert((
+                                ImageNode::new(check.up.clone()),
+                                ArtSwap {
+                                    up: check.up.clone(),
+                                    down: check.down.clone(),
                                 },
-                                ImageNode::new(check.checked.clone()),
-                                overlay(),
                             ));
-                            if let Some(hi) = &check.hi {
+                            b.with_children(|inner| {
                                 inner.spawn((
-                                    CheckHilight,
-                                    Hilight,
-                                    Visibility::Hidden,
-                                    bevy::ui_render::ui_material::MaterialNode(hi.clone()),
+                                    CheckMark(action),
+                                    if checked {
+                                        Visibility::Inherited
+                                    } else {
+                                        Visibility::Hidden
+                                    },
+                                    ImageNode::new(check.checked.clone()),
                                     overlay(),
                                 ));
-                            }
-                        });
+                                if let Some(hi) = &check.hi {
+                                    inner.spawn((
+                                        CheckHilight,
+                                        Hilight,
+                                        Visibility::Hidden,
+                                        bevy::ui_render::ui_material::MaterialNode(hi.clone()),
+                                        overlay(),
+                                    ));
+                                }
+                            });
+                        }
+                        None => {
+                            b.insert(BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)));
+                            b.with_children(|inner| {
+                                inner.spawn((
+                                    CheckMark(action),
+                                    if checked {
+                                        Visibility::Inherited
+                                    } else {
+                                        Visibility::Hidden
+                                    },
+                                    Text::new("x"),
+                                    TextFont {
+                                        font: font.clone(),
+                                        font_size: 14.0 * s,
+                                        ..default()
+                                    },
+                                    TextColor(GOLD),
+                                ));
+                            });
+                        }
                     }
-                    None => {
-                        b.insert(BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)));
-                        b.with_children(|inner| {
-                            inner.spawn((
-                                CheckMark,
-                                if form.save {
-                                    Visibility::Inherited
-                                } else {
-                                    Visibility::Hidden
-                                },
-                                Text::new("x"),
-                                TextFont {
-                                    font: font.clone(),
-                                    font_size: 14.0 * s,
-                                    ..default()
-                                },
-                                TextColor(GOLD),
-                            ));
-                        });
-                    }
-                }
-                row.spawn((
-                    Text::new(strings.text("SAVE_ACCOUNT_NAME", "Remember Account Name")),
-                    TextFont {
-                        font: font.clone(),
-                        font_size: 10.0 * s, // the authored FontHeight 10
-                        ..default()
-                    },
-                    TextColor(GOLD),
-                    TextShadow {
-                        offset: Vec2::new(s, s),
-                        color: Color::BLACK,
-                    },
-                    Node {
-                        margin: UiRect::left(px(4.0)), // LEFT+24 from the checkbox's left edge
-                        ..default()
-                    },
-                ));
-            });
+                    row.spawn((
+                        Text::new(label),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 10.0 * s, // the authored FontHeight 10
+                            ..default()
+                        },
+                        TextColor(GOLD),
+                        TextShadow {
+                            offset: Vec2::new(s, s),
+                            color: Color::BLACK,
+                        },
+                        Node {
+                            margin: UiRect::left(px(4.0)), // LEFT+24 from the checkbox's left edge
+                            ..default()
+                        },
+                    ));
+                });
+        }
     });
 }
 
@@ -627,11 +916,16 @@ pub(super) fn refresh_realmlist(
 pub(super) fn refresh_checkbox(
     form: Res<LoginForm>,
     boxes: Query<(&Interaction, &Children), With<ArtSwap>>,
-    mut marks: Query<&mut Visibility, (With<CheckMark>, Without<CheckHilight>)>,
+    mut marks: Query<(&CheckMark, &mut Visibility), Without<CheckHilight>>,
     mut hilights: Query<&mut Visibility, With<CheckHilight>>,
 ) {
-    for mut vis in &mut marks {
-        let want = if form.save {
+    for (mark, mut vis) in &mut marks {
+        let checked = match mark.0 {
+            #[cfg(target_arch = "wasm32")]
+            LoginAction::ToggleSavePassword => form.save_password,
+            _ => form.save,
+        };
+        let want = if checked {
             Visibility::Inherited
         } else {
             Visibility::Hidden

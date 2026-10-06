@@ -136,7 +136,7 @@ pub use tokens::{substitute, TokenContext};
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -632,11 +632,16 @@ impl SpellCatalog {
         self.spells.get(&id)
     }
 
-    /// The name of a spell's dispel class — the aura tooltip's right column and the `debuffType`
-    /// the debuff border tints by. `None` when the spell has no class or the class is one
+    /// The localized name of a spell's dispel class — the aura tooltip's right column.
+    /// `None` when the spell has no class or the class is one
     /// `SpellDispelType.dbc`'s `[+0x28]` gate withholds (see [`dispel_types`]).
     pub fn dispel_name(&self, display: &SpellDisplay) -> Option<&str> {
         self.dispel_types.name(display.dispel)
+    }
+
+    /// Invariant Lua aura type key, for original FrameXML's DebuffTypeColor.
+    pub fn dispel_key(&self, display: &SpellDisplay) -> Option<&str> {
+        self.dispel_types.key(display.dispel)
     }
 
     /// Every loaded spell `(id, display)`, unordered — the corpus instruments' walk
@@ -738,7 +743,7 @@ fn spell_schema() -> Schema {
 }
 
 /// Load the joined spell display catalog off the patch chain.
-pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
+pub fn load_spell_catalog(chain: &mut impl FileSource) -> Result<SpellCatalog> {
     let icons = crate::dbc::load_spell_icon_map(chain)?;
     let dispel_types = load_spell_dispel_types(chain)?;
     // The SpellCategory "matches every query" wildcard set (`GetCooldownInfo 0x6e13e0`'s category

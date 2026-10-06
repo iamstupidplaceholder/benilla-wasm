@@ -53,6 +53,7 @@ trait Pasteboard {
     fn name(&self) -> &'static str;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Pasteboard for arboard::Clipboard {
     fn read_text(&mut self) -> Result<Option<String>, String> {
         // `ContentNotAvailable` is arboard's "empty, or holds no format we asked for" — the normal
@@ -77,6 +78,47 @@ impl Pasteboard for arboard::Clipboard {
             "arboard/win32"
         } else {
             "arboard/x11"
+        }
+    }
+}
+
+/// Browser clipboard operations are asynchronous and permission-gated. Until
+/// the host input path is async, retain copied text for paste within this
+/// client session instead of pulling the unsupported native `arboard` crate
+/// into wasm. This does not claim OS clipboard integration.
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+struct BrowserPasteboard(Option<String>);
+
+#[cfg(target_arch = "wasm32")]
+impl Pasteboard for BrowserPasteboard {
+    fn read_text(&mut self) -> Result<Option<String>, String> {
+        Ok(self.0.clone())
+    }
+
+    fn write_text(&mut self, text: &str) -> Result<(), String> {
+        self.0 = Some(text.to_owned());
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "browser/in-process"
+    }
+}
+
+fn open_default() -> Option<Box<dyn Pasteboard>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Some(Box::<BrowserPasteboard>::default())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match arboard::Clipboard::new() {
+            Ok(clipboard) => Some(Box::new(clipboard)),
+            Err(e) => {
+                warn!("clipboard: unavailable — {e}{}", session_note());
+                None
+            }
         }
     }
 }
@@ -189,13 +231,7 @@ impl HostClipboard {
         self.opened = true;
         self.backend = match wl_display {
             Some(display) => Some(open_wayland(display)),
-            None => match arboard::Clipboard::new() {
-                Ok(clipboard) => Some(Box::new(clipboard)),
-                Err(e) => {
-                    warn!("clipboard: unavailable — {e}{}", session_note());
-                    None
-                }
-            },
+            None => open_default(),
         };
         if let Some(backend) = &self.backend {
             info!("clipboard: {}{}", backend.name(), session_note());

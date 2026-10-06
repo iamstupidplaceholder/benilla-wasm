@@ -36,7 +36,6 @@ use super::{DisplayModel, ModelHandle};
 use benilla_assets::m2_url;
 
 mod resolve;
-pub(in crate::entities) use resolve::placement;
 pub(crate) use resolve::DressKey;
 pub(super) use resolve::{resolve_corpse_equipment, resolve_equipment};
 mod spawn;
@@ -87,6 +86,42 @@ pub(crate) mod attach_id {
     /// The quiver-on-back attach (wow-re §H2, byte-verified 3×): the worn ammo container's
     /// model parents at M2 attachment id 26 — the same point the stowed two-hander family uses.
     pub(crate) const QUIVER: u16 = 26;
+}
+
+/// The drawn/stowed attachment point for one held slot. Kept with the attachment-id vocabulary so
+/// the world equipment resolver and the off-world preview builder share the exact same mapping.
+pub(in crate::entities) fn placement(
+    slot: usize,
+    inv_type: u32,
+    item_sheath: u8,
+    unit_sheath: u8,
+) -> Option<u16> {
+    use attach_id::*;
+    let shield = inv_type == 14;
+    match slot {
+        2 => (unit_sheath == 2).then_some(if inv_type == 15 {
+            HAND_LEFT
+        } else {
+            HAND_RIGHT
+        }),
+        0 | 1 if unit_sheath == 1 => Some(match (slot, shield) {
+            (0, _) => HAND_RIGHT,
+            (_, true) => SHIELD,
+            (_, false) => HAND_LEFT,
+        }),
+        0 | 1 => match item_sheath {
+            1 => Some(if slot == 0 { BACK_RIGHT } else { BACK_LEFT }),
+            2 => Some(if slot == 0 {
+                BACK_LOWER_MAIN
+            } else {
+                BACK_LOWER_OFF
+            }),
+            3 => Some(if slot == 0 { HIP_MAIN } else { HIP_OFF }),
+            4 => Some(SHIELD_BACK),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Item-display rendering: the `ItemDisplayInfo.dbc` catalog (held models + armor region textures,

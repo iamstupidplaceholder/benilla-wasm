@@ -1196,13 +1196,13 @@ pub struct ButtonState {
     /// reference's `UIMenuButtonTemplate` (no `<ButtonText>`, `SetText` from Lua) hugs its left
     /// edge. The second is the label's paint and query surface, reached through the live link
     /// (`script::button::apply_normal_font`, `script::extract`). Decision 1996.
-    pub normal_justify_h: Option<crate::script::JustifyH>,
+    pub normal_justify_h: Option<crate::justify::JustifyH>,
     /// See [`ButtonState::normal_justify_h`] — `<HighlightFont justifyH=>`, the highlight instance
     /// (`+0x3b8`). Paint only: the adopter reads the normal instance alone.
-    pub highlight_justify_h: Option<crate::script::JustifyH>,
+    pub highlight_justify_h: Option<crate::justify::JustifyH>,
     /// See [`ButtonState::normal_justify_h`] — `<DisabledFont justifyH=>`, the disabled instance
     /// (`+0x434`). Paint only.
-    pub disabled_justify_h: Option<crate::script::JustifyH>,
+    pub disabled_justify_h: Option<crate::justify::JustifyH>,
     /// `Button:SetFont(file, height [, flags])` — the button's own face/size/flags, set on the
     /// embedded font objects themselves rather than on any font object they inherit. See
     /// [`ButtonFont`] for why one record covers the client's three.

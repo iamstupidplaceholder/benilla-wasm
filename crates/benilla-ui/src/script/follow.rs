@@ -24,7 +24,7 @@
 //! table enters the app's follow funnel directly; these globals are the *other* half — the shipped
 //! UI's, and any addon's.
 
-use mlua::Lua;
+use benilla_lua::{Value, Vm};
 
 use super::Model;
 
@@ -50,33 +50,28 @@ impl super::UiScript {
 }
 
 /// Register the follow globals (the same style/place [`super::duel`] registers its own).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // FollowUnit(unit) — `SlashCmdList["FOLLOW"]`'s no-argument arm, `FollowUnit("target")`.
-    g.set(
-        "FollowUnit",
-        lua.create_function(|lua, unit: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.follow_requests.push(FollowRequest::ByUnit(unit));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("FollowUnit", |lua, unit: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.follow_requests.push(FollowRequest::ByUnit(unit));
+        Ok(())
+    })?;
 
     // FollowByName(name, exactMatch) — the unit popup's Follow row passes `1`; the slash command
     // passes nothing, which is the prefix-matching case (`nil` is false here, as in the ref, where
     // the argument reaches `0x493aa0` as a plain zero).
-    g.set(
+    lua.register_function(
         "FollowByName",
-        lua.create_function(|lua, (name, exact): (String, Option<mlua::Value>)| {
+        |lua, (name, exact): (String, Option<Value>)| {
             // Absent is the slash command's case; the popup row passes `1`. A numeric zero counts
             // as false as well — no shipped caller passes one, and treating it that way is the
             // reading both plausible arg-2 fetches on the C side (`lua_toboolean` vs a number
             // compare) agree on for every value that can actually arrive here.
             let exact = match exact {
-                None | Some(mlua::Value::Nil) | Some(mlua::Value::Boolean(false)) => false,
-                Some(mlua::Value::Integer(n)) => n != 0,
-                Some(mlua::Value::Number(n)) => n != 0.0,
+                None | Some(Value::Nil) | Some(Value::Boolean(false)) => false,
+                Some(Value::Integer(n)) => n != 0,
+                Some(Value::Number(n)) => n != 0.0,
                 Some(_) => true,
             };
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
@@ -84,7 +79,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .follow_requests
                 .push(FollowRequest::ByName { name, exact });
             Ok(())
-        })?,
+        },
     )?;
 
     Ok(())

@@ -21,7 +21,7 @@ use super::test_ui::load_ui as load_xml;
 /// `BACKGROUND` l.131 (whose own trailing comment in that file reads *"Title in the chat
 /// preferences menu"*, i.e. this exact row), `DISPLAY` l.937, `FONT_SIZE` l.1983,
 /// `FONT_SIZE_TEMPLATE` l.1984, `CHAT_OPTIONS_LABEL` l.673, `NEWBIE_TOOLTIP_CHATOPTIONS` l.2724.
-fn bake_strings(s: &UiScript) {
+fn bake_strings(s: &mut UiScript) {
     s.run(
         r#"
         BACKGROUND = "Background"
@@ -61,9 +61,9 @@ fn chat_with_menu() -> UiScript {
         "Interface\\FrameXML\\UIPanelTemplates.xml",
         "Interface\\FrameXML\\FloatingChatFrame.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    bake_strings(&s);
+    bake_strings(&mut s);
     super::fire_chat_login(&mut s);
     s.set_screen_size(1600.0, 900.0);
     s.resolve();
@@ -310,7 +310,7 @@ fn the_font_size_submenu_resizes_the_window_and_stores_the_pick() {
     // The rows come from `for index, value in CHAT_FONT_HEIGHTS` — a `next` walk over a table
     // built with explicit `[n] =` keys, whose order is the VM's hash order and not necessarily
     // ascending; the test reads the rows by their values rather than assuming one.
-    let row_with = |s: &UiScript, pt: i64| -> String {
+    let row_with = |s: &mut UiScript, pt: i64| -> String {
         s.eval::<String>(&format!(
             "for i = 1, DropDownList2.numButtons do \
                  local b = getglobal('DropDownList2Button'..i) \
@@ -320,18 +320,18 @@ fn the_font_size_submenu_resizes_the_window_and_stores_the_pick() {
         .unwrap()
     };
     assert_eq!(
-        s.eval::<String>(&format!("return {}:GetText()", row_with(&s, 12)))
+        s.eval::<String>(&format!("return {}:GetText()", row_with(&mut s, 12)))
             .unwrap(),
         "12 pt",
         "FONT_SIZE_TEMPLATE over the value"
     );
-    let ticked = row_with(&s, 14);
+    let ticked = row_with(&mut s, 14);
     assert!(
         s.eval::<bool>(&format!("return {ticked}Check:IsVisible()"))
             .unwrap(),
         "the tick follows the font the frame is actually wearing (ChatFontNormal, 14)"
     );
-    let sixteen = row_with(&s, 16);
+    let sixteen = row_with(&mut s, 16);
     left_click(&mut s, &sixteen);
     let (_, height): (String, f64) = s
         .eval("local f, h = ChatFrame1:GetFont() return f, h")

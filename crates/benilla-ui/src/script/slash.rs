@@ -44,7 +44,7 @@
 //! it is bounded (nothing in the corpus does it) and the fix is to move our command handlers into
 //! transcribed FrameXML, which is a much larger piece of work than this one.
 
-use mlua::{Table, Value};
+use benilla_lua::{Function, LuaContext, MultiValue, Value};
 
 impl super::UiScript {
     /// Try to dispatch `/cmd args` through `SlashCmdList`. Returns whether a handler ran.
@@ -62,7 +62,11 @@ impl super::UiScript {
         };
         // The reference passes `strsub(text, strlen(cmdString) + 2)` — everything after the alias
         // and one space. The host has already made that split, so `args` IS that string.
-        if let Err(e) = handler.call::<()>(args.to_string()) {
+        let result = self.lua.call_function(
+            &handler,
+            MultiValue::from([Value::from(args.to_string())]),
+        );
+        if let Err(e) = result {
             self.model_mut().record_script_error(format!("/{cmd}: {e}"));
         }
         true
@@ -70,21 +74,27 @@ impl super::UiScript {
 
     /// Is `cmd` a command some `SlashCmdList` entry claims? Pure query, fires nothing — the
     /// completion/echo paths want to know without running anything.
-    pub fn has_slash_command(&self, cmd: &str) -> bool {
+    pub fn has_slash_command(&mut self, cmd: &str) -> bool {
         self.find_slash_handler(cmd).is_some()
     }
 
     /// The reference's walk: over `SlashCmdList`'s keys, then `SLASH_<key><n>` until a gap.
-    fn find_slash_handler(&self, cmd: &str) -> Option<mlua::Function> {
-        let globals = self.lua.globals();
-        let list: Table = globals.get("SlashCmdList").ok()?;
+    fn find_slash_handler(&mut self, cmd: &str) -> Option<Function> {
+        let lua = &mut self.lua;
+        let list = lua.global_table("SlashCmdList").ok()?;
         let want = cmd.to_ascii_uppercase();
-        for pair in list.pairs::<String, Value>() {
-            let Ok((index, Value::Function(handler))) = pair else {
+        for (index, value) in lua.table_entries(&list).ok()? {
+            let (Value::String(index), Value::Function(handler)) = (index, value) else {
                 continue; // a non-function entry is not a command; the reference would error on it
             };
+            let Ok(index) = index.as_str() else {
+                continue;
+            };
             for n in 1.. {
-                let alias: Option<String> = globals.get(format!("SLASH_{index}{n}")).ok().flatten();
+                let alias: Option<String> = lua
+                    .get_global(format!("SLASH_{index}{n}").as_str())
+                    .ok()
+                    .flatten();
                 let Some(alias) = alias else { break };
                 let alias = alias.trim_start_matches('/');
                 if alias.eq_ignore_ascii_case(&want) {
@@ -136,7 +146,7 @@ mod tests {
     /// property of the data format rather than a bug to repair.
     #[test]
     fn the_alias_walk_stops_at_the_first_gap() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("SlashCmdList = {}").unwrap();
         s.run(
             r#"
@@ -179,7 +189,7 @@ mod tests {
     /// A `SlashCmdList` entry that is not a function is skipped rather than called.
     #[test]
     fn a_non_function_entry_is_not_a_command() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("SlashCmdList = {}").unwrap();
         s.run(r#"SLASH_ODD1 = "/odd" SlashCmdList["ODD"] = "not a function""#)
             .unwrap();

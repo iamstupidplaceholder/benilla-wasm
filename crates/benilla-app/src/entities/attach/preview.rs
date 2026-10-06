@@ -30,23 +30,23 @@
 //! the same [`ItemDisplays`] want the world path uses.
 
 use benilla_formats::CharSkinSlot;
-use benilla_protocol::{
-    CharEnumItem, CHARACTER_FLAG_GHOST, CHARACTER_FLAG_HIDE_CLOAK, CHARACTER_FLAG_HIDE_HELM,
-};
+use benilla_protocol::CHARACTER_FLAG_GHOST;
+use benilla_protocol::{CharEnumItem, CHARACTER_FLAG_HIDE_CLOAK, CHARACTER_FLAG_HIDE_HELM};
 use bevy::prelude::*;
 
 use crate::portrait::{
-    BoothTwins, DressUpBake, DressUpLook, DressUpPreview, GhostKit, GlueLook, GluePetBake,
-    GluePreview, GluePreviewBake, PetLook, PreviewBillboard, PreviewEffects, PreviewPart,
-    PreviewRider,
+    BoothTwins, GlueLook, GluePetBake, GluePreview, GluePreviewBake, GlueScenePair, PetLook,
+    PreviewBillboard, PreviewEffects, PreviewPart, PreviewRider,
 };
+use crate::portrait::{DressUpBake, DressUpLook, DressUpPreview, GhostKit};
 use benilla_assets::materials::WowModelMaterial;
 use benilla_assets::WorldAssets;
 
 use super::super::equipment::{attach_id, ensure_item_model, placement, ItemModelKind};
 use super::super::item_glow::{self, ItemGlows};
 use super::super::{
-    CharCreate, Characters, Creatures, EntityPart, ItemDisplays, SkinComposites, SkinSections,
+    CharCreate, Characters, Creatures, EntityPart, ItemDisplays, SkinComposites, SkinKey,
+    SkinSections,
 };
 use super::char_skin::{equip_geosets, BodySkin, CharLook};
 
@@ -127,6 +127,71 @@ pub(in crate::entities) struct PreviewSpec {
     pub(in crate::entities) ranged_in_hand: bool,
 }
 
+impl PreviewSpec {
+    pub(in crate::entities) fn body_slots(&self) -> [u32; 8] {
+        ENUM_BODYSLOTS.map(|slot| self.equipment[slot].display_id)
+    }
+
+    pub(in crate::entities) fn skin_key(&self) -> SkinKey {
+        SkinKey {
+            race: self.race,
+            sex: self.sex,
+            skin: self.skin,
+            face: self.face,
+            facial_hair: self.facial_hair,
+            hair_style: self.hair_style,
+            hair_color: self.hair_color,
+            equip: self.body_slots(),
+            emblem: self.emblem,
+            tabard_preview: false,
+        }
+    }
+}
+
+/// Reduce either production glue look to the single appearance tuple consumed by both the native
+/// assembler and the browser's asynchronous body-atlas prefetch adapter.
+pub(in crate::entities) fn glue_preview_spec(
+    look: GlueLook,
+    char_create: &CharCreate,
+) -> Option<PreviewSpec> {
+    let (race, sex) = look.body();
+    let display_id = char_create.0.body_display(race, sex)?;
+    let (skin, face, hair_style, hair_color, facial_hair) = match look {
+        GlueLook::Create(l) => (l.skin, l.face, l.hair_style, l.hair_color, l.facial_hair),
+        GlueLook::Select(l) => (l.skin, l.face, l.hair_style, l.hair_color, l.facial_hair),
+    };
+    let (equipment, flags): ([CharEnumItem; 19], u32) = match look {
+        GlueLook::Create(l) => {
+            let mut equipment = [CharEnumItem::default(); 19];
+            for item in char_create.0.start_outfit(l.race, l.class, l.sex) {
+                if let Some(slot) = equip_slot(item.inv_type) {
+                    equipment[slot] = CharEnumItem {
+                        display_id: item.display_id,
+                        inventory_type: item.inv_type,
+                    };
+                }
+            }
+            (equipment, 0)
+        }
+        GlueLook::Select(l) => (l.equipment, l.flags),
+    };
+    Some(PreviewSpec {
+        display_id,
+        race,
+        sex,
+        skin,
+        face,
+        hair_style,
+        hair_color,
+        facial_hair,
+        equipment,
+        // SMSG_CHAR_ENUM carries only the guild id, not its five emblem indices.
+        emblem: None,
+        flags,
+        ranged_in_hand: false,
+    })
+}
+
 /// What one [`assemble`] produced — the content half of a preview bake, in the booth's own shape.
 pub(in crate::entities) struct Assembled {
     pub(in crate::entities) parts: Vec<PreviewPart>,
@@ -161,7 +226,7 @@ pub(in crate::entities) struct PreviewCtx<'a, 'w> {
 /// bake untouched and retries. A bare yaw change never reaches here (the booth handles it).
 pub(in crate::entities) fn build_glue_preview(
     preview: Res<GluePreview>,
-    mut bake: ResMut<GluePreviewBake>,
+    output: (ResMut<GluePreviewBake>, ResMut<GlueScenePair>),
     creatures: Option<Res<Creatures>>,
     characters: Option<Res<Characters>>,
     char_create: Option<Res<CharCreate>>,
@@ -185,6 +250,7 @@ pub(in crate::entities) fn build_glue_preview(
     // look whose models weren't ready yet keeps retrying until they build).
     mut state: Local<PreviewState>,
 ) {
+    let (mut bake, mut pair) = output;
     // A new look resets the retry latch.
     if state.last_look != preview.look {
         state.last_look = preview.look;
@@ -201,6 +267,8 @@ pub(in crate::entities) fn build_glue_preview(
                 revision: bake.revision + 1,
                 ..default()
             };
+            pair.look = None;
+            pair.has_parts = false;
         }
         state.built = true;
         return;
@@ -213,59 +281,11 @@ pub(in crate::entities) fn build_glue_preview(
     else {
         return;
     };
-    let (race, sex) = look.body();
-    let Some(display_id) = char_create.0.body_display(race, sex) else {
+    let Some(spec) = glue_preview_spec(look, char_create) else {
         state.built = true; // a non-playable race can't resolve — nothing to show, don't spin
         return;
     };
-
-    // The body appearance is identical in shape for both looks (only its source struct differs).
-    let (skin, face, hair_style, hair_color, facial_hair) = match look {
-        GlueLook::Create(l) => (l.skin, l.face, l.hair_style, l.hair_color, l.facial_hair),
-        GlueLook::Select(l) => (l.skin, l.face, l.hair_style, l.hair_color, l.facial_hair),
-    };
-
-    // The equipment, unified as an enum-shaped `[CharEnumItem; 19]` + display flags: a Select look
-    // carries its roster record verbatim; a Create look resolves the (race, class, sex) starting
-    // outfit (CharStartOutfit, decision 0527) into the same slot array — each worn item at the
-    // equipment slot its InventoryType maps to. Display ids are ItemDisplayInfo ids in both cases
-    // (no template hop). A level-1 outfit carries no helm/cloak and there is no hide flag, so the
-    // create preview's flags are 0 — the create body is dressed exactly like a geared select body.
-    let (equipment, flags): ([CharEnumItem; 19], u32) = match look {
-        GlueLook::Create(l) => {
-            let mut equipment = [CharEnumItem::default(); 19];
-            for item in char_create.0.start_outfit(l.race, l.class, l.sex) {
-                if let Some(slot) = equip_slot(item.inv_type) {
-                    equipment[slot] = CharEnumItem {
-                        display_id: item.display_id,
-                        inventory_type: item.inv_type,
-                    };
-                }
-            }
-            (equipment, 0)
-        }
-        GlueLook::Select(l) => (l.equipment, l.flags),
-    };
-
-    let spec = PreviewSpec {
-        display_id,
-        race,
-        sex,
-        skin,
-        face,
-        hair_style,
-        hair_color,
-        facial_hair,
-        equipment,
-        // No crest at character select (decision 1704). `SMSG_CHAR_ENUM` carries a `guildId` but
-        // not the five emblem indices, and there is no world session to `CMSG_GUILD_QUERY` with —
-        // so a Guild Tabard on the mannequin wears its own `Tabard_A_05Default` art, which is what
-        // the reference's own empty guild cache leaves it with too.
-        emblem: None,
-        flags,
-        // The mannequin's own law: the select build skips EQUIPMENT_SLOT_RANGED (0x472bfe).
-        ranged_in_hand: false,
-    };
+    let (display_id, race, sex) = (spec.display_id, spec.race, spec.sex);
     let Some(a) = assemble(
         &spec,
         &mut PreviewCtx {
@@ -331,6 +351,8 @@ pub(in crate::entities) fn build_glue_preview(
             GlueLook::Select(_) => "select",
         },
     );
+    pair.look = Some(look);
+    pair.has_parts = !a.parts.is_empty();
     *bake = GluePreviewBake {
         look: Some(look),
         display_id,
@@ -690,10 +712,20 @@ fn assemble(spec: &PreviewSpec, ctx: &mut PreviewCtx<'_, '_>) -> Option<Assemble
         ctx.world_assets,
         parts,
         ctx.images,
-        &mut ctx.skin_composites.0,
+        &mut ctx.skin_composites,
         ctx.asset_server,
         ctx.mats,
     );
+    // On the browser a character body is an atomic bake: geometry, equipment and its asynchronously
+    // prefetched runtime body atlas land together. Native keeps its existing best-effort behavior.
+    #[cfg(target_arch = "wasm32")]
+    if parts
+        .iter()
+        .any(|part| part.char_slot == Some(CharSkinSlot::Body))
+        && char_mats.0.is_none()
+    {
+        return None;
+    }
 
     // Whether this look shows the part's geoset (billboard or body alike).
     let shows = |p: &EntityPart| {
@@ -813,64 +845,60 @@ fn assemble(spec: &PreviewSpec, ctx: &mut PreviewCtx<'_, '_>) -> Option<Assemble
                     emitters: item.emitters.clone(),
                 });
             }
-            let Some(paths) = ctx.glows.as_deref().and_then(|g| g.effects(w.visual)) else {
-                continue;
-            };
-            for (slot, path) in paths
-                .iter()
-                .enumerate()
-                .filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
             {
-                // The seat: the body's attach point plus where this slot sits on the ITEM's own
-                // model. A slot the item model doesn't author hangs nothing — the world lane's
-                // rule, and the reference's.
-                let at = crate::portrait::attachment_point(
-                    &item.skeleton,
-                    &item.attachments,
-                    slot as u16,
-                );
-                let (Some(at), Some(glow)) =
-                    (at, ctx.glows.as_deref().and_then(|g| g.models.get(path)))
-                else {
+                let Some(paths) = ctx.glows.as_deref().and_then(|g| g.effects(w.visual)) else {
                     continue;
                 };
-                let offset = point.offset + at;
-                for p in glow.parts.iter().flatten() {
-                    // Same split as the item's own batches above. This is not a rare arm:
-                    // `Spells\Enchantments\Sparkle_A.m2` is *one* additive camera-facing quad and
-                    // nothing else — no emitters at all — and `ItemVisuals` 28 (10 item displays)
-                    // hangs it on slot 4, so dropping billboard batches here glowed those items
-                    // nothing whatsoever at select.
-                    match &p.billboard {
-                        Some(info) => preview_billboards.push(PreviewBillboard {
-                            mesh: p.mesh.clone(),
-                            material: p.material.clone(),
-                            bone: point.bone,
-                            offset: offset + info.pivot,
-                            kind: info.kind,
-                            twins: BoothTwins {
-                                blend: p.fade_blend.clone(),
-                                zfill: p.zfill.clone(),
-                            },
-                        }),
-                        None => riders.push(PreviewRider {
-                            mesh: p.mesh.clone(),
-                            material: p.material.clone(),
+                for (slot, path) in paths
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
+                {
+                    // The seat: the body's attach point plus where this slot sits on the ITEM's
+                    // own model. A missing attachment hangs nothing, like the world lane.
+                    let at = crate::portrait::attachment_point(
+                        &item.skeleton,
+                        &item.attachments,
+                        slot as u16,
+                    );
+                    let (Some(at), Some(glow)) =
+                        (at, ctx.glows.as_deref().and_then(|g| g.models.get(path)))
+                    else {
+                        continue;
+                    };
+                    let offset = point.offset + at;
+                    for p in glow.parts.iter().flatten() {
+                        match &p.billboard {
+                            Some(info) => preview_billboards.push(PreviewBillboard {
+                                mesh: p.mesh.clone(),
+                                material: p.material.clone(),
+                                bone: point.bone,
+                                offset: offset + info.pivot,
+                                kind: info.kind,
+                                twins: BoothTwins {
+                                    blend: p.fade_blend.clone(),
+                                    zfill: p.zfill.clone(),
+                                },
+                            }),
+                            None => riders.push(PreviewRider {
+                                mesh: p.mesh.clone(),
+                                material: p.material.clone(),
+                                bone: point.bone,
+                                offset,
+                                twins: BoothTwins {
+                                    blend: p.fade_blend.clone(),
+                                    zfill: p.zfill.clone(),
+                                },
+                            }),
+                        }
+                    }
+                    if !glow.emitters.is_empty() {
+                        preview_effects.push(PreviewEffects {
                             bone: point.bone,
                             offset,
-                            twins: BoothTwins {
-                                blend: p.fade_blend.clone(),
-                                zfill: p.zfill.clone(),
-                            },
-                        }),
+                            emitters: glow.emitters.clone(),
+                        });
                     }
-                }
-                if !glow.emitters.is_empty() {
-                    preview_effects.push(PreviewEffects {
-                        bone: point.bone,
-                        offset,
-                        emitters: glow.emitters.clone(),
-                    });
                 }
             }
         }
@@ -1066,6 +1094,11 @@ pub(in crate::entities) fn build_glue_pet(
     mut state: Local<PetState>,
 ) {
     let want = preview.look.and_then(|l| l.pet());
+    // Browser tables can arrive after the first preview bake. Reapply the
+    // original family scale once the resource is published.
+    if families.as_ref().is_some_and(|f| f.is_changed()) {
+        state.built = false;
+    }
     if state.last != want {
         state.last = want;
         state.built = false;
@@ -1088,7 +1121,8 @@ pub(in crate::entities) fn build_glue_pet(
     let Some(creatures) = creatures.as_deref() else {
         return;
     };
-    let Some(pet) = assemble_pet(creatures, families.as_deref(), want) else {
+    let pet = assemble_pet(creatures, families.as_deref(), want);
+    let Some(pet) = pet else {
         return; // the model is still loading — retry next frame
     };
     debug!(
@@ -1168,10 +1202,12 @@ fn assemble_pet(
         // The size: the family's level ramp, and the display's scale product only where the family
         // table can't answer — which is the reference's own order (it computes the product, then
         // overwrites it with the ramp, `0x472e87`). A display neither can size renders at 1.0.
-        scale: families
-            .and_then(|f| f.families.pet_scale(want.family, want.level))
-            .or_else(|| creatures.model_scale(display_id))
-            .unwrap_or(1.0),
+        scale: {
+            let family_scale = families.and_then(|f| f.families.pet_scale(want.family, want.level));
+            family_scale
+                .or_else(|| creatures.model_scale(display_id))
+                .unwrap_or(1.0)
+        },
         revision: 0, // the caller stamps it
     })
 }

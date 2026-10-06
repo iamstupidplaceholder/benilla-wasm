@@ -11,19 +11,19 @@ use benilla_ui::script::UiScript;
 
 use super::test_ui::load_ui as load_xml;
 
-fn visible(s: &UiScript, frame: &str) -> bool {
+fn visible(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsVisible() and true or false"))
         .unwrap()
 }
 
-fn text_of(s: &UiScript, fontstring: &str) -> String {
+fn text_of(s: &mut UiScript, fontstring: &str) -> String {
     s.eval::<String>(&format!("return {fontstring}:GetText() or ''"))
         .unwrap()
 }
 
 /// Push the host globals the app writes for an area transition. Long-bracket Lua strings, so a
 /// name with an apostrophe ("Lion's Pride Inn") survives.
-fn set_area(s: &UiScript, zone: &str, sub: &str, pvp: &str, faction: &str) {
+fn set_area(s: &mut UiScript, zone: &str, sub: &str, pvp: &str, faction: &str) {
     s.run(&format!(
         "__benilla_zone_name = [[{zone}]]; __benilla_subzone_name = [[{sub}]]; \
          __benilla_pvp_type = [[{pvp}]]; __benilla_pvp_faction = [[{faction}]]; \
@@ -39,20 +39,20 @@ fn harness() -> UiScript {
     // FACTION_CONTROLLED_TERRITORY, FREE_FOR_ALL_TERRITORY and the AUTOFOLLOW pair straight out of
     // GlobalStrings. Our deleted copy carried `X = X or "…"` fallbacks for a harness with no
     // chain; the reference's file has none, and it should not.
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // `TEXT()`, which AutoFollowStatus_OnEvent puts its message through.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     // The fading kit, its own manifest entry since window 8 — as it is in the reference's TOC.
-    load_xml(&s, "Interface\\FrameXML\\FadingFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\ZoneText.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\FadingFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ZoneText.xml");
     s
 }
 
@@ -62,16 +62,16 @@ fn new_area_splashes_zone_pvp_and_subzone_then_fades_out() {
     let mut s = harness();
 
     // OnLoad hides both fading frames.
-    assert!(!visible(&s, "ZoneTextFrame"));
-    assert!(!visible(&s, "SubZoneTextFrame"));
+    assert!(!visible(&mut s, "ZoneTextFrame"));
+    assert!(!visible(&mut s, "SubZoneTextFrame"));
 
     // Cross into Westfall proper (Alliance-owned): the big name + the territory line show.
-    set_area(&s, "Westfall", "", "friendly", "Alliance");
+    set_area(&mut s, "Westfall", "", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_NEW_AREA", vec![]);
-    assert!(visible(&s, "ZoneTextFrame"), "zone splash shows");
-    assert_eq!(text_of(&s, "ZoneTextString"), "Westfall");
-    assert_eq!(text_of(&s, "PVPInfoTextString"), "Alliance Territory");
-    assert_eq!(text_of(&s, "SubZoneTextString"), "");
+    assert!(visible(&mut s, "ZoneTextFrame"), "zone splash shows");
+    assert_eq!(text_of(&mut s, "ZoneTextString"), "Westfall");
+    assert_eq!(text_of(&mut s, "PVPInfoTextString"), "Alliance Territory");
+    assert_eq!(text_of(&mut s, "SubZoneTextString"), "");
 
     // The fade timeline (ref: in 0.5, hold 1.0, out 2.0). Mid-fade-in: alpha ≈ elapsed/0.5.
     s.tick(0.25);
@@ -83,58 +83,58 @@ fn new_area_splashes_zone_pvp_and_subzone_then_fades_out() {
     assert!((alpha - 1.0).abs() < 0.01, "hold alpha, got {alpha}");
     // Past in+hold+out: hidden again.
     s.tick(3.0);
-    assert!(!visible(&s, "ZoneTextFrame"), "fade-out ends in Hide()");
+    assert!(!visible(&mut s, "ZoneTextFrame"), "fade-out ends in Hide()");
 }
 
 #[test]
 fn subzone_hop_shows_only_the_small_line() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
-    set_area(&s, "Elwynn Forest", "", "friendly", "Alliance");
+    set_area(&mut s, "Elwynn Forest", "", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_NEW_AREA", vec![]);
     s.tick(4.0); // let the login splash finish
-    assert!(!visible(&s, "ZoneTextFrame"));
+    assert!(!visible(&mut s, "ZoneTextFrame"));
 
     // Goldshire: same zone, new subzone → the subzone frame alone.
-    set_area(&s, "Elwynn Forest", "Goldshire", "friendly", "Alliance");
+    set_area(&mut s, "Elwynn Forest", "Goldshire", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED", vec![]);
-    assert!(visible(&s, "SubZoneTextFrame"), "subzone splash shows");
+    assert!(visible(&mut s, "SubZoneTextFrame"), "subzone splash shows");
     assert!(
-        !visible(&s, "ZoneTextFrame"),
+        !visible(&mut s, "ZoneTextFrame"),
         "the big zone name stays hidden on a subzone hop"
     );
-    assert_eq!(text_of(&s, "SubZoneTextString"), "Goldshire");
+    assert_eq!(text_of(&mut s, "SubZoneTextString"), "Goldshire");
 }
 
 #[test]
 fn plain_zone_changed_recaches_silently_so_new_area_wont_resplash() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
-    set_area(&s, "Elwynn Forest", "", "friendly", "Alliance");
+    set_area(&mut s, "Elwynn Forest", "", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_NEW_AREA", vec![]);
     s.tick(4.0);
-    assert!(!visible(&s, "ZoneTextFrame"));
+    assert!(!visible(&mut s, "ZoneTextFrame"));
 
     // The reference law: a plain ZONE_CHANGED updates ZoneTextFrame.zoneText and returns —
     // no splash even though the zone text changed…
-    set_area(&s, "Westfall", "The Jansen Stead", "friendly", "Alliance");
+    set_area(&mut s, "Westfall", "The Jansen Stead", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED", vec![]);
     assert!(
-        !visible(&s, "ZoneTextFrame"),
+        !visible(&mut s, "ZoneTextFrame"),
         "plain ZONE_CHANGED never splashes the zone name"
     );
     // …and a NEW_AREA landing on the now-cached name stays silent too.
     s.fire_event("ZONE_CHANGED_NEW_AREA", vec![]);
     assert!(
-        !visible(&s, "ZoneTextFrame"),
+        !visible(&mut s, "ZoneTextFrame"),
         "NEW_AREA on the already-cached zone text must not re-splash"
     );
 
     // A genuinely new zone splashes again.
-    set_area(&s, "Duskwood", "", "contested", "");
+    set_area(&mut s, "Duskwood", "", "contested", "");
     s.fire_event("ZONE_CHANGED_NEW_AREA", vec![]);
-    assert!(visible(&s, "ZoneTextFrame"));
-    assert_eq!(text_of(&s, "PVPInfoTextString"), "Contested Territory");
+    assert!(visible(&mut s, "ZoneTextFrame"));
+    assert_eq!(text_of(&mut s, "PVPInfoTextString"), "Contested Territory");
 }
 
 /// The director's abbey repro, outdoor half: "Northshire Abbey" is a real outdoor SUBZONE
@@ -147,7 +147,7 @@ fn abbey_grounds_subzone_hop_shows_no_territory_line() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
     set_area(
-        &s,
+        &mut s,
         "Elwynn Forest",
         "Northshire Valley",
         "friendly",
@@ -157,17 +157,17 @@ fn abbey_grounds_subzone_hop_shows_no_territory_line() {
     s.tick(4.0); // both splashes fully faded
 
     set_area(
-        &s,
+        &mut s,
         "Elwynn Forest",
         "Northshire Abbey",
         "friendly",
         "Alliance",
     );
     s.fire_event("ZONE_CHANGED", vec![]);
-    assert!(visible(&s, "SubZoneTextFrame"), "the subzone line splashes");
-    assert_eq!(text_of(&s, "SubZoneTextString"), "Northshire Abbey");
+    assert!(visible(&mut s, "SubZoneTextFrame"), "the subzone line splashes");
+    assert_eq!(text_of(&mut s, "SubZoneTextString"), "Northshire Abbey");
     assert!(
-        !visible(&s, "ZoneTextFrame"),
+        !visible(&mut s, "ZoneTextFrame"),
         "ZoneTextFrame stays hidden on a plain subzone hop — no territory line can show"
     );
 }
@@ -183,7 +183,7 @@ fn abbey_interior_shows_the_room_in_the_small_line_alone() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
     set_area(
-        &s,
+        &mut s,
         "Elwynn Forest",
         "Northshire Abbey",
         "friendly",
@@ -193,17 +193,17 @@ fn abbey_interior_shows_the_room_in_the_small_line_alone() {
     s.tick(4.0);
 
     // Step inside: zone slot UNCHANGED, subzone = the group row's name.
-    set_area(&s, "Elwynn Forest", "Main Hall", "friendly", "Alliance");
+    set_area(&mut s, "Elwynn Forest", "Main Hall", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_INDOORS", vec![]);
     assert!(
-        !visible(&s, "ZoneTextFrame"),
+        !visible(&mut s, "ZoneTextFrame"),
         "the zone text did not change — no big splash, so no territory line"
     );
     assert!(
-        visible(&s, "SubZoneTextFrame"),
+        visible(&mut s, "SubZoneTextFrame"),
         "the room name splashes small"
     );
-    assert_eq!(text_of(&s, "SubZoneTextString"), "Main Hall");
+    assert_eq!(text_of(&mut s, "SubZoneTextString"), "Main Hall");
 }
 
 /// The INN case — the override FIRES (the whole-WMO name differs from the street subzone):
@@ -215,16 +215,16 @@ fn abbey_interior_shows_the_room_in_the_small_line_alone() {
 fn inn_entry_splashes_the_inn_name_with_territory_line() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
-    set_area(&s, "Elwynn Forest", "Goldshire", "friendly", "Alliance");
+    set_area(&mut s, "Elwynn Forest", "Goldshire", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_NEW_AREA", vec![]);
     s.tick(4.0);
 
-    set_area(&s, "Lion's Pride Inn", "", "friendly", "Alliance");
+    set_area(&mut s, "Lion's Pride Inn", "", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_INDOORS", vec![]);
-    assert!(visible(&s, "ZoneTextFrame"), "the inn name splashes big");
-    assert_eq!(text_of(&s, "ZoneTextString"), "Lion's Pride Inn");
+    assert!(visible(&mut s, "ZoneTextFrame"), "the inn name splashes big");
+    assert_eq!(text_of(&mut s, "ZoneTextString"), "Lion's Pride Inn");
     assert_eq!(
-        text_of(&s, "PVPInfoTextString"),
+        text_of(&mut s, "PVPInfoTextString"),
         "Alliance Territory",
         "SubZoneTextFrame fires last (FIFO) — its SetZoneText(1) leaves the territory line set"
     );
@@ -238,7 +238,7 @@ fn indoor_exit_returns_the_subzone_line_alone() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
     set_area(
-        &s,
+        &mut s,
         "Elwynn Forest",
         "Northshire Abbey",
         "friendly",
@@ -250,17 +250,17 @@ fn indoor_exit_returns_the_subzone_line_alone() {
     s.tick(4.0); // everything faded
 
     set_area(
-        &s,
+        &mut s,
         "Elwynn Forest",
         "Northshire Abbey",
         "friendly",
         "Alliance",
     );
     s.fire_event("ZONE_CHANGED", vec![]);
-    assert!(visible(&s, "SubZoneTextFrame"));
-    assert_eq!(text_of(&s, "SubZoneTextString"), "Northshire Abbey");
+    assert!(visible(&mut s, "SubZoneTextFrame"));
+    assert_eq!(text_of(&mut s, "SubZoneTextString"), "Northshire Abbey");
     assert!(
-        !visible(&s, "ZoneTextFrame"),
+        !visible(&mut s, "ZoneTextFrame"),
         "nothing changed the zone text — cache-only, no splash"
     );
 }
@@ -272,18 +272,18 @@ fn indoor_exit_returns_the_subzone_line_alone() {
 fn room_to_room_hop_splashes_the_room_name_alone() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
-    set_area(&s, "Elwynn Forest", "Main Hall", "friendly", "Alliance");
+    set_area(&mut s, "Elwynn Forest", "Main Hall", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_INDOORS", vec![]);
     s.tick(4.0);
 
-    set_area(&s, "Elwynn Forest", "Library Wing", "friendly", "Alliance");
+    set_area(&mut s, "Elwynn Forest", "Library Wing", "friendly", "Alliance");
     s.fire_event("ZONE_CHANGED_INDOORS", vec![]);
     assert!(
-        !visible(&s, "ZoneTextFrame"),
+        !visible(&mut s, "ZoneTextFrame"),
         "no zone-text change, no big splash"
     );
-    assert!(visible(&s, "SubZoneTextFrame"));
-    assert_eq!(text_of(&s, "SubZoneTextString"), "Library Wing");
+    assert!(visible(&mut s, "SubZoneTextFrame"));
+    assert_eq!(text_of(&mut s, "SubZoneTextString"), "Library Wing");
 }
 
 /// An FFA pit (GetZonePVPInfo's isArena — leaf Flags bit 0x80): the subzone line splashes with
@@ -292,7 +292,7 @@ fn room_to_room_hop_splashes_the_room_name_alone() {
 fn arena_pit_shows_the_ffa_line() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
-    set_area(&s, "Stranglethorn Vale", "", "contested", "");
+    set_area(&mut s, "Stranglethorn Vale", "", "contested", "");
     s.fire_event("ZONE_CHANGED_NEW_AREA", vec![]);
     s.tick(4.0);
 
@@ -302,9 +302,9 @@ fn arena_pit_shows_the_ffa_line() {
     )
     .unwrap();
     s.fire_event("ZONE_CHANGED", vec![]);
-    assert!(visible(&s, "SubZoneTextFrame"));
-    assert_eq!(text_of(&s, "SubZoneTextString"), "Gurubashi Arena");
-    assert_eq!(text_of(&s, "PVPArenaTextString"), "PvP Area");
+    assert!(visible(&mut s, "SubZoneTextFrame"));
+    assert_eq!(text_of(&mut s, "SubZoneTextString"), "Gurubashi Arena");
+    assert_eq!(text_of(&mut s, "PVPArenaTextString"), "PvP Area");
 }
 
 /// The subzone seat law: with PvP info showing (a friendly NEW_AREA), SubZoneTextString's TOP
@@ -314,7 +314,7 @@ fn subzone_seat_hangs_under_the_territory_line_on_new_area() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
     set_area(
-        &s,
+        &mut s,
         "Stormwind City",
         "Valley of Heroes",
         "friendly",
@@ -347,7 +347,7 @@ fn the_autofollow_status_line_names_the_followee_and_fades_on_end() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = harness();
     assert!(
-        !visible(&s, "AutoFollowStatus"),
+        !visible(&mut s, "AutoFollowStatus"),
         "hidden until a follow begins"
     );
 
@@ -356,15 +356,15 @@ fn the_autofollow_status_line_names_the_followee_and_fades_on_end() {
         vec![benilla_ui::script::ScriptValue::Str("Probeone".into())],
     );
     s.resolve();
-    assert!(visible(&s, "AutoFollowStatus"));
-    assert_eq!(text_of(&s, "AutoFollowStatusText"), "Following Probeone.");
+    assert!(visible(&mut s, "AutoFollowStatus"));
+    assert_eq!(text_of(&mut s, "AutoFollowStatusText"), "Following Probeone.");
     let alpha: f32 = s.eval("return AutoFollowStatus:GetAlpha()").unwrap();
     assert!((alpha - 1.0).abs() < 0.01, "full alpha while following");
 
     // A follow that runs for a while must NOT fade — the fade is armed only by END, and there is
     // no hold timer to expire (this is not the FadingFrame kit).
     s.tick(10.0);
-    assert!(visible(&s, "AutoFollowStatus"), "no fade while following");
+    assert!(visible(&mut s, "AutoFollowStatus"), "no fade while following");
     let alpha: f32 = s.eval("return AutoFollowStatus:GetAlpha()").unwrap();
     assert!((alpha - 1.0).abs() < 0.01, "still opaque after 10 s");
 
@@ -372,7 +372,7 @@ fn the_autofollow_status_line_names_the_followee_and_fades_on_end() {
     s.fire_event("AUTOFOLLOW_END", vec![]);
     s.resolve();
     assert_eq!(
-        text_of(&s, "AutoFollowStatusText"),
+        text_of(&mut s, "AutoFollowStatusText"),
         "You stop following Probeone.",
         "END has no argument of its own — the name comes from what BEGIN latched"
     );
@@ -381,7 +381,7 @@ fn the_autofollow_status_line_names_the_followee_and_fades_on_end() {
     let alpha: f32 = s.eval("return AutoFollowStatus:GetAlpha()").unwrap();
     assert!((alpha - 0.5).abs() < 0.05, "mid-fade alpha, got {alpha}");
     s.tick(2.5);
-    assert!(!visible(&s, "AutoFollowStatus"), "gone after the 4 s fade");
+    assert!(!visible(&mut s, "AutoFollowStatus"), "gone after the 4 s fade");
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());
 }
 
@@ -407,7 +407,7 @@ fn a_begin_during_the_end_fade_resets_the_line() {
         vec![benilla_ui::script::ScriptValue::Str("Probetwo".into())],
     );
     s.resolve();
-    assert_eq!(text_of(&s, "AutoFollowStatusText"), "Following Probetwo.");
+    assert_eq!(text_of(&mut s, "AutoFollowStatusText"), "Following Probetwo.");
     let alpha: f32 = s.eval("return AutoFollowStatus:GetAlpha()").unwrap();
     assert!(
         (alpha - 1.0).abs() < 0.01,
@@ -415,7 +415,7 @@ fn a_begin_during_the_end_fade_resets_the_line() {
     );
     s.tick(10.0);
     assert!(
-        visible(&s, "AutoFollowStatus"),
+        visible(&mut s, "AutoFollowStatus"),
         "and clears the pending fade rather than letting it finish"
     );
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());

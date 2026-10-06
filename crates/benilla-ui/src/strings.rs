@@ -239,7 +239,7 @@ fn parse_spec(chars: &[char], after_percent: usize) -> Option<Spec> {
     })
 }
 
-/// **The other half of decision 2045**: a reference string off the VM's own globals, `None` when
+/// Decision 2045's second half: a reference string off the VM's own globals, `None` when
 /// the key is absent **or empty**. `load_global_strings` runs the player's own
 /// `GlobalStrings.lua` — and the `Localize()` patch over it — into this VM at boot, so this is
 /// the whole of "read the sentence from the install".
@@ -251,14 +251,13 @@ fn parse_spec(chars: &[char], after_percent: usize) -> Option<Spec> {
 /// house rule is that **`None` emits no line at all rather than an invented one** (the
 /// disposition [`crate::script`]'s `duration_text` took, and 0620 §5 before it).
 ///
-/// Spelled `globals().get::<String>` deliberately: that is the shape
+/// Named `global_context` deliberately: that is the shape
 /// `benilla-app/tests/reference_strings.rs` recognises as a key lookup, so a function that
 /// resolves through this is visible to the tripwire as resolving.
-pub fn global(lua: &mlua::Lua, key: &str) -> Option<String> {
-    // Bound before the filter so the lookup stays one unbroken `globals().get::<String>` — a
-    // rustfmt-split chain is a resolver the tripwire's substring match cannot see.
-    let value = lua.globals().get::<String>(key).ok();
-    value.filter(|s| !s.is_empty())
+pub fn global_context(lua: &mut impl benilla_lua::LuaContext, key: &str) -> Option<String> {
+    lua.get_global::<String>(key)
+        .ok()
+        .filter(|value| !value.is_empty())
 }
 
 /// **`GetText(token, nil, ordinal)`'s plural pick**, resolved: the bare token for exactly one, the
@@ -279,10 +278,12 @@ pub fn global(lua: &mlua::Lua, key: &str) -> Option<String> {
 ///
 /// `None` = neither the twin nor the bare token resolves, which is the reference's
 /// data-suppression face and means **no line at all** rather than an invented one.
+///
+/// `FnMut` like the tooltip callers it serves: the VM-backed lookup needs exclusive access.
 pub fn plural(
     token: &str,
     ordinal: Option<u32>,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     // `not ordinal or ordinal == 1` is the SINGULAR arm, so an absent ordinal takes the bare
     // token — the same `GetText(token)` short arm a nil `genderTag` sends the reference down.
@@ -399,7 +400,7 @@ mod tests {
     /// tempting `> 1` reading makes a lapsing aura read "0 second remaining".
     #[test]
     fn plural_takes_the_twin_for_zero_and_the_bare_token_for_none() {
-        let table = |key: &str| -> Option<String> {
+        let mut table = |key: &str| -> Option<String> {
             // Deliberately not the shipped wording: which key is reached is the whole question.
             match key {
                 "T" => Some("<one>".into()),
@@ -408,22 +409,25 @@ mod tests {
                 _ => None,
             }
         };
-        assert_eq!(plural("T", Some(1), &table).as_deref(), Some("<one>"));
-        assert_eq!(plural("T", Some(2), &table).as_deref(), Some("<many>"));
+        assert_eq!(plural("T", Some(1), &mut table).as_deref(), Some("<one>"));
+        assert_eq!(plural("T", Some(2), &mut table).as_deref(), Some("<many>"));
         assert_eq!(
-            plural("T", Some(0), &table).as_deref(),
+            plural("T", Some(0), &mut table).as_deref(),
             Some("<many>"),
             "zero is plural — the signed test, not `> 1`"
         );
         assert_eq!(
-            plural("T", None, &table).as_deref(),
+            plural("T", None, &mut table).as_deref(),
             Some("<one>"),
             "no ordinal at all takes GetText's short arm"
         );
         // A token with no `_P1` twin falls back to itself, at any count.
-        assert_eq!(plural("ONLY", Some(7), &table).as_deref(), Some("<only>"));
+        assert_eq!(
+            plural("ONLY", Some(7), &mut table).as_deref(),
+            Some("<only>")
+        );
         // Neither resolving is no line at all, never an invented one.
-        assert_eq!(plural("ABSENT", Some(2), &table), None);
+        assert_eq!(plural("ABSENT", Some(2), &mut table), None);
     }
 
     /// **The case an ordered filler cannot express**, and the reason positional specifiers exist:

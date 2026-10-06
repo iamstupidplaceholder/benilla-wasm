@@ -649,23 +649,23 @@ fn shipped_target_frame_runs_the_level_law() {
     s.set_screen_size(1024.0, 768.0);
     load_unit_frames(&s);
     // GetDifficultyColor's own load chain (the quest log window, its ref home).
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\CharacterFrameTemplates.xml"); // the window tab (1993)
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\CharacterFrameTemplates.xml"); // the window tab (1993)
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
     // The player at level 3, both feeds (the snapshot UnitLevel("player") reads; the req state
     // the −1 gate and GetQuestGreenRange read) — the app keeps the two in step.
     s.set_player_req_state(PlayerReqState {
@@ -840,7 +840,7 @@ fn pvp_icon_follows_the_three_branch_law() {
     load_unit_frames(&s);
     let _ = s.take_sounds(); // the frames' own load-time kits (target hide) aren't ours
 
-    let icon_shown = |s: &UiScript, unit: &str| -> bool {
+    let icon_shown = |s: &mut UiScript, unit: &str| -> bool {
         s.eval(&format!(
             "return {unit}PVPIcon:IsVisible() and true or false"
         ))
@@ -871,13 +871,13 @@ fn pvp_icon_follows_the_three_branch_law() {
     // Unflagged: no icon, no sound.
     s.set_unit("player", Some(alliance_player(false, false)));
     s.fire_event("UNIT_FACTION", vec![ScriptValue::Str("player".into())]);
-    assert!(!icon_shown(&s, "Player"), "unflagged shows none");
+    assert!(!icon_shown(&mut s, "Player"), "unflagged shows none");
     assert!(s.take_sounds().is_empty(), "no sound while unflagged");
 
     // Flagged: the Alliance icon, and one igPVPUpdate for the flag change.
     s.set_unit("player", Some(alliance_player(true, false)));
     s.fire_event("UNIT_FACTION", vec![ScriptValue::Str("player".into())]);
-    assert!(icon_shown(&s, "Player"));
+    assert!(icon_shown(&mut s, "Player"));
     assert!(icon_path(&mut s, "UI-PVP-Alliance"), "faction leg art");
     assert_eq!(
         s.take_sounds(),
@@ -914,7 +914,7 @@ fn pvp_icon_follows_the_three_branch_law() {
     );
     s.fire_event("PLAYER_TARGET_CHANGED", vec![]);
     assert!(
-        !icon_shown(&s, "Target"),
+        !icon_shown(&mut s, "Target"),
         "flagged but sideless draws no icon"
     );
 
@@ -934,7 +934,7 @@ fn pvp_icon_follows_the_three_branch_law() {
         }),
     );
     s.fire_event("PLAYER_TARGET_CHANGED", vec![]);
-    assert!(icon_shown(&s, "Target"));
+    assert!(icon_shown(&mut s, "Target"));
     assert!(icon_path(&mut s, "UI-PVP-Horde"), "the target's own side");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
@@ -1213,35 +1213,35 @@ fn the_party_art_paints_over_the_bars() {
     // OnLoad walks the whole popup kit.
     // GlobalStrings first, for the same reason `load_unit_frames` names it — the stock unit-frame
     // files resolve it at LOAD (`CombatFeedback.lua` l.7-17, `UnitFrame.lua` l.1-6).
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, r"Interface\FrameXML\ReputationFrame.lua"); // FACTION_BAR_COLORS (1968)
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\ReputationFrame.lua"); // FACTION_BAR_COLORS (1968)
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
     // Before UnitPopup: that file reads ITEM_QUALITY_COLORS at FILE SCOPE and its
     // declarer is UIParent (ref UIParent.lua:65) since 1888.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitPopup.xml");
     // The reference's own kit, in the manifest's order. `UIParent.xml` is not decoration here:
     // `RaiseFrameLevel`/`LowerFrameLevel` live in it (ref UIParent.lua l.1890-1896) and stock
     // `TargetofTargetTextureFrame`'s OnLoad calls one of them.
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\BuffFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\CombatFeedback.xml");
-    load_xml(&s, "Interface\\FrameXML\\PlayerFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PartyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\TargetFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BuffFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CombatFeedback.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PlayerFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PartyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TargetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PetFrame.xml");
 
     s.set_unit(
         "party1",
@@ -1642,17 +1642,17 @@ fn status_bar_text_paints_the_player_numerals_but_not_the_targets() {
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
     s.fire_event("PLAYER_TARGET_CHANGED", vec![]);
 
-    let text = |s: &UiScript, name: &str| -> String {
+    let text = |s: &mut UiScript, name: &str| -> String {
         s.eval::<String>(&format!("return tostring(({name}:GetText()) or \"\")"))
             .unwrap()
     };
-    let shown = |s: &UiScript, name: &str| -> bool {
+    let shown = |s: &mut UiScript, name: &str| -> bool {
         s.eval::<bool>(&format!("return {name}:IsShown()")).unwrap()
     };
 
     // Off (the shipped default): the strings carry the numbers, and nothing paints.
-    assert!(!shown(&s, "PlayerFrameHealthBarText"));
-    assert!(!shown(&s, "PlayerFrameManaBarText"));
+    assert!(!shown(&mut s, "PlayerFrameHealthBarText"));
+    assert!(!shown(&mut s, "PlayerFrameManaBarText"));
 
     // On, through the switch's own event — no repaint, no damage taken.
     s.register_cvars([("statusBarText", "0")]);
@@ -1660,7 +1660,7 @@ fn status_bar_text_paints_the_player_numerals_but_not_the_targets() {
         .unwrap();
     s.tick(0.0);
     assert!(
-        shown(&s, "PlayerFrameHealthBarText"),
+        shown(&mut s, "PlayerFrameHealthBarText"),
         "your own health numerals pin on"
     );
     // Bare here, and only because this fixture stops short of the character window: the
@@ -1668,7 +1668,7 @@ fn status_bar_text_paints_the_player_numerals_but_not_the_targets() {
     // not by the unit frames, and the manifest loads `Interface\FrameXML\CharacterFrame.xml` far
     // below these. In a full run the player's health bar reads "Health 72 / 100".
     assert_eq!(
-        text(&s, "PlayerFrameHealthBarText"),
+        text(&mut s, "PlayerFrameHealthBarText"),
         "72 / 100",
         "no prefix without the character window, which is what sets HEALTH"
     );
@@ -1692,7 +1692,7 @@ fn status_bar_text_paints_the_player_numerals_but_not_the_targets() {
     // first). Its own re-render is gated on `GetCVar("statusBarText") == "1"` (l.130-132), which
     // was not yet true. So the label lands on the next repaint — asserted at the end of this test.
     assert_eq!(
-        text(&s, "PlayerFrameManaBarText"),
+        text(&mut s, "PlayerFrameManaBarText"),
         "45 / 80",
         "flipping the switch shows the string, it does not re-render it"
     );
@@ -1740,16 +1740,16 @@ fn status_bar_text_paints_the_player_numerals_but_not_the_targets() {
     s.run("SetCVar(\"statusBarText\", \"0\", \"STATUS_BAR_TEXT\")")
         .unwrap();
     s.tick(0.0);
-    assert!(!shown(&s, "PlayerFrameHealthBarText"));
+    assert!(!shown(&mut s, "PlayerFrameHealthBarText"));
     hover(&mut s, "PlayerFrameHealthBar");
     assert!(
-        shown(&s, "PlayerFrameHealthBarText"),
+        shown(&mut s, "PlayerFrameHealthBarText"),
         "hover shows them even with the option off ({:?})",
         s.errors()
     );
     unhover(&mut s);
     assert!(
-        !shown(&s, "PlayerFrameHealthBarText"),
+        !shown(&mut s, "PlayerFrameHealthBarText"),
         "and go away again — the lockShow refcount balances"
     );
     s.run("SetCVar(\"statusBarText\", \"1\", \"STATUS_BAR_TEXT\")")
@@ -1759,13 +1759,13 @@ fn status_bar_text_paints_the_player_numerals_but_not_the_targets() {
     // A health change repaints through the bar's own OnValueChanged, like the reference's.
     s.set_unit("player", Some(alive(31, 45, 1)));
     s.fire_event("UNIT_HEALTH", vec![ScriptValue::Str("player".into())]);
-    assert_eq!(text(&s, "PlayerFrameHealthBarText"), "31 / 100");
+    assert_eq!(text(&mut s, "PlayerFrameHealthBarText"), "31 / 100");
 
     // A power-type change repaints AND re-labels — `UnitFrame_UpdateManaType` runs off
     // UNIT_DISPLAYPOWER (ref UnitFrame.lua l.36-40) and the prefix follows the new resource.
     s.set_unit("player", Some(alive(31, 60, 3)));
     s.fire_event("UNIT_DISPLAYPOWER", vec![ScriptValue::Str("player".into())]);
-    assert_eq!(text(&s, "PlayerFrameManaBarText"), "Energy 60 / 80");
+    assert_eq!(text(&mut s, "PlayerFrameManaBarText"), "Energy 60 / 80");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -1840,11 +1840,11 @@ fn no_two_numeral_strings_overlap_on_any_frame() {
         ),
         ("pet", "PetFrameHealthBarText", "PetFrameManaBarText", 11.0),
     ] {
-        let mid = |s: &UiScript, n: &str| -> f64 {
+        let mid = |s: &mut UiScript, n: &str| -> f64 {
             s.eval::<f64>(&format!("return ({n}:GetTop() + {n}:GetBottom()) / 2"))
                 .unwrap()
         };
-        let apart = mid(&s, upper) - mid(&s, lower);
+        let apart = mid(&mut s, upper) - mid(&mut s, lower);
         assert!(
             (apart - want).abs() < 0.51,
             "{frame}: the numerals sit {apart:.1} px apart, the reference authors {want:.0}"
@@ -1871,7 +1871,7 @@ fn no_two_numeral_strings_overlap_on_any_frame() {
 /// addons and fires events, but never hovers anything.
 #[test]
 fn the_unit_frame_hover_hooks_carry_the_references_names() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_unit_frames(&s);
 
     assert!(
@@ -1922,7 +1922,7 @@ fn the_unit_frame_hover_hooks_carry_the_references_names() {
 /// sheet's mark order says it should.
 #[test]
 fn the_raid_mark_helper_maps_each_index_to_its_cell() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_unit_frames(&s);
     s.run(r#"RTMark = UIParent:CreateTexture("RTMark", "OVERLAY")"#)
         .unwrap();
@@ -1981,7 +1981,7 @@ fn the_player_frame_wears_the_leader_and_master_looter_icons() {
     );
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
 
-    let shown = |s: &UiScript, region: &str| -> bool {
+    let shown = |s: &mut UiScript, region: &str| -> bool {
         s.eval::<bool>(&format!("return {region}:IsVisible()"))
             .unwrap()
     };
@@ -1989,8 +1989,8 @@ fn the_player_frame_wears_the_leader_and_master_looter_icons() {
     let master = "PlayerMasterIcon";
 
     // Solo: neither. A solo player "leads" nothing — `IsPartyLeader()` is nil without a group.
-    assert!(!shown(&s, leader), "solo: no leader icon");
-    assert!(!shown(&s, master), "solo: no master-looter icon");
+    assert!(!shown(&mut s, leader), "solo: no leader icon");
+    assert!(!shown(&mut s, master), "solo: no master-looter icon");
 
     let party = |leader_index: u32, master_looter: Option<u32>, method: &str| PartyState {
         members: vec![PartyMemberInfo {
@@ -2010,30 +2010,30 @@ fn the_player_frame_wears_the_leader_and_master_looter_icons() {
     // Grouped, we lead, group loot: leader icon only.
     s.set_party(party(0, None, "group"));
     s.fire_event("PARTY_LEADER_CHANGED", vec![]);
-    assert!(shown(&s, leader), "we lead: the leader icon shows");
-    assert!(!shown(&s, master), "group loot: no master-looter icon");
+    assert!(shown(&mut s, leader), "we lead: the leader icon shows");
+    assert!(!shown(&mut s, master), "group loot: no master-looter icon");
 
     // Master loot, and we are the master (index 0 — the player's own seat).
     s.set_party(party(0, Some(0), "master"));
     s.fire_event("PARTY_LOOT_METHOD_CHANGED", vec![]);
-    assert!(shown(&s, master), "we are master looter: the icon shows");
+    assert!(shown(&mut s, master), "we are master looter: the icon shows");
 
     // The master looter is party1 instead: the icon is theirs, not ours.
     s.set_party(party(0, Some(1), "master"));
     s.fire_event("PARTY_LOOT_METHOD_CHANGED", vec![]);
-    assert!(!shown(&s, master), "somebody else masters: our icon hides");
-    assert!(shown(&s, leader), "…and we still lead");
+    assert!(!shown(&mut s, master), "somebody else masters: our icon hides");
+    assert!(shown(&mut s, leader), "…and we still lead");
 
     // Leadership passes to party1: the crown goes with it.
     s.set_party(party(1, Some(1), "master"));
     s.fire_event("PARTY_LEADER_CHANGED", vec![]);
-    assert!(!shown(&s, leader), "we no longer lead: the crown hides");
+    assert!(!shown(&mut s, leader), "we no longer lead: the crown hides");
 
     // Leaving the group clears both, through PARTY_MEMBERS_CHANGED alone.
     s.set_party(PartyState::default());
     s.fire_event("PARTY_MEMBERS_CHANGED", vec![]);
     assert!(
-        !shown(&s, leader) && !shown(&s, master),
+        !shown(&mut s, leader) && !shown(&mut s, master),
         "ungrouped: both hide"
     );
 
@@ -2057,7 +2057,7 @@ fn the_player_frame_wears_the_leader_and_master_looter_icons() {
 /// not asserted against; what is asserted is that nothing the reference declares is absent.
 #[test]
 fn the_unit_frames_publish_every_name_the_reference_declares() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_unit_frames(&s);
 
     // ref PlayerFrame.xml / TargetFrame.xml / PetFrame.xml — every `name=` those three files
@@ -2220,12 +2220,12 @@ fn the_target_leader_crown_follows_player_flags_changed() {
         })
     };
     let crown =
-        |s: &UiScript| -> bool { s.eval::<bool>("return TargetLeaderIcon:IsShown()").unwrap() };
+        |s: &mut UiScript| -> bool { s.eval::<bool>("return TargetLeaderIcon:IsShown()").unwrap() };
 
     // Target an ordinary group member: no crown.
     s.set_unit("target", mate(false));
     s.fire_event("PLAYER_TARGET_CHANGED", vec![]);
-    assert!(!crown(&s), "not the leader: no crown");
+    assert!(!crown(&mut s), "not the leader: no crown");
 
     // **Leadership passes to them while you hold the target.** This is the whole report.
     s.set_unit("target", mate(true));
@@ -2237,7 +2237,7 @@ fn the_target_leader_crown_follows_player_flags_changed() {
         vec![ScriptValue::Str("player".into())],
     );
     assert!(
-        !crown(&s),
+        !crown(&mut s),
         "arg1 = \"player\" is not this frame's unit — the token gate is real"
     );
 
@@ -2245,7 +2245,7 @@ fn the_target_leader_crown_follows_player_flags_changed() {
         "PLAYER_FLAGS_CHANGED",
         vec![ScriptValue::Str("target".into())],
     );
-    assert!(crown(&s), "the crown appears without a re-target");
+    assert!(crown(&mut s), "the crown appears without a re-target");
 
     // And back down — the reference fires on the XOR-diff, so the clear edge is the same event.
     s.set_unit("target", mate(false));
@@ -2253,7 +2253,7 @@ fn the_target_leader_crown_follows_player_flags_changed() {
         "PLAYER_FLAGS_CHANGED",
         vec![ScriptValue::Str("target".into())],
     );
-    assert!(!crown(&s), "leadership leaves and the crown goes with it");
+    assert!(!crown(&mut s), "leadership leaves and the crown goes with it");
 
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }

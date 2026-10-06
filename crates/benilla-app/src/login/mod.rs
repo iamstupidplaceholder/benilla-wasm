@@ -20,6 +20,8 @@
 //! [`screen`] (the authored layout, transcribed from `AccountLogin.xml`), [`smoke`] (the
 //! `WOW_LOGIN_SMOKE` headless prover).
 
+#[cfg(target_arch = "wasm32")]
+mod locales;
 pub(crate) mod queue;
 mod screen;
 mod smoke;
@@ -46,7 +48,12 @@ use crate::portrait::{GluePreview, GlueScene};
 use crate::sound::GlueSound;
 
 pub(crate) use screen::LoginAction;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use smoke::smoke_character;
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn smoke_character(_spec: &str) -> Option<String> {
+    None
+}
 
 /// The flat resubmit pacing after a transport failure with pending credentials (decision 0065's
 /// reconnect cadence, moved app-side by 0539 — the IO thread never sleeps).
@@ -60,6 +67,9 @@ pub(crate) struct LoginPlugin;
 
 impl Plugin for LoginPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<LoginForm>();
+        #[cfg(target_arch = "wasm32")]
+        locales::install(app);
         app.init_resource::<LoginIntent>()
             .init_resource::<LoginForm>()
             .add_systems(OnEnter(ClientState::Login), enter_login)
@@ -71,7 +81,7 @@ impl Plugin for LoginPlugin {
                     // `InWorld`, and the roster edge lands wherever it lands.
                     (drive_policy, to_select_on_roster, drive_quit).chain(),
                     (
-                        screen::materialize_screen,
+                        screen::materialize_screen.after(crate::glue::GlueArtLoad),
                         login_input,
                         tick_login_caret,
                         screen::refresh_boxes,
@@ -505,7 +515,9 @@ fn drive_policy(
                     attempt.intent.retry_at = Some(now);
                 }
                 Err(why) => {
-                    error!("login: REFUSING the env fast path — {why} Set WOW_ALLOW_ACCOUNT=1 if the cross-account login is deliberate.");
+                    error!(
+                        "login: REFUSING the env fast path — {why} Set WOW_ALLOW_ACCOUNT=1 if the cross-account login is deliberate."
+                    );
                     dialog.open_error(&why);
                     // The refusal is deterministic — the slot is baked into the binary — so the
                     // run can never get past this screen (the 1371 legs burned 3 × timeout on it).
@@ -708,6 +720,10 @@ pub(crate) struct LoginForm {
     pub(super) password: EditBoxState,
     pub(super) focus: Field,
     pub(super) save: bool,
+    #[cfg(target_arch = "wasm32")]
+    pub(super) save_password: bool,
+    #[cfg(target_arch = "wasm32")]
+    pub(super) locale: locales::LocaleChoice,
 }
 
 impl Default for LoginForm {
@@ -718,6 +734,10 @@ impl Default for LoginForm {
             password: textinput::field(MAX_LETTERS, true),
             focus: Field::default(),
             save: false,
+            #[cfg(target_arch = "wasm32")]
+            save_password: false,
+            #[cfg(target_arch = "wasm32")]
+            locale: default(),
         }
     }
 }
@@ -784,6 +804,12 @@ fn enter_login(mut form: ResMut<LoginForm>, mut preview: ResMut<GluePreview>) {
     };
     form.account.set_text(&saved);
     form.password.set_text("");
+    #[cfg(target_arch = "wasm32")]
+    {
+        let password = load_saved_password(&saved);
+        form.save_password = !password.is_empty();
+        form.password.set_text(&password);
+    }
     // `SetFocus` starts the caret solid — the screen never opens mid-blink-off (`set_text` alone
     // wouldn't do it: it no-ops when the saved name is already in the box) — and selects, so a
     // remembered account name is typed over rather than appended to.
@@ -861,30 +887,42 @@ fn login_input(
             LoginAction::FocusAccount | LoginAction::FocusPassword => {} // focused on the press
             LoginAction::Login => do_login = true,
             LoginAction::Quit => do_quit = true,
+            #[cfg(target_arch = "wasm32")]
+            LoginAction::ToggleLocale => {
+                if !form.locale.codes.is_empty() {
+                    form.locale.open = !form.locale.open;
+                    form.locale.revision += 1;
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            LoginAction::SelectLocale(index) => locales::select(&mut form, *index),
             // The realmlist control (1667) — the button and the address readout under it are
             // the same action, so clicking either opens the editor.
             LoginAction::Realmlist => {
-                // `gsLoginNewAccount` — what the reference plays for the other buttons in this
-                // corner (`AccountLogin_ManageAccount`, `AccountLogin_LaunchCommunitySite`), which
-                // is the closest authored answer for a button it does not have. It replaces a
-                // `gsClick` I invented in 1667: no such SoundEntries kit exists, so that press was
-                // silently playing nothing at all.
-                sounds.write(GlueSound("gsLoginNewAccount"));
-                if attempt.realmlist.pinned_by_env() {
-                    // A harness/dev run owns the address for the session (`cvars`' env-override
-                    // law). Say so rather than opening an editor whose Okay would be a silent
-                    // no-op — the trap that shape would set.
-                    dialog.open_error(&format!(
-                        "$WOW_HOST is set for this session, so the realmlist is fixed at {}.",
-                        attempt.realmlist.address(),
-                    ));
-                } else {
-                    dialog.open_realmlist(
-                        // The reference's own registered help text for `realmList`, byte-verified
-                        // in `WoW.exe` beside the CVar's name and default.
-                        "Address of realm list server",
-                        attempt.realmlist.address(),
-                    );
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    // `gsLoginNewAccount` — what the reference plays for the other buttons in this
+                    // corner (`AccountLogin_ManageAccount`, `AccountLogin_LaunchCommunitySite`), which
+                    // is the closest authored answer for a button it does not have. It replaces a
+                    // `gsClick` I invented in 1667: no such SoundEntries kit exists, so that press was
+                    // silently playing nothing at all.
+                    sounds.write(GlueSound("gsLoginNewAccount"));
+                    if attempt.realmlist.pinned_by_env() {
+                        // A harness/dev run owns the address for the session (`cvars`' env-override
+                        // law). Say so rather than opening an editor whose Okay would be a silent
+                        // no-op — the trap that shape would set.
+                        dialog.open_error(&format!(
+                            "$WOW_HOST is set for this session, so the realmlist is fixed at {}.",
+                            attempt.realmlist.address(),
+                        ));
+                    } else {
+                        dialog.open_realmlist(
+                            // The reference's own registered help text for `realmList`, byte-verified
+                            // in `WoW.exe` beside the CVar's name and default.
+                            "Address of realm list server",
+                            attempt.realmlist.address(),
+                        );
+                    }
                 }
             }
             LoginAction::ToggleSave => {
@@ -898,6 +936,25 @@ fn login_input(
                 }));
                 if !form.save {
                     save_account("");
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        form.save_password = false;
+                        save_password("", "");
+                    }
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            LoginAction::ToggleSavePassword => {
+                form.save_password = !form.save_password;
+                sounds.write(GlueSound(if form.save_password {
+                    "igMainMenuOptionCheckBoxOff"
+                } else {
+                    "igMainMenuOptionCheckBoxOn"
+                }));
+                if form.save_password {
+                    form.save = true;
+                } else {
+                    save_password("", "");
                 }
             } // The dialog's own buttons are `crate::glue::dialog`'s, and this loop is
               // skipped entirely while one is open.
@@ -981,6 +1038,23 @@ fn login_input(
                 );
             }
             LoginPress::Submit => {
+                // Use the browser auth adapter's actual SRP validation before announcing a
+                // connection. Local input errors are not transport failures and must not
+                // become an "Unable to connect" dialog or a pending reconnect intent.
+                #[cfg(target_arch = "wasm32")]
+                if let Err(error) =
+                    benilla_auth_web::AuthSession::create(&form.account.text, &form.password.text)
+                {
+                    let message = match error {
+                        benilla_auth_web::SessionError::InvalidPassword => crate::web_config::text(
+                            "Password must contain 1–16 printable ASCII characters (Latin letters, digits or symbols). Please check your keyboard layout.",
+                            "Пароль должен содержать от 1 до 16 печатных ASCII-символов (латинские буквы, цифры или знаки). Проверьте раскладку клавиатуры.",
+                        ).to_owned(),
+                        other => other.to_string(),
+                    };
+                    dialog.open_error(&message);
+                    return;
+                }
                 // `AccountLogin_Login`: save or clear the account name per the checkbox, clear the
                 // password box after grabbing it.
                 if form.save {
@@ -989,6 +1063,12 @@ fn login_input(
                     save_account("");
                 }
                 let (user, pass) = (form.account.text.clone(), form.password.text.clone());
+                #[cfg(target_arch = "wasm32")]
+                if form.save_password {
+                    save_password(&user, &pass);
+                } else {
+                    save_password("", "");
+                }
                 form.password.set_text("");
                 dialog.open_status(strings.text("LOGIN_STATE_CONNECTING", "Connecting"));
                 attempt.send(&user, &pass, true);
@@ -1033,6 +1113,14 @@ fn on_account_edited(form: &mut LoginForm) {
         if !saved.is_empty() && saved != form.account.text {
             save_account("");
             form.save = false;
+            #[cfg(target_arch = "wasm32")]
+            {
+                save_password("", "");
+                if form.save_password {
+                    form.password.set_text("");
+                }
+                form.save_password = false;
+            }
         }
     }
 }
@@ -1065,7 +1153,7 @@ fn answer_dialog(
     mut dialog: ResMut<GlueDialog>,
     mut intent: ResMut<LoginIntent>,
     mut realmlist: ResMut<crate::realmlist::Realmlist>,
-    mut script: Option<NonSendMut<benilla_ui::script::UiScript>>,
+    mut cvars: crate::cvars::EngineCvarWriter,
     abandon: Res<LoginAbandon>,
 ) {
     for answer in answers.read() {
@@ -1079,7 +1167,9 @@ fn answer_dialog(
                 // this arm. Cancel (button 2, or ESCAPE, which this kind routes to it) closes.
                 if answer.button1 {
                     let typed = dialog.edit.text.clone();
-                    if accept_realmlist(&typed, &mut realmlist, script.as_deref_mut()) {
+                    if accept_realmlist(&typed, &mut realmlist, |name, value| {
+                        cvars.set(name, value)
+                    }) {
                         dialog.dismiss(&mut commands);
                     } else {
                         dialog.set_text(REALMLIST_BAD);
@@ -1113,28 +1203,19 @@ fn answer_dialog(
 fn accept_realmlist(
     typed: &str,
     realmlist: &mut crate::realmlist::Realmlist,
-    script: Option<&mut benilla_ui::script::UiScript>,
+    persist: impl FnOnce(&str, &str) -> bool,
 ) -> bool {
     let Some(address) = crate::realmlist::normalize(typed) else {
         return false;
     };
     realmlist.set(&address);
     let name = crate::realmlist::CVAR_REALMLIST;
-    match script {
-        Some(script) => {
-            script.set_cvar_engine(name, &address);
-            if script.cvar(name).is_some() {
-                info!("login: realmlist -> {address}");
-            } else {
-                warn!(
-                    "login: realmlist -> {address} for this session, but the VM has not registered \
-                     {name} yet, so it was not saved"
-                );
-            }
-        }
-        None => {
-            warn!("login: realmlist -> {address} for this session only — no UI VM to persist it")
-        }
+    if persist(name, &address) {
+        info!("login: realmlist -> {address}");
+    } else {
+        warn!(
+            "login: realmlist -> {address} for this session, but the CVar host did not accept it"
+        );
     }
     true
 }
@@ -1144,23 +1225,27 @@ fn accept_realmlist(
 /// Read the saved account name from `base` (missing file/dir = empty). Takes the *file* rather
 /// than resolving one, so the round-trip is testable from a tempdir.
 fn load_saved_account_from(path: &std::path::Path) -> String {
-    std::fs::read_to_string(path)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    match crate::local_state::read_to_string(path) {
+        Ok(text) => text.trim().to_string(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            warn!("login: reading saved account failed: {error}");
+            String::new()
+        }
+    }
 }
 
 /// Write (or, for an empty name, remove) the saved account name at `path`.
 fn save_account_to(path: &std::path::Path, name: &str) {
     if name.is_empty() {
-        let _ = std::fs::remove_file(path);
+        if let Err(error) = crate::local_state::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                warn!("login: removing saved account failed: {error}");
+            }
+        }
         return;
     }
-    if let Some(dir) = path.parent() {
-        if std::fs::create_dir_all(dir).is_err() {
-            return;
-        }
-    }
-    if let Err(e) = std::fs::write(path, name) {
+    if let Err(e) = crate::local_state::write_atomic(path, name) {
         warn!("login: saving account name failed: {e}");
     }
 }
@@ -1178,6 +1263,45 @@ fn load_saved_account() -> String {
 fn save_account(name: &str) {
     if let Some(path) = crate::local_state::saved_account_path() {
         save_account_to(&path, name);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn load_saved_password(account: &str) -> String {
+    if account.is_empty() {
+        return String::new();
+    }
+    let Some(path) = crate::local_state::saved_password_path() else {
+        return String::new();
+    };
+    match crate::local_state::read_to_string(&path) {
+        Ok(text) => text
+            .split_once('\n')
+            .filter(|(saved, _)| *saved == account)
+            .map(|(_, password)| password.to_owned())
+            .unwrap_or_default(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            warn!("login: reading saved password failed: {error}");
+            String::new()
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn save_password(account: &str, password: &str) {
+    let Some(path) = crate::local_state::saved_password_path() else {
+        return;
+    };
+    let result = if account.is_empty() || password.is_empty() {
+        crate::local_state::remove_file(&path)
+    } else {
+        crate::local_state::write_atomic(&path, &format!("{account}\n{password}"))
+    };
+    if let Err(error) = result {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            warn!("login: updating saved password failed: {error}");
+        }
     }
 }
 
@@ -1404,7 +1528,7 @@ mod tests {
         assert!(accept_realmlist(
             r#"  SET realmlist "logon.example.org"  "#,
             &mut realmlist,
-            None,
+            |_, _| false,
         ));
         assert_eq!(realmlist.address(), "logon.example.org");
     }
@@ -1416,7 +1540,7 @@ mod tests {
         let mut realmlist = crate::realmlist::Realmlist::unpinned("localhost");
         for typed in ["", "   ", "logon.example.org and more", "host:notaport"] {
             assert!(
-                !accept_realmlist(typed, &mut realmlist, None),
+                !accept_realmlist(typed, &mut realmlist, |_, _| false),
                 "{typed:?} is not an address",
             );
             assert_eq!(realmlist.address(), "localhost");
@@ -1855,7 +1979,7 @@ mod tests {
         let past_the_period = |app: &mut App| {
             app.world_mut()
                 .resource_mut::<Time>()
-                .advance_by(std::time::Duration::from_millis(600));
+                .advance_by(benilla_time::Duration::from_millis(600));
             app.update();
             app.world().resource::<LoginForm>().account.caret_shown
         };

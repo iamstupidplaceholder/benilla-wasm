@@ -304,11 +304,13 @@ const HAZE_SUBMERGED_FLOOR: f32 = 84.0 / 255.0;
 /// frame: our own drunk byte (`PLAYER_BYTES_3` byte 1 → `min(b,100)/100`) and the camera-eye
 /// submersion claim. Off-world both read empty → 0 (the glue screens never haze).
 fn sync_haze(
-    viewer: Res<crate::view::Viewer>,
+    viewer: Option<Res<crate::view::Viewer>>,
     underwater: Option<Res<crate::liquid::Underwater>>,
     mut haze: ResMut<FfxHazeMix>,
 ) {
-    let drunk = viewer.drunk;
+    // An off-world glue stage has no gameplay viewer. Its pass pair has no haze lane, so the
+    // absent service is exactly the sober value rather than a resource the host must fabricate.
+    let drunk = viewer.as_deref().map_or(0.0, |viewer| viewer.drunk);
     let submerged = if underwater.is_some_and(|u| u.0 != benilla_formats::Submersion::Dry) {
         HAZE_SUBMERGED_FLOOR
     } else {
@@ -389,7 +391,7 @@ fn wave_lut_texels() -> Vec<u8> {
 /// pattern, and nothing has to be reset on the transition.
 fn sync_wave(
     time: Res<Time>,
-    live: Res<crate::schedule::WorldLive>,
+    live: Option<Res<crate::schedule::WorldLive>>,
     underwater: Option<Res<crate::liquid::Underwater>>,
     mut wave: ResMut<FfxWave>,
     mut last_dump: Local<Option<u32>>,
@@ -398,7 +400,8 @@ fn sync_wave(
     wave.phase1 = (ms % WAVE_PERIOD_MS[0]) as f32 / WAVE_PERIOD_MS[0] as f32;
     wave.phase2 = (ms % WAVE_PERIOD_MS[1]) as f32 / WAVE_PERIOD_MS[1] as f32;
     let verdict = underwater.map(|u| u.0);
-    wave.active = live.0 && verdict.is_some_and(|v| v.any());
+    let world_live = live.as_deref().is_some_and(|live| live.0);
+    wave.active = world_live && verdict.is_some_and(|v| v.any());
 
     // `WOW_WAVE_DUMP` — 1 Hz, and it reports on EVERY frame including the ones that do not warp,
     // naming why. An instrument that only speaks while the effect is running cannot tell "not
@@ -408,7 +411,7 @@ fn sync_wave(
     if std::env::var_os("WOW_WAVE_DUMP").is_some() {
         let sec = time.elapsed_secs() as u32;
         if last_dump.replace(sec) != Some(sec) {
-            let why = match (live.0, verdict) {
+            let why = match (world_live, verdict) {
                 (false, _) => "off — not in world (the reference's 0x467d00 half of the guard)",
                 (_, None) => "off — no submersion verdict resolved yet",
                 (_, Some(benilla_formats::Submersion::Dry)) => "off — the eye is dry",
@@ -442,11 +445,11 @@ fn wave_armed(state: FfxState, wave: FfxWave, death: f32) -> bool {
 /// soft glow. (Before this, the glue rendered with the derive-default 0.0 — no glow at all.)
 fn sync_gain(
     lighting: Option<Res<crate::lighting::WowLighting>>,
-    live: Res<crate::schedule::WorldLive>,
+    live: Option<Res<crate::schedule::WorldLive>>,
     glue: Res<GlueFfx>,
     mut gain: ResMut<FfxGlowGain>,
 ) {
-    let target = if live.0 {
+    let target = if live.as_deref().is_some_and(|live| live.0) {
         lighting.map_or(0.5, |l| l.glow)
     } else {
         // Off-world the glue screen pins it outright — the widget's OnShow, or the select build's

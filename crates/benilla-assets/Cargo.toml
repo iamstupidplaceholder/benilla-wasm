@@ -13,14 +13,20 @@ workspace = true
 # with `default-features = false` and its `dev` re-exported here: it is default-on there too, so
 # without this a `--no-default-features` player build gets the feature back through unification and
 # the binary carries the build machine's source-tree path after all.
-default = ["dev"]
+default = []
 dev = ["benilla-formats/dev"]
 
 [dependencies]
 anyhow.workspace = true
 bevy.workspace = true
 benilla-formats = { path = "../benilla-formats", default-features = false }
+benilla-time.workspace = true
 # Nearest-neighbour resize for off-Elwynn layer BLPs authored below LAYER_TEX_SIZE (texel
 # replication in gamma byte space — no averaging, so the C2 mid-tone darkening can't creep in).
 image = { version = "0.25", default-features = false }
 serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.122"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"

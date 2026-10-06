@@ -43,9 +43,9 @@
 //! `OPEN_MASTER_LOOT_LIST` when a picked row's wire `slot_type` is `MASTER`, which is where the
 //! real client puts it too — its take dispatcher branches on the same byte before any Lua runs.
 
-use mlua::{Lua, MultiValue, Table, Value};
+use benilla_lua::{MultiValue, Table, Value, Vm};
 
-use super::binding_abi::flag;
+use super::binding_abi::neutral_flag;
 use super::Model;
 
 /// `CLootButton`'s own Lua method table (`0x847ce4`) — see [`crate::widget::FrameKind::LootButton`].
@@ -202,19 +202,14 @@ impl super::UiScript {
 }
 
 /// Register the loot globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumLootItems() → the number of slots the open loot has, cleared ones included (0 when none
     // is open). Constant while a window is open — the reference reads it once at OnShow (l.132) and
     // never again; ours is invariant by construction, so the live read is the same value.
-    g.set(
-        "GetNumLootItems",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.loot.as_ref().map_or(0, |l| l.rows.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumLootItems", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.loot.as_ref().map_or(0, |l| l.rows.len()) as i64)
+    })?;
 
     // GetLootSlotInfo(slot) → texture, item, quantity, quality — the reference's four, in its order
     // (`0x4c2c60`, `mov eax,4` at `0x4c2d07`; `LootFrame.lua:81`). `slot` is 1-based.
@@ -233,53 +228,48 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // The in-flight row is nonetheless one the REFERENCE never paints, because it does not open the
     // window until every template has landed ([`crate::script`] has no say in that; the app's
     // `ui_loot` holds `LOOT_OPENED` back). These sentinels are the floor under that, not the plan.
-    g.set(
-        "GetLootSlotInfo",
-        lua.create_function(|lua, slot: usize| {
-            // `Some(Some(row))` is a live row; `Some(None)` is a CLEARED one (the slot survives with
-            // its record zeroed); `None` is no such slot at all.
-            let slot_state = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .loot
-                    .as_ref()
-                    .and_then(|l| slot.checked_sub(1).and_then(|n| l.rows.get(n)))
-                    .cloned()
-            };
-            let Some(Some(row)) = slot_state else {
-                // No row — and the reference still pushes four (`0x4c2d07 mov eax,4` is
-                // unconditional; there is no short-return path). A cleared slot's record has a
-                // zeroed itemId, which `0x55ba30` short-circuits to a NULL cache record, so it takes
-                // the cache-miss quality where a genuinely absent slot takes the guard's zero.
-                let cleared = slot_state.is_some();
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::String(lua.create_string(CACHE_MISS_NAME)?),
-                    Value::Integer(0),
-                    Value::Integer(if cleared {
-                        CACHE_MISS_QUALITY
-                    } else {
-                        NO_SLOT_QUALITY
-                    }),
-                    // Benilla's trailing item id: there is no item here.
-                    Value::Integer(0),
-                ]));
-            };
-            let texture =
-                Value::String(lua.create_string(row.texture.as_deref().unwrap_or(MISSING_ICON))?);
-            let item =
-                Value::String(lua.create_string(row.name.as_deref().unwrap_or(CACHE_MISS_NAME))?);
-            let quality = Value::Integer(row.quality.map_or(CACHE_MISS_QUALITY, i64::from));
-            Ok(MultiValue::from_vec(vec![
-                texture,
-                item,
-                Value::Integer(i64::from(row.quantity)),
-                quality,
-                // Benilla extension (5th): the item id, the shared tooltip store's key.
-                Value::Integer(i64::from(row.item_id)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetLootSlotInfo", |lua, slot: usize| {
+        // `Some(Some(row))` is a live row; `Some(None)` is a CLEARED one (the slot survives with
+        // its record zeroed); `None` is no such slot at all.
+        let slot_state = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .loot
+                .as_ref()
+                .and_then(|l| slot.checked_sub(1).and_then(|n| l.rows.get(n)))
+                .cloned()
+        };
+        let Some(Some(row)) = slot_state else {
+            // No row — and the reference still pushes four (`0x4c2d07 mov eax,4` is
+            // unconditional; there is no short-return path). A cleared slot's record has a
+            // zeroed itemId, which `0x55ba30` short-circuits to a NULL cache record, so it takes
+            // the cache-miss quality where a genuinely absent slot takes the guard's zero.
+            let cleared = slot_state.is_some();
+            return Ok(MultiValue::from(vec![
+                Value::Nil,
+                Value::from(CACHE_MISS_NAME),
+                Value::Integer(0),
+                Value::Integer(if cleared {
+                    CACHE_MISS_QUALITY
+                } else {
+                    NO_SLOT_QUALITY
+                }),
+                // Benilla's trailing item id: there is no item here.
+                Value::Integer(0),
+            ]));
+        };
+        let texture = Value::from(row.texture.unwrap_or_else(|| MISSING_ICON.to_string()));
+        let item = Value::from(row.name.unwrap_or_else(|| CACHE_MISS_NAME.to_string()));
+        let quality = Value::Integer(row.quality.map_or(CACHE_MISS_QUALITY, i64::from));
+        Ok(MultiValue::from(vec![
+            texture,
+            item,
+            Value::Integer(i64::from(row.quantity)),
+            quality,
+            // Benilla extension (5th): the item id, the shared tooltip store's key.
+            Value::Integer(i64::from(row.item_id)),
+        ]))
+    })?;
 
     // GetLootSlotLink(slot) → the row's full escaped `|cff…|Hitem:…|h[Name]|h|r` link | nil. 1-based
     // like GetLootSlotInfo beside it; nil out of range, nil for the coin row, and nil while the
@@ -288,59 +278,47 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // and `ChatFrameEditBox:Insert(GetLootSlotLink(this.slot))` (`:152`). Since 1751 put the stock
     // file on the chain both of those are the live call sites — our own `BenillaChatEdit_InsertLink`
     // detour is not on this path any more — and both survive the nil on their own. Decision 1059.
-    g.set(
-        "GetLootSlotLink",
-        lua.create_function(|lua, slot: usize| {
-            let link = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .loot
-                    .as_ref()
-                    .and_then(|l| slot.checked_sub(1).and_then(|n| l.rows.get(n)))
-                    .and_then(|r| r.as_ref()?.link.clone())
-            };
-            match link {
-                Some(link) => Ok(Value::String(lua.create_string(&link)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetLootSlotLink", |lua, slot: usize| {
+        let link = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .loot
+                .as_ref()
+                .and_then(|l| slot.checked_sub(1).and_then(|n| l.rows.get(n)))
+                .and_then(|r| r.as_ref()?.link.clone())
+        };
+        match link {
+            Some(link) => Ok(Value::from(link)),
+            None => Ok(Value::Nil),
+        }
+    })?;
 
     // LootSlotIsItem(slot) → true for a real item row (in range, not the coin pile, not cleared).
-    g.set(
-        "LootSlotIsItem",
-        lua.create_function(|lua, slot: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(slot
-                .checked_sub(1)
-                .and_then(|n| model.loot.as_ref()?.rows.get(n)?.as_ref())
-                .is_some_and(|r| !r.is_coin))
-        })?,
-    )?;
+    lua.register_function("LootSlotIsItem", |lua, slot: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(slot
+            .checked_sub(1)
+            .and_then(|n| model.loot.as_ref()?.rows.get(n)?.as_ref())
+            .is_some_and(|r| !r.is_coin))
+    })?;
 
     // LootSlotIsCoin(slot) → true for the synthesized coin pile row (false once it's been looted —
     // the cleared slot stays in the count but answers neither predicate, `LootFrame.lua:80`).
-    g.set(
-        "LootSlotIsCoin",
-        lua.create_function(|lua, slot: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(slot
-                .checked_sub(1)
-                .and_then(|n| model.loot.as_ref()?.rows.get(n)?.as_ref())
-                .is_some_and(|r| r.is_coin))
-        })?,
-    )?;
+    lua.register_function("LootSlotIsCoin", |lua, slot: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(slot
+            .checked_sub(1)
+            .and_then(|n| model.loot.as_ref()?.rows.get(n)?.as_ref())
+            .is_some_and(|r| r.is_coin))
+    })?;
 
     // IsFishingLoot() → 1/nil, whether the open loot came from fishing (nil when none is open).
     // `LootFrame_OnShow` keys the reel-in sound + the fishing portrait overlay on it
     // (`LootFrame.lua:137-140`; decision 1086).
-    g.set(
-        "IsFishingLoot",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.loot.as_ref().is_some_and(|l| l.fishing)))
-        })?,
-    )?;
+    lua.register_function("IsFishingLoot", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(model.loot.as_ref().is_some_and(|l| l.fishing)))
+    })?;
 
     // ── `LootButton`'s own method table — ONE entry, and this is it ─────────────────────────────
     //
@@ -354,18 +332,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // call as this text.
     {
         let m = lua.create_table()?;
-        m.set(
-            "SetSlot",
-            lua.create_function(|lua, (this, index): (Table, Value)| {
+        let set_slot = lua.create_function(
+            "LootButton.SetSlot",
+            |lua, (this, index): (Table, Value)| {
                 let n = match &index {
                     Value::Integer(i) => *i as f64,
                     Value::Number(n) => *n,
                     // `lua_isnumber` accepts a numeric string, as everywhere else in this image.
-                    Value::String(s) => match s.to_str().ok().and_then(|s| s.parse::<f64>().ok()) {
+                    Value::String(s) => match s.as_str().ok().and_then(|s| s.parse::<f64>().ok()) {
                         Some(n) => n,
-                        None => return Err(mlua::Error::runtime("Usage: SetSlot(index)")),
+                        None => return Err(benilla_lua::Error::runtime("Usage: SetSlot(index)")),
                     },
-                    _ => return Err(mlua::Error::runtime("Usage: SetSlot(index)")),
+                    _ => return Err(benilla_lua::Error::runtime("Usage: SetSlot(index)")),
                 };
                 // `ftol` truncates toward zero, then `dec`. A slot below 1 leaves the row taking
                 // nothing rather than wrapping — the reference stores the decrement raw, but its
@@ -373,8 +351,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let slot = (n.trunc() >= 1.0).then(|| n.trunc() as u32 - 1);
                 super::button::set_loot_slot(lua, &this, slot)?;
                 Ok(())
-            })?,
+            },
         )?;
+        lua.table_set(&m, "SetSlot", set_slot)?;
         lua.set_named_registry_value(REG_LOOTBUTTON_METHODS, m)?;
     }
 
@@ -388,40 +367,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `CLootButton` widget type (our rows are ordinary XML buttons), so the click arm needs a verb,
     // and giving it the 1.12 NAME would have handed `LootSlot` a second meaning the reference does
     // not give it. `Benilla`-prefixed like the other seams the reference kept in C.
-    g.set(
-        "BenillaTakeLootSlot",
-        lua.create_function(|lua, slot: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.loot_picks.push(slot);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("BenillaTakeLootSlot", |lua, slot: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.loot_picks.push(slot);
+        Ok(())
+    })?;
 
     // LootSlot(slot) — the LOOT_BIND **confirmation continuation**, and nothing else, exactly as
     // 1.12 has it (`0x4c2e70`: `luaL_checknumber(1)`, `dec eax`, `0x4c2790(slot, flag = 1)`; the
     // flag-1 arm at `0x4c27c0` starts `cmp edi, [0x847cec]` and returns unless the slot IS the
     // pending confirm). So an addon calling `LootSlot(n)` on an ordinary row does nothing here,
     // which is what it does on the real client; the app owns the pending-slot gate.
-    g.set(
-        "LootSlot",
-        lua.create_function(|lua, slot: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.loot_confirms.push(slot);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("LootSlot", |lua, slot: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.loot_confirms.push(slot);
+        Ok(())
+    })?;
 
     // CloseLoot([failed]) — flag the release intent. The optional arg (the client's "couldn't open
     // the UI" signal, `LootFrame.lua:18`) is accepted and ignored; the app decides whether to send a
     // release (only when a loot is actually open).
-    g.set(
-        "CloseLoot",
-        lua.create_function(|lua, _args: MultiValue| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.loot_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseLoot", |lua, _args: MultiValue| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.loot_close = true;
+        Ok(())
+    })?;
 
     // GetMasterLootCandidate(index) → the 1-based candidate's NAME, or nil past the end.
     //
@@ -430,34 +400,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // five, keeping a "Group N" submenu only where the block's first probe answered non-nil
     // (`LootFrame.lua:169-232`). So an out-of-range index must answer nil rather than raise, and
     // the list must be DENSE — a hole would silently drop a candidate from the menu.
-    g.set(
-        "GetMasterLootCandidate",
-        lua.create_function(|lua, index: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let name = index.checked_sub(1).and_then(|i| {
-                model
-                    .loot
-                    .as_ref()?
-                    .master_candidates
-                    .get(i as usize)?
-                    .clone()
-            });
-            Ok(name)
-        })?,
-    )?;
+    lua.register_function("GetMasterLootCandidate", |lua, index: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let name = index.checked_sub(1).and_then(|i| {
+            model
+                .loot
+                .as_ref()?
+                .master_candidates
+                .get(i as usize)?
+                .clone()
+        });
+        Ok(name)
+    })?;
 
     // GiveMasterLoot(slot, candidateIndex) — queue the assignment; the app owns the wire slot and
     // the recipient guid. Called from the dropdown's own handler for a below-threshold item and
     // from the CONFIRM_LOOT_DISTRIBUTION popup's OnAccept above it (`LootFrame.lua:236-244`,
     // `StaticPopup.lua:85-94`).
-    g.set(
-        "GiveMasterLoot",
-        lua.create_function(|lua, (slot, candidate): (u32, u32)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.loot_master_gives.push((slot, candidate));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("GiveMasterLoot", |lua, (slot, candidate): (u32, u32)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.loot_master_gives.push((slot, candidate));
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -514,14 +478,14 @@ mod tests {
         let mut s = UiScript::new().unwrap();
         // No loot open: count 0, info nil.
         assert_eq!(s.eval::<i64>("return GetNumLootItems()").unwrap(), 0);
-        assert!(s.eval::<bool>("return GetLootSlotInfo(1) == nil").unwrap());
+        assert!(s.eval_truthy("return GetLootSlotInfo(1) == nil").unwrap());
 
         s.set_loot(Some(loot()));
         assert_eq!(s.eval::<i64>("return GetNumLootItems()").unwrap(), 3);
 
         // Row 1: the coin pile — IsCoin true, IsItem false, its text the money amount.
-        assert!(s.eval::<bool>("return LootSlotIsCoin(1)").unwrap());
-        assert!(s.eval::<bool>("return not LootSlotIsItem(1)").unwrap());
+        assert!(s.eval_truthy("return LootSlotIsCoin(1)").unwrap());
+        assert!(s.eval_truthy("return not LootSlotIsItem(1)").unwrap());
         let (texture, item, quantity, quality) = s
             .eval::<(String, String, i64, i64)>("return GetLootSlotInfo(1)")
             .unwrap();
@@ -530,8 +494,8 @@ mod tests {
         assert_eq!((quantity, quality), (1, 1));
 
         // Row 2: a resolved item — IsItem true, IsCoin false, quantity + quality present.
-        assert!(s.eval::<bool>("return LootSlotIsItem(2)").unwrap());
-        assert!(s.eval::<bool>("return not LootSlotIsCoin(2)").unwrap());
+        assert!(s.eval_truthy("return LootSlotIsItem(2)").unwrap());
+        assert!(s.eval_truthy("return not LootSlotIsCoin(2)").unwrap());
         let (name, qty) = s
             .eval::<(String, i64)>("local _, i, q = GetLootSlotInfo(2)\nreturn i, q")
             .unwrap();
@@ -567,23 +531,23 @@ mod tests {
             s.eval::<String>("return GetLootSlotLink(2)").unwrap(),
             "|cffffffff|Hitem:2589:0:0:0|h[Wool Cloth]|h|r"
         );
-        assert!(s.eval::<bool>("return GetLootSlotLink(1) == nil").unwrap());
-        assert!(s.eval::<bool>("return GetLootSlotLink(3) == nil").unwrap());
+        assert!(s.eval_truthy("return GetLootSlotLink(1) == nil").unwrap());
+        assert!(s.eval_truthy("return GetLootSlotLink(3) == nil").unwrap());
 
         // IsFishingLoot: false on an ordinary loot, true when the snapshot says fishing, false
         // again with no loot open (decision 1086).
-        assert!(s.eval::<bool>("return not IsFishingLoot()").unwrap());
+        assert!(s.eval_truthy("return not IsFishingLoot()").unwrap());
         let mut fished = loot();
         fished.fishing = true;
         s.set_loot(Some(fished));
-        assert!(s.eval::<bool>("return IsFishingLoot()").unwrap());
+        assert!(s.eval_truthy("return IsFishingLoot()").unwrap());
         s.set_loot(Some(loot()));
 
         // Out of range → nil.
-        assert!(s.eval::<bool>("return GetLootSlotInfo(9) == nil").unwrap());
-        assert!(s.eval::<bool>("return GetLootSlotLink(9) == nil").unwrap());
-        assert!(s.eval::<bool>("return not LootSlotIsItem(9)").unwrap());
-        assert!(s.eval::<bool>("return not LootSlotIsCoin(9)").unwrap());
+        assert!(s.eval_truthy("return GetLootSlotInfo(9) == nil").unwrap());
+        assert!(s.eval_truthy("return GetLootSlotLink(9) == nil").unwrap());
+        assert!(s.eval_truthy("return not LootSlotIsItem(9)").unwrap());
+        assert!(s.eval_truthy("return not LootSlotIsCoin(9)").unwrap());
 
         // A CLEARED slot (looted): still counted — the slot list is fixed while the window is open,
         // the reference's own shape (`LootFrame.numLootItems` is read once at OnShow) — but it
@@ -593,12 +557,12 @@ mod tests {
         cleared.rows[0] = None;
         s.set_loot(Some(cleared));
         assert_eq!(s.eval::<i64>("return GetNumLootItems()").unwrap(), 3);
-        assert!(s.eval::<bool>("return GetLootSlotInfo(1) == nil").unwrap());
-        assert!(s.eval::<bool>("return GetLootSlotLink(1) == nil").unwrap());
-        assert!(s.eval::<bool>("return not LootSlotIsItem(1)").unwrap());
-        assert!(s.eval::<bool>("return not LootSlotIsCoin(1)").unwrap());
+        assert!(s.eval_truthy("return GetLootSlotInfo(1) == nil").unwrap());
+        assert!(s.eval_truthy("return GetLootSlotLink(1) == nil").unwrap());
+        assert!(s.eval_truthy("return not LootSlotIsItem(1)").unwrap());
+        assert!(s.eval_truthy("return not LootSlotIsCoin(1)").unwrap());
         // …and the rows below keep their own slots.
-        assert!(s.eval::<bool>("return LootSlotIsItem(2)").unwrap());
+        assert!(s.eval_truthy("return LootSlotIsItem(2)").unwrap());
     }
 
     /// The master-loot half of the seam (decision 1675). `GetMasterLootCandidate` must answer nil
@@ -766,7 +730,7 @@ mod tests {
     /// `LootButton` is a real `CreateFrame` type with its own identity — not an alias for Button.
     #[test]
     fn loot_button_is_its_own_registered_type() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(r#"lb = CreateFrame("LootButton", "LB1", UIParent)"#)
             .unwrap();
         assert_eq!(

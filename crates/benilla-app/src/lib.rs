@@ -35,212 +35,533 @@
 /// the output IO callback or the render pass (`sound::output`'s `no_alloc` scopes) aborts the
 /// process, so a realtime-safety regression fails a test or a smoke instead of reaching an ear;
 /// release builds carry no wrapper at all.
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-pub mod addon_harness;
-mod area;
-mod area_poi;
-mod area_trigger;
-#[cfg(feature = "dev")]
-mod asset_churn;
-mod aura_visual;
-mod bindings;
-mod blob_shadow;
-mod bowstring;
-mod camera_shake;
-#[cfg(feature = "dev")]
-mod capture;
-mod char_create;
-mod char_select;
-mod chat_bubble;
-mod chr_classes;
-mod cinematic;
-mod combat_text;
-mod console;
-mod cooldowns;
-mod crash;
-mod creature_anim;
-mod cursor;
-mod cvars;
-mod death;
-#[cfg(feature = "dev")]
-mod debug_panel;
-/// **The dev/player seam** (decisions 0026/1173, built in 1174) — the group, and the boundary
-/// rule, in one file. Always compiled; what it *holds* is not.
-mod dev;
-mod doodad_events;
-mod entities;
-mod fishing_line;
-mod footprints;
-mod game_plugins;
-mod glue;
-mod glue_strings;
-mod go_anim;
-mod go_templates;
-#[cfg(feature = "dev")]
-mod hover_log;
-mod items;
-mod loading_screen;
-mod local_state;
-mod login;
-mod minimap;
-mod nameplates;
-mod names;
-mod net;
-mod npc_text;
-mod pending_item_ops;
-/// Ships in part: the FPS journal and the clocks it reads (2008); the rest is `dev` (1173).
-mod perf;
-mod pipe_warm;
-mod player;
-mod poi_marker;
-mod portrait;
-#[cfg(feature = "dev")]
-mod preflight;
-#[cfg(feature = "dev")]
-mod probe_shield;
-mod query_cache;
-mod quest_markers;
-mod raid_marks;
-mod ranged_flex;
-mod realm_select;
-mod realmlist;
-mod run_mode;
-mod screen_fade;
-mod screenshot;
-mod shaders;
+// The browser client is composed separately until the platform seams below
+// (FrameScript, synchronous WorldAssets, threaded networking and native audio)
+// have browser implementations.  A runtime-only plugin switch is insufficient:
+// Rust would still typecheck every native module and pull its platform APIs into
+// the wasm build.  Keep this list as the native production composition and make
+// the browser boundary explicit at the crate root.
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! native_modules {
+    () => {
+        mod addon_root;
+        mod area;
+        mod area_poi;
+        mod area_trigger;
+        mod aura_visual;
+        mod bindings;
+        mod blob_shadow;
+        mod bowstring;
+        mod camera_shake;
+        mod char_create;
+        mod char_select;
+        mod chat_bubble;
+        mod chr_classes;
+        mod cinematic;
+        mod combat_text;
+        mod console;
+        mod cooldowns;
+        mod crash;
+        mod creature_anim;
+        mod cursor;
+        mod cvars;
+        mod death;
+        /// **The dev/player seam** (decisions 0026/1173, built in 1174) — the group, and the boundary
+        /// rule, in one file. Always compiled; what it *holds* is not.
+        mod doodad_events;
+        mod entities;
+        mod fishing_line;
+        mod footprints;
+        mod game_plugins;
+        mod glue;
+        mod glue_strings;
+        mod go_anim;
+        mod go_templates;
+        mod items;
+        mod loading_screen;
+        mod local_state;
+        mod login;
+        mod minimap;
+        mod nameplates;
+        mod names;
+        mod net;
+        mod npc_text;
+        mod pending_item_ops;
+        /// Ships in part: the FPS journal and the clocks it reads (2008); the rest is `dev` (1173).
+        mod pipe_warm;
+        mod player;
+        mod poi_marker;
+        mod portrait;
+        mod query_cache;
+        mod quest_markers;
+        mod raid_marks;
+        mod ranged_flex;
+        mod realm_select;
+        mod realmlist;
+        mod run_mode;
+        mod screen_fade;
+        mod screenshot;
+        mod shaders;
 
+        mod game_tip;
+        mod name_persist;
+        mod opaque2d;
+        /// Where "the client is going down" may be observed, and why that is `Last` and not `Update`
+        /// (decision 1528). Every system that persists state on the way out registers through it.
+        mod shutdown;
+        mod smart_rect;
+        mod sound;
+        /// The two talent spell-modifier tables (`SMSG_SET_FLAT_/PCT_SPELL_MODIFIER`) and the read that
+        /// puts them on a number.
+        mod spell_mods;
+        /// The melee swing refusal's latch + 4 s repeat (`SMSG_ATTACKSWING_*`).
+        mod swing_refusal;
+        mod target;
+        #[cfg(test)]
+        pub(crate) mod test_support;
+        mod text_filter;
+        mod text_reshape;
+        mod textinput;
+        mod transport;
+        mod tutorial;
+        mod ui_action;
+        mod ui_auction;
+        mod ui_aura;
+        mod ui_bank;
+        mod ui_battlefield;
+        mod ui_battlefield_positions;
+        mod ui_battlefield_score;
+        mod ui_bind_confirm;
+        mod ui_binder;
+        mod ui_cast;
+        mod ui_char;
+        mod ui_chat;
+        mod ui_cost;
+        mod ui_craft;
+        mod ui_dialog_verbs;
+        mod ui_dressup;
+        mod ui_duel;
+        mod ui_follow;
+        mod ui_gamma;
+        mod ui_gm_ticket;
+        mod ui_gossip;
+        mod ui_guild;
+        mod ui_hide;
+        mod ui_honor;
+        mod ui_inspect;
+        mod ui_instance;
+        mod ui_item_text;
+        mod ui_items;
+        mod ui_layout;
+        mod ui_logout;
+        mod ui_loot;
+        mod ui_loot_roll;
+        mod ui_macro;
+        mod ui_mail;
+        mod ui_merchant;
+        mod ui_mirror;
+        mod ui_models;
+        mod ui_net;
+        mod ui_party;
+        mod ui_pass;
+        mod ui_pet;
+        mod ui_pet_book;
+        mod ui_pet_doll;
+        mod ui_pet_stats;
+        mod ui_petition;
+        mod ui_quest;
+        mod ui_quest_log;
+        mod ui_quest_share;
+        mod ui_reputation;
+        mod ui_saved;
+        mod ui_scale;
+        mod ui_script;
+        mod ui_session;
+        mod ui_shapeshift;
+        mod ui_social;
+        mod ui_spellbook;
+        mod ui_stable;
+        mod ui_summon;
+        mod ui_tabard;
+        mod ui_talent;
+        mod ui_talent_wipe;
+        mod ui_taxi;
+        mod ui_text;
+        mod ui_tooltip;
+        mod ui_trade;
+        mod ui_tradeskill;
+        mod ui_trainer;
+        mod ui_unit;
+        mod ui_world_map;
+        mod video;
+        mod vplates;
+        mod weapon_trail;
+        mod world_backdrop;
+        mod world_state;
+        mod world_state_ui;
+    };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+native_modules!();
+
+// Shared by the native portrait implementation and the browser renderer
+// adapter.  It is intentionally outside both target-specific module lists.
+mod glue_scene_host;
+mod portrait_contract;
+mod ui_asset_probes;
+#[cfg(any(target_arch = "wasm32", feature = "port-gates"))]
+mod ui_files;
+mod ui_game_data;
+mod ui_sprites;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/ui_files.rs"]
+mod web_ui_files;
+
+/// Opt-in headless port contracts over real production handlers, with no UI or
+/// host IO. Separate integration gates do not disable the existing app tests.
+#[cfg(feature = "port-gates")]
+pub mod port_gates {
+    pub use crate::net::port_gates::{
+        verify_object_motion, verify_session_entry, verify_speed_changes,
+    };
+    pub use crate::player::port_gates::verify_player_lifecycle;
+    pub use crate::target::port_gates::verify_target_host_boundary;
+    pub use crate::ui_asset_probes::verify_async_texture_size_probe;
+    pub use crate::ui_files::verify_ui_file_delivery;
+    pub use crate::ui_script::port_gates::verify_ui_vm_entry_boundary;
+    pub use crate::ui_script::verify_ui_paint_host_boundary;
+    pub use crate::ui_text::verify_font_host_boundary;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn booth_log() -> bool {
+    false
+}
+
+#[cfg(target_arch = "wasm32")]
+mod addon_root;
+#[cfg(target_arch = "wasm32")]
+mod area;
+#[cfg(target_arch = "wasm32")]
+mod area_poi;
+#[cfg(target_arch = "wasm32")]
+mod area_trigger;
+#[cfg(target_arch = "wasm32")]
+mod aura_visual;
+#[cfg(target_arch = "wasm32")]
+mod bindings;
+#[cfg(target_arch = "wasm32")]
+mod blob_shadow;
+#[cfg(target_arch = "wasm32")]
+mod bowstring;
+#[cfg(target_arch = "wasm32")]
+mod camera_shake;
+#[cfg(target_arch = "wasm32")]
+mod char_create;
+#[cfg(target_arch = "wasm32")]
+mod char_select;
+#[cfg(target_arch = "wasm32")]
+mod chat_bubble;
+#[cfg(target_arch = "wasm32")]
+mod chr_classes;
+#[cfg(target_arch = "wasm32")]
+mod cinematic;
+#[cfg(target_arch = "wasm32")]
+mod combat_text;
+#[cfg(target_arch = "wasm32")]
+mod console;
+#[cfg(target_arch = "wasm32")]
+mod cooldowns;
+#[cfg(target_arch = "wasm32")]
+mod crash;
+#[cfg(target_arch = "wasm32")]
+mod creature_anim;
+#[cfg(target_arch = "wasm32")]
+mod cursor;
+#[cfg(target_arch = "wasm32")]
+mod cvars;
+#[cfg(target_arch = "wasm32")]
+mod death;
+#[cfg(target_arch = "wasm32")]
+mod doodad_events;
+#[cfg(target_arch = "wasm32")]
+mod entities;
+#[cfg(target_arch = "wasm32")]
+mod fishing_line;
+#[cfg(target_arch = "wasm32")]
+mod footprints;
+#[cfg(target_arch = "wasm32")]
 mod game_tip;
+#[cfg(target_arch = "wasm32")]
+mod glue;
+#[cfg(target_arch = "wasm32")]
+mod glue_strings;
+#[cfg(target_arch = "wasm32")]
+mod go_anim;
+#[cfg(target_arch = "wasm32")]
+mod go_templates;
+#[cfg(target_arch = "wasm32")]
+mod items;
+#[cfg(target_arch = "wasm32")]
+mod loading_screen;
+#[cfg(target_arch = "wasm32")]
+mod local_state;
+#[cfg(target_arch = "wasm32")]
+mod login;
+#[cfg(target_arch = "wasm32")]
+mod minimap;
+#[cfg(target_arch = "wasm32")]
 mod name_persist;
+#[cfg(target_arch = "wasm32")]
+mod nameplates;
+#[cfg(target_arch = "wasm32")]
+mod names;
+#[cfg(target_arch = "wasm32")]
+mod net;
+#[cfg(target_arch = "wasm32")]
+mod npc_text;
+#[cfg(target_arch = "wasm32")]
 mod opaque2d;
-/// Where "the client is going down" may be observed, and why that is `Last` and not `Update`
-/// (decision 1528). Every system that persists state on the way out registers through it.
+#[cfg(target_arch = "wasm32")]
+mod pending_item_ops;
+#[cfg(target_arch = "wasm32")]
+mod pipe_warm;
+#[cfg(target_arch = "wasm32")]
+mod player;
+#[cfg(target_arch = "wasm32")]
+mod poi_marker;
+#[cfg(target_arch = "wasm32")]
+mod portrait;
+#[cfg(target_arch = "wasm32")]
+mod query_cache;
+#[cfg(target_arch = "wasm32")]
+mod quest_markers;
+#[cfg(target_arch = "wasm32")]
+mod raid_marks;
+#[cfg(target_arch = "wasm32")]
+mod ranged_flex;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/realm_select.rs"]
+mod realm_select;
+#[cfg(target_arch = "wasm32")]
+mod realmlist;
+#[cfg(target_arch = "wasm32")]
+mod run_mode;
+#[cfg(target_arch = "wasm32")]
+mod screen_fade;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/screenshot.rs"]
+mod screenshot;
+#[cfg(target_arch = "wasm32")]
+mod shaders;
+#[cfg(target_arch = "wasm32")]
 mod shutdown;
+#[cfg(target_arch = "wasm32")]
 mod smart_rect;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/sound.rs"]
 mod sound;
-/// The two talent spell-modifier tables (`SMSG_SET_FLAT_/PCT_SPELL_MODIFIER`) and the read that
-/// puts them on a number.
+#[cfg(target_arch = "wasm32")]
 mod spell_mods;
-/// The melee swing refusal's latch + 4 s repeat (`SMSG_ATTACKSWING_*`).
+#[cfg(target_arch = "wasm32")]
 mod swing_refusal;
+#[cfg(target_arch = "wasm32")]
 mod target;
-#[cfg(test)]
-pub(crate) mod test_support;
+#[cfg(target_arch = "wasm32")]
 mod text_filter;
+#[cfg(target_arch = "wasm32")]
 mod text_reshape;
+#[cfg(target_arch = "wasm32")]
 mod textinput;
+#[cfg(target_arch = "wasm32")]
 mod transport;
+#[cfg(target_arch = "wasm32")]
 mod tutorial;
+#[cfg(target_arch = "wasm32")]
 mod ui_action;
+#[cfg(target_arch = "wasm32")]
 mod ui_auction;
+#[cfg(target_arch = "wasm32")]
 mod ui_aura;
+#[cfg(target_arch = "wasm32")]
 mod ui_bank;
+#[cfg(target_arch = "wasm32")]
 mod ui_battlefield;
+#[cfg(target_arch = "wasm32")]
 mod ui_battlefield_positions;
+#[cfg(target_arch = "wasm32")]
 mod ui_battlefield_score;
+#[cfg(target_arch = "wasm32")]
 mod ui_bind_confirm;
+#[cfg(target_arch = "wasm32")]
 mod ui_binder;
+#[cfg(target_arch = "wasm32")]
 mod ui_cast;
+#[cfg(target_arch = "wasm32")]
 mod ui_char;
+#[cfg(target_arch = "wasm32")]
 mod ui_chat;
+#[cfg(target_arch = "wasm32")]
+mod ui_cost;
+#[cfg(target_arch = "wasm32")]
 mod ui_craft;
+#[cfg(target_arch = "wasm32")]
 mod ui_dialog_verbs;
+#[cfg(target_arch = "wasm32")]
 mod ui_dressup;
+#[cfg(target_arch = "wasm32")]
 mod ui_duel;
+#[cfg(target_arch = "wasm32")]
 mod ui_follow;
+#[cfg(target_arch = "wasm32")]
 mod ui_gamma;
+#[cfg(target_arch = "wasm32")]
 mod ui_gm_ticket;
+#[cfg(target_arch = "wasm32")]
 mod ui_gossip;
+#[cfg(target_arch = "wasm32")]
 mod ui_guild;
+#[cfg(target_arch = "wasm32")]
 mod ui_hide;
+#[cfg(target_arch = "wasm32")]
 mod ui_honor;
+#[cfg(target_arch = "wasm32")]
 mod ui_inspect;
+#[cfg(target_arch = "wasm32")]
 mod ui_instance;
+#[cfg(target_arch = "wasm32")]
 mod ui_item_text;
+#[cfg(target_arch = "wasm32")]
 mod ui_items;
+#[cfg(target_arch = "wasm32")]
 mod ui_layout;
+#[cfg(target_arch = "wasm32")]
 mod ui_logout;
+#[cfg(target_arch = "wasm32")]
 mod ui_loot;
+#[cfg(target_arch = "wasm32")]
 mod ui_loot_roll;
+#[cfg(target_arch = "wasm32")]
 mod ui_macro;
+#[cfg(target_arch = "wasm32")]
 mod ui_mail;
+#[cfg(target_arch = "wasm32")]
 mod ui_merchant;
+#[cfg(target_arch = "wasm32")]
 mod ui_mirror;
+#[cfg(target_arch = "wasm32")]
 mod ui_models;
+#[cfg(target_arch = "wasm32")]
 mod ui_net;
+#[cfg(target_arch = "wasm32")]
 mod ui_party;
+#[cfg(target_arch = "wasm32")]
 mod ui_pass;
+#[cfg(target_arch = "wasm32")]
 mod ui_pet;
+#[cfg(target_arch = "wasm32")]
 mod ui_pet_book;
+#[cfg(target_arch = "wasm32")]
 mod ui_pet_doll;
+#[cfg(target_arch = "wasm32")]
 mod ui_pet_stats;
+#[cfg(target_arch = "wasm32")]
 mod ui_petition;
+#[cfg(target_arch = "wasm32")]
 mod ui_quest;
+#[cfg(target_arch = "wasm32")]
 mod ui_quest_log;
+#[cfg(target_arch = "wasm32")]
 mod ui_quest_share;
+#[cfg(target_arch = "wasm32")]
 mod ui_reputation;
+#[cfg(target_arch = "wasm32")]
 mod ui_saved;
+#[cfg(target_arch = "wasm32")]
+mod ui_scale;
+#[cfg(target_arch = "wasm32")]
+#[path = "ui_script/mod.rs"]
 mod ui_script;
+#[cfg(target_arch = "wasm32")]
 mod ui_session;
+#[cfg(target_arch = "wasm32")]
 mod ui_shapeshift;
+#[cfg(target_arch = "wasm32")]
 mod ui_social;
+#[cfg(target_arch = "wasm32")]
 mod ui_spellbook;
+#[cfg(target_arch = "wasm32")]
 mod ui_stable;
+#[cfg(target_arch = "wasm32")]
 mod ui_summon;
+#[cfg(target_arch = "wasm32")]
 mod ui_tabard;
+#[cfg(target_arch = "wasm32")]
 mod ui_talent;
+#[cfg(target_arch = "wasm32")]
 mod ui_talent_wipe;
+#[cfg(target_arch = "wasm32")]
 mod ui_taxi;
+#[cfg(target_arch = "wasm32")]
 mod ui_text;
+#[cfg(target_arch = "wasm32")]
 mod ui_tooltip;
+#[cfg(target_arch = "wasm32")]
 mod ui_trade;
+#[cfg(target_arch = "wasm32")]
 mod ui_tradeskill;
+#[cfg(target_arch = "wasm32")]
 mod ui_trainer;
+#[cfg(target_arch = "wasm32")]
 mod ui_unit;
+#[cfg(target_arch = "wasm32")]
 mod ui_world_map;
+#[cfg(target_arch = "wasm32")]
 mod video;
+#[cfg(target_arch = "wasm32")]
 mod vplates;
+#[cfg(target_arch = "wasm32")]
 mod weapon_trail;
+#[cfg(target_arch = "wasm32")]
+mod web_client;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/config.rs"]
+mod web_config;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/glue_art.rs"]
+mod web_glue_art;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/glue_scene.rs"]
+mod web_glue_scene;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/world.rs"]
+mod web_world;
+#[cfg(target_arch = "wasm32")]
 mod world_backdrop;
+#[cfg(target_arch = "wasm32")]
 mod world_state;
+#[cfg(target_arch = "wasm32")]
 mod world_state_ui;
 
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::prelude::*;
 
 // The `benilla` launcher shim (the bin package) is this library's only caller: it stamps the
 // build id at compile time and hands it into [`run`]. Re-exported so the shim needs no bevy
 // dep of its own.
 pub use benilla_world::build_id::BuildId;
-/// The world viewer's entry point — the engine with no game attached (decision 1160).
-/// Its shim (`benilla-worldview`) is this library's second caller; see [`worldview`].
-pub use benilla_world::worldview::run as run_worldview;
 pub use bevy::app::AppExit;
 
 /// Build and run the client app. `build` is the launcher shim's compile-time git stamp
 /// ([`build_id`]) — passed in as plain data so the sha lives in the shim's fingerprint, not
 /// this crate's, and a commit stops recompiling the app (decision 0993).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run(build: BuildId) -> AppExit {
-    // `WOW_CAPTURE=list` just prints the harness scenario names (the source of truth `scripts/visual.sh`
-    // reads) and exits before any window/asset setup.
-    // `WOW_HOVER_LOG_REPORT=<csv>` re-reads a recorded run and prints its report, then exits —
-    // no window, no game. New analysis lands on runs already captured (see `hover_log`).
-    if let Ok(path) = std::env::var("WOW_HOVER_LOG_REPORT") {
-        dev::report_recorded_hover_log(&path);
-        return AppExit::Success;
-    }
-    if std::env::var("WOW_CAPTURE").as_deref() == Ok("list") {
-        dev::print_scenario_names();
-        return AppExit::Success;
-    }
-    // `WOW_PROBE=list` prints the probe fleet's environment registry (`capture::probe_env`) the
-    // same way — before any window, so a session can ask the binary what the fleet takes.
-    if std::env::var("WOW_PROBE").as_deref() == Ok("list") {
-        dev::print_probe_vars();
-        return AppExit::Success;
-    }
-
     // From here on a panic leaves `benilla-config/Diagnostics/crash-<unix>.txt` behind (decision
     // 2266 §B2) — armed before the `App` exists, so a panic while plugins build is a report too.
     crash::install(build);
@@ -326,9 +647,12 @@ pub fn run(build: BuildId) -> AppExit {
     }
 
     // The `mpq://` asset source must be registered BEFORE `AssetPlugin` (inside `DefaultPlugins`)
-    // builds. Finds the install the one way anything does (`benilla_formats::wow_data`, decision
-    // 1175) — the same answer the `WorldAssets` foundation gets. On failure the source is simply
-    // absent and the AdtTile-pipeline loads fail gracefully (the terrain just doesn't appear).
+    // builds. Browser AssetServer reads use the same gateway-backed source already exercised by
+    // benilla-web. WorldAssets still opens a native Chain directly; that separate seam must be
+    // ported before the full client can stream its world in a browser.
+    #[cfg(target_arch = "wasm32")]
+    benilla_assets::register_web_mpq_source(&mut app, "/assets/v1/file");
+    #[cfg(not(target_arch = "wasm32"))]
     match benilla_formats::wow_data() {
         Some(data_dir) => {
             if let Err(e) = benilla_assets::register_mpq_source(&mut app, &data_dir) {
@@ -350,6 +674,10 @@ pub fn run(build: BuildId) -> AppExit {
 
     app.add_plugins(benilla_world::boot::tuned_default_plugins(Window {
         title: "benilla".into(),
+        #[cfg(target_arch = "wasm32")]
+        canvas: Some("#benilla".into()),
+        #[cfg(target_arch = "wasm32")]
+        fit_canvas_to_parent: true,
         // **Born in the player's display mode, not flipped into it** (decision 1627). `gxWindow`
         // is read straight off `config.toml` here rather than waiting for `Startup`'s
         // `load_config`, because a launch that opens windowed and goes fullscreen one frame later
@@ -467,19 +795,6 @@ pub fn run(build: BuildId) -> AppExit {
     // for the two ordering edges inside it that are load-bearing, and for what is
     // deliberately left out (`pipe_warm`).
     .add_plugins(benilla_world::world_plugins::WorldPlugins)
-    // The instruments, which the engine group deliberately does not carry (1160: instruments at
-    // the top of the stack). The panel first — `PerfPlugin` needs the egui plugin/context it sets
-    // up. Toggles: the dev chord + D, and P.
-    // **The instruments** (decisions 1173/1174): the debug panel, the perf HUD, the object
-    // inspector, the hover-cost recorder, the asset-churn meter, the session preflight and the
-    // probe shield — one group, in the slot the panel has always held (it sets up the egui
-    // context the perf pill needs). `--no-default-features` compiles every one of them out; see
-    // `dev.rs` for what is in the group and the one rule that governs the boundary.
-    .add_plugins(dev::DevToolsPlugin)
-    // The FPS journal — the one instrument that ships (2008): `/console fpsJournal 1` in any
-    // build appends a per-second row of position, frame cost and the GPU's per-pass split to
-    // `benilla-config/Diagnostics/fps-journal.csv`; `WOW_FPS_JOURNAL=<csv>` is the harness lever.
-    .add_plugins(perf::FpsJournalPlugin)
     // **The game, as one name** (decision 2279): everything the client adds on top of the
     // engine, in the order it always had. See `game_plugins.rs` for the members, the ordering
     // edges inside it that are load-bearing, and the test that builds it headless.
@@ -521,14 +836,16 @@ pub fn run(build: BuildId) -> AppExit {
         }
     }
 
-    // **The probe fleet** — the capture harness and every scripted live probe, each armed by its
-    // own environment variable and inert without it. Added last so they observe the fully-built
-    // app; compiled out entirely by `--no-default-features` (decisions 1173/1174), which is why
-    // this is one line and the twenty env checks behind it live in `dev.rs`.
-    app.add_plugins(dev::DevProbesPlugin);
-
     // Return the app's own exit status instead of dropping it: a failed capture writes
     // `AppExit::error()` (see `capture::drive_capture`), and discarding it made the process exit 0
     // with no PNG on disk — which is how a sweep carried on around a missing shot (decision 0743).
     app.run()
+}
+
+/// Browser composition of the production launcher. Gameplay modules enter this composition in
+/// their original form as their platform services become available; browser-only code stays at
+/// those service boundaries rather than replacing the game systems themselves.
+#[cfg(target_arch = "wasm32")]
+pub fn run(build: BuildId) -> AppExit {
+    web_client::run(build)
 }

@@ -24,8 +24,8 @@
 //! doll, with no glow ([`benilla_world::ffx_glow::FfxGlow::UI_PANE`]) for the same reason.
 
 use benilla_protocol::CharEnumItem;
-use bevy::camera::visibility::RenderLayers;
 use bevy::camera::PerspectiveProjection;
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 
 use crate::entities::Creatures;
@@ -33,10 +33,11 @@ use benilla_assets::materials::WowModelMaterial;
 
 use super::light::BoothLight;
 use super::{
+    BOOTH_SETTLE_FRAMES, Booth, BoothBillboardSpec, BoothCam, BoothEffects, BoothInstance,
+    BoothMotion, BoothPart, BoothRider, BoothTwins, Booths, DRESSUP_LAYER, PAPERDOLL_SIZE,
+    PortraitImages, PortraitSource, PreviewBillboard, PreviewEffects, PreviewPart, PreviewRider,
     aim, body_frame, booth_anchors, new_target_image, spawn_booth_effects, spawn_booth_model,
-    wake_booth, Booth, BoothBillboardSpec, BoothCam, BoothEffects, BoothInstance, BoothMotion,
-    BoothPart, BoothRider, BoothTwins, Booths, PortraitImages, PortraitSource, PreviewBillboard,
-    PreviewEffects, PreviewPart, PreviewRider, BOOTH_SETTLE_FRAMES, DRESSUP_LAYER, PAPERDOLL_SIZE,
+    wake_booth,
 };
 
 /// The dressing-room booth slot token (its key in [`PortraitImages`] / [`Booths`]).
@@ -193,7 +194,6 @@ pub(super) fn sync_dressup_booth(
     mut booth_light: ResMut<BoothLight>,
     mut materials: ResMut<Assets<WowModelMaterial>>,
     creatures: Option<Res<Creatures>>,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
     mut palettes: ResMut<benilla_world::rig_palette::RigPalettes>,
     mut env_cache: Local<Option<bool>>,
@@ -308,7 +308,6 @@ pub(super) fn sync_dressup_booth(
             rig.inverse_bindposes
                 .as_ref()
                 .map(|ibp| (rig.skeleton, ibp, rig.animations)),
-            anim_data.as_deref().map(|a| &a.0),
             // Stand LOOPING, like the paper doll beside it — the reference's `<DressUpModel>` is a
             // live-rendering widget (0822 §4) and the director called the pose (decision 1069).
             BoothMotion::Loop,

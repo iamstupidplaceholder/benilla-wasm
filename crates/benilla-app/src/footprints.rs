@@ -127,11 +127,17 @@ fn load_ink(
     let lane = commands.spawn(Name::new("footprint-lane")).id();
     commands.insert_resource(FootprintLane(lane));
     let Some(assets) = assets else { return };
-    let table = {
-        let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_footprint_textures(&mut chain)
-    };
-    match table {
+    let mut chain = assets.chain.lock_recover();
+    publish_ink(&mut commands, &mut *chain, &asset_server);
+}
+
+/// Original decoder and texture inventory, shared across host delivery adapters.
+pub(crate) fn publish_ink(
+    commands: &mut Commands,
+    source: &mut impl benilla_formats::FileSource,
+    asset_server: &AssetServer,
+) {
+    match benilla_formats::load_footprint_textures(source) {
         Ok(table) => {
             let ink = table
                 .into_iter()

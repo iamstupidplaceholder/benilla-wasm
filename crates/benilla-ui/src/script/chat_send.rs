@@ -33,7 +33,7 @@
 //! Ours passes the line through; vmangos enforces both, so a misbehaving addon meets the same wall
 //! it would meet on a real server rather than a client-side one we made up.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -88,34 +88,28 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumLaguages() — `0x49fb30`, the binary's own spelling (wow-re
     // `bag-language-combat-action-bindings.md` §2). Walks `Languages.dbc` and counts the rows
     // `0x5ec720` answers non-zero for; **one number**.
-    lua.globals().set(
-        "GetNumLaguages",
-        lua.create_function(|lua, _ignored: MultiValue| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.known_languages.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumLaguages", |lua, _ignored: MultiValue| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.known_languages.len() as i64)
+    })?;
     // GetLanguageByIndex(i) — `0x49fbe0`: the same walk, pushing **one string** — the
     // `Name_lang` of the i-th (1-based) *known* language. Positional among the known rows,
     // never a row number or a language id; past the end it pushes nothing.
-    lua.globals().set(
-        "GetLanguageByIndex",
-        lua.create_function(|lua, index: Option<i64>| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let name = index
-                .and_then(|i| usize::try_from(i).ok())
-                .and_then(|i| i.checked_sub(1))
-                .and_then(|i| model.known_languages.get(i));
-            Ok(match name {
-                Some(n) => MultiValue::from_vec(vec![Value::String(lua.create_string(n)?)]),
-                None => MultiValue::new(),
-            })
-        })?,
-    )?;
+    lua.register_function("GetLanguageByIndex", |lua, index: Option<i64>| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let name = index
+            .and_then(|i| usize::try_from(i).ok())
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| model.known_languages.get(i));
+        Ok(match name {
+            Some(n) => MultiValue::from([Value::from(n.clone())]),
+            None => MultiValue::new(),
+        })
+    })?;
     // GetDefaultLanguage() → **exactly ONE value, a string** — or **zero values**, which is not
     // the same thing (`0x49fcd0`, wow-re `bag-language-combat-action-bindings.md` §2).
     //
@@ -143,48 +137,43 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // the push-number helper", no corpus addon calls it at all, and registering it would mean
     // inventing a count. The name is recorded here so that whoever carves the body knows how to
     // spell the global.
-    lua.globals().set(
-        "GetDefaultLanguage",
-        lua.create_function(|lua, _ignored: MultiValue| {
-            let name = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.default_language.clone()
-            };
-            Ok(match name {
-                Some(n) => MultiValue::from_vec(vec![Value::String(lua.create_string(&n)?)]),
-                None => MultiValue::new(),
-            })
-        })?,
-    )?;
+    lua.register_function("GetDefaultLanguage", |lua, _ignored: MultiValue| {
+        let name = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.default_language.clone()
+        };
+        Ok(match name {
+            Some(n) => MultiValue::from([Value::from(n)]),
+            None => MultiValue::new(),
+        })
+    })?;
 
-    lua.globals().set(
+    lua.register_function(
         "SendChatMessage",
-        lua.create_function(
-            |lua, (text, chat_type, _language, target): (String, Option<String>, Value, Value)| {
-                // The reference's default is SAY — an addon that passes only a string is saying it.
-                let chat_type = chat_type
-                    .unwrap_or_else(|| "SAY".into())
-                    .to_ascii_uppercase();
-                // The fourth argument is a name for WHISPER and a name-or-number for CHANNEL, so
-                // it arrives as either a string or a number and is normalised to text here rather
-                // than at every consumer.
-                let target = match target {
-                    Value::String(s) => Some(s.to_string_lossy()),
-                    Value::Integer(n) => Some(n.to_string()),
-                    Value::Number(n) => Some(format!("{n:.0}")),
-                    _ => None,
-                };
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .chat_sends
-                    .push(ChatSend {
-                        text,
-                        chat_type,
-                        target,
-                    });
-                Ok(())
-            },
-        )?,
+        |lua, (text, chat_type, _language, target): (String, Option<String>, Value, Value)| {
+            // The reference's default is SAY — an addon that passes only a string is saying it.
+            let chat_type = chat_type
+                .unwrap_or_else(|| "SAY".into())
+                .to_ascii_uppercase();
+            // The fourth argument is a name for WHISPER and a name-or-number for CHANNEL, so
+            // it arrives as either a string or a number and is normalised to text here rather
+            // than at every consumer.
+            let target = match target {
+                Value::String(s) => Some(s.to_string_lossy().into_owned()),
+                Value::Integer(n) => Some(n.to_string()),
+                Value::Number(n) => Some(format!("{n:.0}")),
+                _ => None,
+            };
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .chat_sends
+                .push(ChatSend {
+                    text,
+                    chat_type,
+                    target,
+                });
+            Ok(())
+        },
     )?;
     Ok(())
 }

@@ -56,7 +56,7 @@ fn load_popup_frames(s: &UiScript) {
 /// The row labels the FRIEND / PLAYER menus bake at load (production reads GlobalStrings.lua; a
 /// bare harness doesn't). Only the rows these menus actually SHOW need real text — the DEFERRED
 /// rows are hidden before they're added.
-fn bake_strings(s: &UiScript) {
+fn bake_strings(s: &mut UiScript) {
     s.run(
         r#"
         WHISPER = "Whisper"
@@ -98,7 +98,7 @@ fn chat_name_right_click_opens_the_invite_menu() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_strings(&s);
+    bake_strings(&mut s);
     load_popup_frames(&s);
     s.resolve();
     assert!(s.errors().is_empty(), "load errors: {:?}", s.errors());
@@ -177,7 +177,7 @@ fn solo_target_right_click_invites_a_player() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_strings(&s);
+    bake_strings(&mut s);
     load_popup_frames(&s);
 
     s.set_unit(
@@ -279,7 +279,7 @@ fn solo_target_trade_click_queues_an_initiate() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_strings(&s);
+    bake_strings(&mut s);
     load_popup_frames(&s);
 
     s.set_unit(
@@ -349,7 +349,7 @@ fn solo_target_follow_click_queues_an_exact_by_name_follow() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_strings(&s);
+    bake_strings(&mut s);
     load_popup_frames(&s);
 
     s.set_unit(
@@ -418,7 +418,7 @@ fn solo_target_inspect_click_reaches_inspect_unit() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_strings(&s);
+    bake_strings(&mut s);
     load_popup_frames(&s);
     s.run("BENILLA_TEST_INSPECTED = nil; function InspectUnit(unit) BENILLA_TEST_INSPECTED = unit end")
         .unwrap();
@@ -523,7 +523,7 @@ fn load_pet_menu_frames(s: &UiScript) {
 /// The PET rows' labels and both dialogs' text, verbatim from the real
 /// `Interface\FrameXML\GlobalStrings.lua` off the 1.12.1 patch chain (l.3028-3052 and l.3) — which
 /// is what the app itself runs at boot; this only stands in for it in a bare harness.
-fn bake_pet_strings(s: &UiScript) {
+fn bake_pet_strings(s: &mut UiScript) {
     s.run(
         r#"
         PET_PAPERDOLL = "Pet Details"
@@ -629,7 +629,7 @@ fn the_pet_menu_forks_between_abandon_and_dismiss() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_pet_strings(&s);
+    bake_pet_strings(&mut s);
     load_pet_menu_frames(&s);
     a_pet(&mut s, "Bruce");
 
@@ -699,7 +699,7 @@ fn dismiss_sends_immediately_and_abandon_waits_for_the_confirm() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_pet_strings(&s);
+    bake_pet_strings(&mut s);
     load_pet_menu_frames(&s);
     a_pet(&mut s, "Snuffles");
 
@@ -756,7 +756,7 @@ fn renaming_a_pet_reads_the_name_back_before_sending_it() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_pet_strings(&s);
+    bake_pet_strings(&mut s);
     load_pet_menu_frames(&s);
     a_pet(&mut s, "Bruce");
     s.set_pet_menu(true, true);
@@ -808,7 +808,7 @@ fn the_pet_details_row_opens_the_pet_paper_doll() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    bake_pet_strings(&s);
+    bake_pet_strings(&mut s);
     load_pet_menu_frames(&s);
     a_pet(&mut s, "Bruce");
     s.set_pet_menu(true, true);

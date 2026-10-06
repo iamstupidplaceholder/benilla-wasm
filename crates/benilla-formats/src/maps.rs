@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -199,8 +199,8 @@ fn map_schema() -> Schema {
 }
 
 /// Read Map.dbc off the patch chain into a [`MapCatalog`].
-pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
-    let bytes = chain
+pub fn load_map_catalog(source: &mut impl FileSource) -> Result<MapCatalog> {
+    let bytes = source
         .read_file(MAP)
         .with_context(|| format!("reading {MAP}"))?;
     let rs = parse(&bytes, map_schema(), "Map")?;

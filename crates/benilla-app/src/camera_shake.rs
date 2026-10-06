@@ -268,7 +268,7 @@ fn load_shakes(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let table = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_camera_shakes(&mut chain)
+        benilla_formats::load_camera_shakes(&mut *chain)
     };
     match table {
         Ok(t) => {
@@ -281,7 +281,7 @@ fn load_shakes(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
 
 /// `CameraShakes.dbc`, loaded once.
 #[derive(Resource)]
-struct Shakes(CameraShakeCatalog);
+pub(crate) struct Shakes(pub(crate) CameraShakeCatalog);
 
 /// Enqueue a shake for each qualifying footfall and death thud on the frame's event stream.
 fn fire_shakes(
@@ -841,8 +841,8 @@ mod tests {
         let path = |grounded: bool| Spline {
             deck: None,
             points: vec![[0.0; 3], [1.0, 0.0, 0.0]],
-            start: std::time::Instant::now(),
-            duration: std::time::Duration::from_secs(1),
+            start: benilla_time::Instant::now(),
+            duration: benilla_time::Duration::from_secs(1),
             id: 1,
             grounded,
             run_mode: true,

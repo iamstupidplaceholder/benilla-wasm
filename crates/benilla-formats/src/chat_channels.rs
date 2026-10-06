@@ -30,8 +30,8 @@
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
 use crate::dbc::{parse, str_at, u32_at};
+use crate::FileSource;
 
 const CHAT_CHANNELS: &str = "DBFilesClient\\ChatChannels.dbc";
 
@@ -198,7 +198,7 @@ fn schema() -> Schema {
     s
 }
 
-pub fn load_chat_channels_catalog(chain: &mut Chain) -> Result<ChatChannelsCatalog> {
+pub fn load_chat_channels_catalog(chain: &mut impl FileSource) -> Result<ChatChannelsCatalog> {
     let bytes = chain
         .read_file(CHAT_CHANNELS)
         .context("reading ChatChannels.dbc")?;

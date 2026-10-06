@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const SPELL_FOCUS_OBJECT: &str = "DBFilesClient\\SpellFocusObject.dbc";
 const SPELL_FOCUS_FIELDS: usize = 10;
@@ -54,7 +54,7 @@ fn schema() -> Schema {
 }
 
 /// Load SpellFocusObject.dbc from the patch chain into a [`SpellFocusCatalog`].
-pub fn load_spell_focus_catalog(chain: &mut Chain) -> Result<SpellFocusCatalog> {
+pub fn load_spell_focus_catalog(chain: &mut impl FileSource) -> Result<SpellFocusCatalog> {
     let bytes = chain
         .read_file(SPELL_FOCUS_OBJECT)
         .with_context(|| format!("reading {SPELL_FOCUS_OBJECT}"))?;

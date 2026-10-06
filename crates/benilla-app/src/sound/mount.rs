@@ -10,7 +10,10 @@
 
 use bevy::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::net::FieldChanged;
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::WorldAssets;
 use benilla_world::schedule::WorldStage;
 

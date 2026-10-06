@@ -13,6 +13,7 @@
 
 use bevy::prelude::*;
 
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 use benilla_formats::AreaPoiCatalog;
 
@@ -21,13 +22,19 @@ use benilla_formats::AreaPoiCatalog;
 pub(crate) struct AreaPoiRes(pub(crate) AreaPoiCatalog);
 
 /// Startup: load the shared POI catalog off the patch chain.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_area_poi(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
-    let loaded = {
-        let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_area_poi_catalog(&mut chain)
-    };
-    match loaded {
+    let mut chain = assets.chain.lock_recover();
+    publish_catalog(&mut commands, &mut *chain);
+}
+
+/// Both hosts decode and publish the same catalog; only byte delivery differs.
+pub(crate) fn publish_catalog(
+    commands: &mut Commands,
+    source: &mut impl benilla_formats::FileSource,
+) {
+    match benilla_formats::load_area_poi_catalog(source) {
         Ok(cat) => {
             info!("area_poi: {} rows in the shared AreaPOI catalog", cat.len());
             commands.insert_resource(AreaPoiRes(cat));
@@ -39,7 +46,10 @@ fn load_area_poi(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
 pub(crate) struct AreaPoiPlugin;
 
 impl Plugin for AreaPoiPlugin {
-    fn build(&self, app: &mut App) {
+    fn build(&self, _app: &mut App) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let app = _app;
+        #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(Startup, load_area_poi.after(AssetSet::Open));
     }
 }

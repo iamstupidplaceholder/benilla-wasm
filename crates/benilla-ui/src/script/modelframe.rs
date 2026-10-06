@@ -89,9 +89,11 @@
 
 use std::sync::Arc;
 
-use mlua::{Lua, MultiValue, Table, Value};
+use benilla_lua::{
+    LuaContext, MultiValue as LuaMultiValue, Table as LuaTable, Value as LuaValue, Vm,
+};
 
-use super::object::frame_handle_of;
+use super::object::frame_handle_of_context;
 use super::Model;
 use crate::widget::{model_key, FrameHandle, KindState, ModelFileFacts, ModelLight, ModelState};
 
@@ -175,8 +177,11 @@ impl Model {
 
 /// The facts of the file `this` pane currently holds (`None` for an empty pane or a file the
 /// host has not loaded yet).
-fn facts_of_pane(lua: &Lua, this: &Table) -> mlua::Result<Option<Arc<ModelFileFacts>>> {
-    let path = with_model(lua, this, |m| m.path.clone())?;
+fn facts_of_pane_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<Option<Arc<ModelFileFacts>>> {
+    let path = with_model_context(lua, this, |m| m.path.clone())?;
     Ok(path.and_then(|p| {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
@@ -192,23 +197,21 @@ pub(super) const REG_MODEL_METHODS: &str = "__benilla_model_methods";
 /// exactly as the client's `0x506260` reaches `0x76f870` on a miss.
 pub(super) const REG_PLAYERMODEL_METHODS: &str = "__benilla_playermodel_methods";
 
-/// Run `f` over a frame's Model state under one short write borrow. Errors if `this` is not a live
-/// Model (unreachable through the kind dispatcher, but the method table is a plain Lua value — a
-/// caller can fish it out and misapply it).
-pub(super) fn with_model<T>(
-    lua: &Lua,
-    this: &Table,
+/// Run `f` over a model pane under one short app-data borrow.
+pub(super) fn with_model_context<T>(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     f: impl FnOnce(&mut ModelState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
-        KindState::Model(m) => Ok(f(m)),
-        _ => Err(mlua::Error::runtime("not a Model")),
+        KindState::Model(state) => Ok(f(state)),
+        _ => Err(benilla_lua::Error::runtime("not a Model")),
     }
 }
 
@@ -217,28 +220,23 @@ pub(super) fn with_model<T>(
 /// The widget's setters are all coordinates and angles, and the corpus passes them through
 /// arithmetic that can produce a nil (`C.bars[...].icon_size / 25` when the config key is absent).
 /// The reference marshals through `lua_tonumber`, which is this.
-fn num(v: &Value) -> f32 {
+fn num_neutral(v: &LuaValue) -> f32 {
     match v {
-        Value::Number(n) => *n as f32,
-        Value::Integer(i) => *i as f32,
-        Value::String(s) => s.to_str().ok().and_then(|t| t.parse().ok()).unwrap_or(0.0),
+        LuaValue::Number(n) => *n as f32,
+        LuaValue::Integer(i) => *i as f32,
+        LuaValue::String(s) => s.as_str().ok().and_then(|t| t.parse().ok()).unwrap_or(0.0),
         _ => 0.0,
     }
 }
 
-/// Same, as an integer (sequence and camera indices).
-fn int(v: &Value) -> i32 {
-    num(v) as i32
-}
-
 /// `lua_isnumber` — a number, or a string that converts, and **nothing else**. Distinct from
-/// [`num`] on purpose: `SetLight` *raises* on a non-number where the coordinate setters coerce,
+/// [`num_neutral`] on purpose: `SetLight` *raises* on a non-number where the coordinate setters coerce,
 /// so the two questions cannot share one helper.
-fn number(v: &Value) -> Option<f32> {
+fn number(v: &LuaValue) -> Option<f32> {
     match v {
-        Value::Number(n) => Some(*n as f32),
-        Value::Integer(i) => Some(*i as f32),
-        Value::String(s) => s.to_str().ok().and_then(|t| t.trim().parse().ok()),
+        LuaValue::Number(n) => Some(*n as f32),
+        LuaValue::Integer(i) => Some(*i as f32),
+        LuaValue::String(s) => s.as_str().ok().and_then(|t| t.trim().parse().ok()),
         _ => None,
     }
 }
@@ -273,7 +271,7 @@ enum SetLight {
 /// nonzero **and** all three components are numbers; when either fails, the colour stays white
 /// and the cursor does *not* advance past it — so the second intensity is read at index 8 rather
 /// than 11, and `SetLight(1, 0, x, y, z, ambI, dirI)` is a legal seven-argument form.
-fn parse_set_light(a: &[Value]) -> SetLight {
+fn parse_set_light(a: &[LuaValue]) -> SetLight {
     let Some(enabled) = a.first().and_then(number) else {
         return SetLight::Raise;
     };
@@ -332,33 +330,204 @@ fn parse_set_light(a: &[Value]) -> SetLight {
 /// `lua_isstring` accepts tags 3|4 — a string **or a number** — and nothing else. A number is
 /// rendered to decimal text and used as the path, which is why this coerces rather than matching
 /// `Value::String` alone.
-fn string_arg(v: &Value) -> Option<std::borrow::Cow<'_, str>> {
+fn string_arg_neutral(v: &LuaValue) -> Option<String> {
     match v {
-        Value::String(s) => s
-            .to_str()
-            .ok()
-            .map(|t| std::borrow::Cow::Owned(t.to_string())),
-        Value::Number(n) => Some(std::borrow::Cow::Owned(n.to_string())),
-        Value::Integer(i) => Some(std::borrow::Cow::Owned(i.to_string())),
+        LuaValue::String(s) => s.as_str().ok().map(str::to_owned),
+        LuaValue::Number(n) => Some(n.to_string()),
+        LuaValue::Integer(i) => Some(i.to_string()),
         _ => None,
     }
 }
 
-/// The client's own `Usage:` error, with the receiver's name interpolated the way it interpolates
-/// it — `GetName()`, or `<unnamed>` when the widget has none (`0x84c7f0`).
-fn usage(lua: &Lua, this: &Table, call: &str) -> mlua::Error {
-    let name = this
-        .get::<mlua::Function>("GetName")
-        .and_then(|f| f.call::<Option<String>>(this.clone()))
+fn usage_context(lua: &mut impl LuaContext, this: &LuaTable, call: &str) -> benilla_lua::Error {
+    let name = lua
+        .call_method::<_, Option<String>>(this, "GetName", ())
         .ok()
         .flatten()
-        .unwrap_or_else(|| "<unnamed>".to_string());
-    let _ = lua;
-    mlua::Error::runtime(format!("Usage: {name}:{call}"))
+        .unwrap_or_else(|| "<unnamed>".to_owned());
+    benilla_lua::Error::runtime(format!("Usage: {name}:{call}"))
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+fn install_neutral_methods(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let methods: LuaTable = vm.get_registry(REG_MODEL_METHODS)?;
+    let set_light = vm.create_function("SetLight", |lua, args: LuaMultiValue| {
+        let mut arguments = args.into_iter();
+        let this = match arguments.next() {
+            Some(LuaValue::Table(table)) => table,
+            _ => return Err(benilla_lua::Error::runtime("expected a Model")),
+        };
+        let values: Vec<LuaValue> = arguments.collect();
+        match parse_set_light(&values) {
+            SetLight::Raise => Err(benilla_lua::Error::runtime(SET_LIGHT_USAGE)),
+            SetLight::NoOp => with_model_context(lua, &this, |_| ()),
+            SetLight::Set(light) => with_model_context(lua, &this, |model| model.light = light),
+        }
+    })?;
+    vm.table_set_function(&methods, "SetLight", &set_light)?;
+    let get_light = vm.create_function("GetLight", |lua, this: LuaTable| {
+        let light = with_model_context(lua, &this, |model| model.light)?;
+        let mut out = vec![
+            LuaValue::Number(f64::from(u8::from(light.enabled))),
+            LuaValue::Number(f64::from(u8::from(light.omni))),
+            LuaValue::Number(f64::from(light.vector[0])),
+            LuaValue::Number(f64::from(light.vector[1])),
+            LuaValue::Number(f64::from(light.vector[2])),
+        ];
+        for color in [light.ambient, light.diffuse] {
+            if color.iter().any(|&component| component > 0.0) {
+                out.push(LuaValue::Number(1.0));
+                out.extend(
+                    color
+                        .iter()
+                        .map(|&component| LuaValue::Number(f64::from(component))),
+                );
+            } else {
+                out.push(LuaValue::Number(0.0));
+            }
+        }
+        Ok(LuaMultiValue::from(out))
+    })?;
+    vm.table_set_function(&methods, "GetLight", &get_light)?;
+    let set_fog_color = vm.create_function(
+        "SetFogColor",
+        |lua, (this, r, g, b, a): (LuaTable, LuaValue, LuaValue, LuaValue, Option<LuaValue>)| {
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+            let alpha = a.as_ref().map_or(1.0, num_neutral);
+            let packed = (q(alpha) << 24)
+                | (q(num_neutral(&r)) << 16)
+                | (q(num_neutral(&g)) << 8)
+                | q(num_neutral(&b));
+            with_model_context(lua, &this, |model| {
+                model.fog_color = packed;
+                model.fog = true;
+            })
+        },
+    )?;
+    vm.table_set_function(&methods, "SetFogColor", &set_fog_color)?;
+    let get_fog_color = vm.create_function("GetFogColor", |lua, this: LuaTable| {
+        let packed = with_model_context(lua, &this, |model| model.fog_color)?;
+        let channel = |shift: u32| f64::from((packed >> shift) & 0xff) / 255.0;
+        Ok((channel(16), channel(8), channel(0), channel(24)))
+    })?;
+    vm.table_set_function(&methods, "GetFogColor", &get_fog_color)?;
+    let replace_icon = vm.create_function(
+        "ReplaceIconTexture",
+        |lua, (this, path): (LuaTable, LuaValue)| {
+            let path = string_arg_neutral(&path)
+                .ok_or_else(|| usage_context(lua, &this, "ReplaceIconTexture(\"texture\")"))?;
+            with_model_context(lua, &this, |model| {
+                if model.path.is_some() {
+                    model.icon = Some(path);
+                }
+            })
+        },
+    )?;
+    vm.table_set_function(&methods, "ReplaceIconTexture", &replace_icon)?;
+    let set_model = vm.create_function("SetModel", |lua, (this, path): (LuaTable, LuaValue)| {
+        let path = string_arg_neutral(&path)
+            .ok_or_else(|| usage_context(lua, &this, "SetModel(\"file\")"))?;
+        let facts = lua
+            .app_data_mut::<Model>()
+            .expect("model app_data")
+            .model_facts_for(&path);
+        with_model_context(lua, &this, |model| model.set_file(path, facts.as_deref()))?;
+        let h = frame_handle_of_context(lua, &this)?;
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .apply_implicit_rect(h);
+        Ok(())
+    })?;
+    vm.table_set_function(&methods, "SetModel", &set_model)?;
+    let get_model = vm.create_function("GetModel", |lua, this: LuaTable| {
+        with_model_context(lua, &this, |model| model.path.clone())
+    })?;
+    vm.table_set_function(&methods, "GetModel", &get_model)?;
+    let clear_model = vm.create_function("ClearModel", |lua, this: LuaTable| {
+        with_model_context(lua, &this, ModelState::clear_file)
+    })?;
+    vm.table_set_function(&methods, "ClearModel", &clear_model)?;
+    for (name, timed) in [("SetSequence", false), ("SetSequenceTime", true)] {
+        let function = vm.create_function(
+            name,
+            move |lua, (this, seq, ms): (LuaTable, LuaValue, LuaValue)| {
+                let sequence = num_neutral(&seq) as i32;
+                let millis = if timed { num_neutral(&ms) as i32 } else { 0 };
+                let facts = facts_of_pane_context(lua, &this)?;
+                with_model_context(lua, &this, |model| {
+                    model.arm(sequence, i64::from(millis), facts.as_deref())
+                })
+            },
+        )?;
+        vm.table_set_function(&methods, name, &function)?;
+    }
+    let set_camera =
+        vm.create_function("SetCamera", |lua, (this, camera): (LuaTable, LuaValue)| {
+            let camera = num_neutral(&camera) as i32;
+            let facts = facts_of_pane_context(lua, &this)?;
+            with_model_context(lua, &this, |model| {
+                model.install_camera(camera, facts.as_deref())
+            })
+        })?;
+    vm.table_set_function(&methods, "SetCamera", &set_camera)?;
+    for (name, field) in [
+        ("SetFacing", 0),
+        ("SetModelScale", 1),
+        ("SetFogNear", 2),
+        ("SetFogFar", 3),
+    ] {
+        let function =
+            vm.create_function(name, move |lua, (this, value): (LuaTable, LuaValue)| {
+                let value = num_neutral(&value);
+                with_model_context(lua, &this, |model| match field {
+                    0 => model.facing = value,
+                    1 => model.scale = value,
+                    2 => model.fog_near = value,
+                    _ => model.fog_far = value,
+                })
+            })?;
+        vm.table_set_function(&methods, name, &function)?;
+    }
+    for (name, field) in [
+        ("GetFacing", 0),
+        ("GetModelScale", 1),
+        ("GetFogNear", 2),
+        ("GetFogFar", 3),
+    ] {
+        let function = vm.create_function(name, move |lua, this: LuaTable| {
+            with_model_context(lua, &this, |model| match field {
+                0 => model.facing,
+                1 => model.scale,
+                2 => model.fog_near,
+                _ => model.fog_far,
+            })
+        })?;
+        vm.table_set_function(&methods, name, &function)?;
+    }
+    let set_position = vm.create_function(
+        "SetPosition",
+        |lua, (this, x, y, z): (LuaTable, LuaValue, LuaValue, LuaValue)| {
+            let position = (num_neutral(&x), num_neutral(&y), num_neutral(&z));
+            with_model_context(lua, &this, |model| model.position = position)
+        },
+    )?;
+    vm.table_set_function(&methods, "SetPosition", &set_position)?;
+    let get_position = vm.create_function("GetPosition", |lua, this: LuaTable| {
+        with_model_context(lua, &this, |model| model.position)
+    })?;
+    vm.table_set_function(&methods, "GetPosition", &get_position)?;
+    let clear_fog = vm.create_function("ClearFog", |lua, this: LuaTable| {
+        with_model_context(lua, &this, |model| model.fog = false)
+    })?;
+    vm.table_set_function(&methods, "ClearFog", &clear_fog)?;
+    let advance = vm.create_function("AdvanceTime", |lua, this: LuaTable| {
+        with_model_context(lua, &this, |_| ())
+    })?;
+    vm.table_set_function(&methods, "AdvanceTime", &advance)?;
+    Ok(())
+}
+
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let m = vm.create_table()?;
 
     // ── Content: the model, and clearing ────────────────────────────────────────────────────
     //
@@ -380,36 +549,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // synchronous, so it knows. We render no FrameXML models at all, so we cannot evaluate that
     // condition, and a raise whose predicate we have to guess is worse than a named omission
     // (1134 §4). A path that would be invalid is simply stored.
-    m.set(
-        "SetModel",
-        lua.create_function(|lua, (this, path): (Table, Value)| {
-            let path = string_arg(&path)
-                .ok_or_else(|| usage(lua, &this, "SetModel(\"file\")"))?
-                .to_string();
-            // The file's facts, if the host has handed them over — the reference's "asset
-            // resident" test (`71d5a3`), which decides whether the loader's Stand seed runs
-            // now or when the file lands ([`ModelState::set_file`]).
-            let facts = lua
-                .app_data_mut::<Model>()
-                .expect("model app_data")
-                .model_facts_for(&path);
-            with_model(lua, &this, |m| m.set_file(path, facts.as_deref()))?;
-            // A size-less pane takes the file's rect the moment the file is known (2015).
-            let h = frame_handle_of(lua, &this)?;
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .apply_implicit_rect(h);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "GetModel",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, |m| m.path.clone()))?,
-    )?;
-    m.set(
-        "ClearModel",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, ModelState::clear_file))?,
-    )?;
     // ── Animation (decision 2007) ───────────────────────────────────────────────────────────
     //
     // Both verbs are the same arm, `0x7121a0(model, -1, id, 0, ms, 1.0f, 0, 1)` — `SetSequence`
@@ -418,186 +557,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // file's `animationLookup`, and bakes the anchor `cursor_lo = sceneClock − trunc(ms)` that
     // the sampler re-reads every frame (render law §4.2). The id is an `AnimationData` id, not a
     // file slot; one the file does not own stops the playing track and arms nothing.
-    m.set(
-        "SetSequence",
-        lua.create_function(|lua, (this, seq): (Table, Value)| {
-            let seq = int(&seq);
-            let facts = facts_of_pane(lua, &this)?;
-            with_model(lua, &this, |m| m.arm(seq, 0, facts.as_deref()))
-        })?,
-    )?;
-    m.set(
-        "SetSequenceTime",
-        lua.create_function(|lua, (this, seq, ms): (Table, Value, Value)| {
-            let (seq, ms) = (int(&seq), int(&ms));
-            let facts = facts_of_pane(lua, &this)?;
-            with_model(lua, &this, |m| m.arm(seq, i64::from(ms), facts.as_deref()))
-        })?,
-    )?;
 
     // ── The pane's view: yaw, scale, camera, position ───────────────────────────────────────
     //
     // `SetFacing` is `Model`'s yaw setter (`0x878948[4]` -> `0x76dce0`, writing `+0x39c`).
     // `SetRotation` writes THE SAME FIELD but is `PlayerModel`'s, not a second name here — see
     // `playermodel_install`. A `<Model>` that wants its pane turned calls this one.
-    m.set(
-        "SetFacing",
-        lua.create_function(|lua, (this, rad): (Table, Value)| {
-            let rad = num(&rad);
-            with_model(lua, &this, |m| m.facing = rad)
-        })?,
-    )?;
-    m.set(
-        "GetFacing",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, |m| m.facing))?,
-    )?;
-    m.set(
-        "SetModelScale",
-        lua.create_function(|lua, (this, s): (Table, Value)| {
-            let s = num(&s);
-            with_model(lua, &this, |m| m.scale = s)
-        })?,
-    )?;
-    m.set(
-        "GetModelScale",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, |m| m.scale))?,
-    )?;
     // `SetCamera(n)` = `0x76e0e0` -> `0x76cec0`: select the file's camera by **RAW table index**
     // (`cameraLookup` is not on this path). With the file's facts in hand the index is resolved
     // now — an index past the table's count installs the NULL camera, which is the orthographic
     // leg; without them it is deferred, and the pane draws nothing until it resolves.
-    m.set(
-        "SetCamera",
-        lua.create_function(|lua, (this, c): (Table, Value)| {
-            let c = int(&c);
-            let facts = facts_of_pane(lua, &this)?;
-            with_model(lua, &this, |m| m.install_camera(c, facts.as_deref()))
-        })?,
-    )?;
-    m.set(
-        "SetPosition",
-        lua.create_function(|lua, (this, x, y, z): (Table, Value, Value, Value)| {
-            let p = (num(&x), num(&y), num(&z));
-            with_model(lua, &this, |m| m.position = p)
-        })?,
-    )?;
-    m.set(
-        "GetPosition",
-        lua.create_function(|lua, this: Table| {
-            let (x, y, z) = with_model(lua, &this, |m| m.position)?;
-            Ok((x, y, z))
-        })?,
-    )?;
 
     // ── The scene: light and fog ────────────────────────────────────────────────────────────
     //
     // Typed since decision 2027, off the render law's §5.1-§5.4: the widget's embedded `CGLight`
     // and the four fog fields, with `SetLight`'s argument walk and both of its traps.
-    m.set(
-        "SetLight",
-        lua.create_function(|lua, args: MultiValue| {
-            let mut it = args.into_iter();
-            let this = match it.next() {
-                Some(Value::Table(t)) => t,
-                _ => return Err(mlua::Error::runtime("expected a Model")),
-            };
-            let a: Vec<Value> = it.collect();
-            match parse_set_light(&a) {
-                SetLight::Raise => Err(mlua::Error::runtime(SET_LIGHT_USAGE)),
-                SetLight::NoOp => with_model(lua, &this, |_| ()),
-                SetLight::Set(l) => with_model(lua, &this, |m| m.light = l),
-            }
-        })?,
-    )?;
-    m.set(
-        "GetLight",
-        lua.create_function(|lua, this: Table| {
-            let l = with_model(lua, &this, |m| m.light)?;
-            let mut out: Vec<Value> = vec![
-                Value::Number(f64::from(u8::from(l.enabled))),
-                Value::Number(f64::from(u8::from(l.omni))),
-                Value::Number(f64::from(l.vector[0])),
-                Value::Number(f64::from(l.vector[1])),
-                Value::Number(f64::from(l.vector[2])),
-            ];
-            // Each colour block comes back as `1.0, r, g, b` when ANY component is `> 0`, and as
-            // a lone `0` otherwise (`76e91f`/`76e92f`/`76e93f je 0x76e953` -> `push 1.0`) — which
-            // is what makes the arity 7 | 10 | 13 rather than a fixed 13.
-            for c in [l.ambient, l.diffuse] {
-                if c.iter().any(|&v| v > 0.0) {
-                    out.push(Value::Number(1.0));
-                    out.extend(c.iter().map(|&v| Value::Number(f64::from(v))));
-                } else {
-                    out.push(Value::Number(0.0));
-                }
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
-    m.set(
-        "SetFogColor",
-        lua.create_function(
-            |lua, (this, r, g, b, a): (Table, Value, Value, Value, Option<Value>)| {
-                // FIVE arguments, and the fifth is the alpha — the same numeric path and the same
-                // `[0,1]` clamp as the components, not a flag. It is **guarded with a default of
-                // `1.0`** where r/g/b are read unconditionally and yield `0.0` when absent, so
-                // `SetFogColor(r, g, b)` sets alpha 1.0. Getting that backwards renders the fog
-                // invisible. Decision 1845.
-                let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
-                let a = a.as_ref().map_or(1.0, num);
-                let packed = (q(a) << 24) | (q(num(&r)) << 16) | (q(num(&g)) << 8) | q(num(&b));
-                // `76f059 or [edi+0x3a4],1` — setting the colour ARMS the fog. That is the only
-                // arming verb (with the XML `<FogColor>` child); there is no `SetFogEnabled`.
-                with_model(lua, &this, |m| {
-                    m.fog_color = packed;
-                    m.fog = true;
-                })
-            },
-        )?,
-    )?;
-    m.set(
-        "GetFogColor",
-        lua.create_function(|lua, this: Table| {
-            // FOUR values, always — the packed dword unpacked. Never set reads `1, 1, 1, 1`,
-            // because the `CSimpleModel` ctor's terminal write is `0xffffffff` (decision 1845).
-            let packed = with_model(lua, &this, |m| m.fog_color)?;
-            let ch = |shift: u32| f64::from((packed >> shift) & 0xff) / 255.0;
-            Ok((ch(16), ch(8), ch(0), ch(24)))
-        })?,
-    )?;
 
     // `SetFogNear 0x76f1e0` / `SetFogFar 0x76f390` store the number RAW — no clamp, no ordering
     // check (`76f282`/`76f432 fstp`); the `≥ 0` clamp exists only on the XML attribute path. The
     // getters read the same fields back. Nothing here arms the fog.
-    m.set(
-        "SetFogNear",
-        lua.create_function(|lua, (this, v): (Table, Value)| {
-            let v = num(&v);
-            with_model(lua, &this, |m| m.fog_near = v)
-        })?,
-    )?;
-    m.set(
-        "GetFogNear",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, |m| m.fog_near))?,
-    )?;
-    m.set(
-        "SetFogFar",
-        lua.create_function(|lua, (this, v): (Table, Value)| {
-            let v = num(&v);
-            with_model(lua, &this, |m| m.fog_far = v)
-        })?,
-    )?;
-    m.set(
-        "GetFogFar",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, |m| m.fog_far))?,
-    )?;
     // `ClearFog 0x76f540`: `76f5c5 and [edi+0x3a4],-2` — **bit 0 and nothing else**. The colour,
     // the near and the far all survive, so a later `SetFogColor` re-arms the same ramp. A clear
     // that also reset them would read as knowledge and be wrong.
-    m.set(
-        "ClearFog",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, |m| m.fog = false))?,
-    )?;
 
     // ── The two verbs that touch no pane state ──────────────────────────────────────────────
 
@@ -611,10 +592,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Present because the shipped chain calls it three times — `Cooldown.lua`, and the glue
     // character screens' `<OnUpdateModel>` on `<ModelFFX>`, which inherits this very table — and
     // an addon that hooks one of those will call it too.
-    m.set(
-        "AdvanceTime",
-        lua.create_function(|lua, this: Table| with_model(lua, &this, |_| ()))?,
-    )?;
 
     // `ReplaceIconTexture(path)` — `0x878948[15]` -> `0x76ed70`. **A material swap, not a content
     // setter**: `0x76cfe0(0xe, path)` -> `0x710ec0` replaces the refcounted handle in
@@ -634,62 +611,50 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // The argument gate is shape A: `lua_isstring` (tags 3|4) then `lua_tostring`, raising
     // `Usage: %s:ReplaceIconTexture("texture")` on anything else.
-    m.set(
-        "ReplaceIconTexture",
-        lua.create_function(|lua, (this, path): (Table, Value)| {
-            let Some(path) = string_arg(&path) else {
-                return Err(usage(lua, &this, "ReplaceIconTexture(\"texture\")"));
-            };
-            let path = path.to_string();
-            with_model(lua, &this, |m| {
-                if m.path.is_some() {
-                    m.icon = Some(path);
-                }
-            })
-        })?,
-    )?;
 
-    lua.set_named_registry_value(REG_MODEL_METHODS, m)?;
-    playermodel_install(lua)
+    vm.put_registry(REG_MODEL_METHODS, m)?;
+    playermodel_install(vm)?;
+    install_neutral_methods(vm)
 }
 
 /// `PlayerModel`'s **own three** verbs (table `0x84f1fc`) — nothing else. Everything a
 /// `<PlayerModel>` else answers is `Model`'s, reached through the dispatcher's chain.
-fn playermodel_install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+fn playermodel_install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let m = vm.create_table()?;
 
     // `SetUnit(unit)` — `0x84f1fc[0]` -> `0x505d70`. The pane's other content arm, and `SetModel`'s
     // alternative: each clears the other, so `GetModel` after a `SetUnit` cannot answer a stale
     // path. Ours stores the unit TOKEN and resolves it at render.
-    m.set(
-        "SetUnit",
-        lua.create_function(|lua, (this, unit): (Table, Value)| {
-            let unit = match &unit {
-                Value::String(s) => Some(s.to_str()?.to_string()),
+    let set_unit = vm.create_function(
+        "PlayerModel:SetUnit",
+        |lua, (this, unit): (LuaTable, LuaValue)| {
+            let unit = match unit {
+                LuaValue::String(value) => Some(
+                    value
+                        .as_str()
+                        .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?
+                        .to_owned(),
+                ),
                 _ => None,
             };
-            with_model(lua, &this, |m| {
-                m.unit = unit;
-                m.path = None;
+            with_model_context(lua, &this, |model| {
+                model.unit = unit;
+                model.path = None;
             })?;
-            // On the dressing room's pane the same call rebuilds the model from the unit — the
-            // reference's `0x5059a0` duplicates the live model, substitutions and all gone — which
-            // is app state here (`super::dressup`, 1969).
             super::dressup::redress_if_dressup(lua, &this)
-        })?,
+        },
     )?;
+    vm.table_set_function(&m, "SetUnit", &set_unit)?;
 
     // `RefreshUnit()` — `0x84f1fc[1]` -> `0x505e40`. Re-reads the unit the pane already shows; for
     // us a no-op with a live receiver check, because the pane holds the TOKEN and resolves it at
     // render, so there is no cached appearance here to invalidate. Present because the reference's
     // own `DressUpFrame`/`PaperDollFrame` call it (3 sites) and addons that hook them will too.
-    m.set(
-        "RefreshUnit",
-        lua.create_function(|lua, this: Table| {
-            with_model(lua, &this, |_| ())?;
-            super::dressup::redress_if_dressup(lua, &this) // the same worker as SetUnit's (§1)
-        })?,
-    )?;
+    let refresh = vm.create_function("PlayerModel:RefreshUnit", |lua, this: LuaTable| {
+        with_model_context(lua, &this, |_| ())?;
+        super::dressup::redress_if_dressup(lua, &this)
+    })?;
+    vm.table_set_function(&m, "RefreshUnit", &refresh)?;
 
     // `SetRotation(rad)` — `0x84f1fc[2]` -> the Lua glue `0x505f00` -> the worker `0x505bb0`, whose
     // final instruction is `0x505c44 mov [esi+0x39c], eax`: **the same yaw field `SetFacing`
@@ -706,15 +671,16 @@ fn playermodel_install(lua: &Lua) -> mlua::Result<()> {
     // them). The app's `<Model>` renderer (`benilla-app` `ui_models`, 2013/2019/2027) draws its
     // pane off the file's own clock and does not model a turn hold, so storing the pair here
     // would be state nobody writes and nobody reads. The addresses are the pin if it ever does.
-    m.set(
-        "SetRotation",
-        lua.create_function(|lua, (this, rad): (Table, Value)| {
-            let rad = num(&rad);
-            with_model(lua, &this, |m| m.facing = rad)
-        })?,
+    let set_rotation = vm.create_function(
+        "PlayerModel:SetRotation",
+        |lua, (this, radians): (LuaTable, LuaValue)| {
+            let radians = num_neutral(&radians);
+            with_model_context(lua, &this, |model| model.facing = radians)
+        },
     )?;
+    vm.table_set_function(&m, "SetRotation", &set_rotation)?;
 
-    lua.set_named_registry_value(REG_PLAYERMODEL_METHODS, m)
+    vm.put_registry(REG_PLAYERMODEL_METHODS, m)
 }
 
 impl crate::script::UiScript {
@@ -732,16 +698,10 @@ impl crate::script::UiScript {
     ///
     /// By NAME rather than by handle because that is what the host knows: the character sheet's
     /// bake belongs to `CharacterModelFrame`, and since 1751 that name is the reference's own. A
-    /// linear scan, because a name index would be a second store to keep true and a loaded
-    /// interface holds single-digit model panes.
+    /// scan of the existing per-tick kind roster, which includes every model family,
+    /// rather than all UI frames. No additional name registry is needed.
     pub fn model_pane(&self, name: &str) -> Option<ModelState> {
-        self.model_ref()
-            .arena
-            .iter_frames()
-            .find_map(|(_, f)| match (&f.name, &f.kind_state) {
-                (Some(n), KindState::Model(m)) if n == name => Some(m.clone()),
-                _ => None,
-            })
+        self.model_ref().arena.named_model_state(name).cloned()
     }
 
     /// A named model pane's yaw in radians — [`Self::model_pane`]'s one hot field, and `0.0` for a
@@ -752,7 +712,10 @@ impl crate::script::UiScript {
     /// The reference's own default, 0.61, is authored in `Model_OnLoad`, so a real pane only reads
     /// 0.0 before it loads.
     pub fn model_pane_facing(&self, name: &str) -> f32 {
-        self.model_pane(name).map_or(0.0, |m| m.facing)
+        self.model_ref()
+            .arena
+            .named_model_state(name)
+            .map_or(0.0, |m| m.facing)
     }
 
     /// The host hands over what it knows about a model **file** (decision 2007): its sequences

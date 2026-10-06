@@ -50,12 +50,18 @@ pub(super) fn load_taxi_catalogs(
     };
     *done = true;
     let mut chain = assets.chain.lock_recover();
-    let loaded = load_taxi_nodes(&mut chain).and_then(|nodes| {
-        let paths = load_taxi_paths(&mut chain)?;
-        let continents = load_world_map_continent_catalog(&mut chain)?;
+    publish_catalogs(&mut commands, &mut *chain);
+}
+
+pub(crate) fn publish_catalogs(
+    commands: &mut Commands,
+    source: &mut impl benilla_formats::FileSource,
+) {
+    let loaded = load_taxi_nodes(source).and_then(|nodes| {
+        let paths = load_taxi_paths(source)?;
+        let continents = load_world_map_continent_catalog(source)?;
         Ok((nodes, paths, continents))
     });
-    drop(chain);
     match loaded {
         Ok((nodes, paths, continents)) => {
             info!(

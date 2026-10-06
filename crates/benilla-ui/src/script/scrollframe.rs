@@ -28,9 +28,12 @@
 //! for ScrollFrame frames — so duck-typing addons (`if frame.SetScrollChild then …`) see `nil` on
 //! every other kind, exactly as against the client's per-class method sets.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::object::{decode_id, frame_handle_of, frame_wrapper};
+use super::object::{
+    decode_id_context, frame_handle_of_context, frame_wrapper_context,
+    prefetch_named_target_context,
+};
 use super::{event, Model};
 use crate::widget::{FrameHandle, KindState, ScrollFrameState};
 
@@ -41,19 +44,19 @@ pub(super) const REG_SCROLLFRAME_METHODS: &str = "__benilla_scrollframe_methods"
 /// live ScrollFrame (unreachable through the kind dispatcher, but the method table is a plain Lua
 /// value — a caller could fish it out and misapply it).
 fn with_scroll<T>(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     f: impl FnOnce(&mut ScrollFrameState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::Scroll(s) => Ok(f(s)),
-        _ => Err(mlua::Error::runtime("not a ScrollFrame")),
+        _ => Err(benilla_lua::Error::runtime("not a ScrollFrame")),
     }
 }
 
@@ -191,31 +194,35 @@ fn subtree_font_strings(model: &Model, f: FrameHandle) -> Vec<crate::widget::Reg
     out
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     let m = lua.create_table()?;
 
     // SetScrollChild(frame|name|nil) — a wrapper table or a name string resolves like every other
     // frame-target arg (SetParent, SetPoint's relativeTo); nil (or an unresolvable target) clears.
-    m.set(
-        "SetScrollChild",
-        lua.create_function(|lua, (this, target): (Table, Value)| {
+    let function = lua.create_function(
+        "ScrollFrame:SetScrollChild",
+        |lua, (this, target): (LuaTable, LuaValue)| {
             // `_G[name]` before the guard, no `$parent` — `0x790fa0`'s string arm calls `0x76c760`
             // directly, the same narrow-Frame-tag resolver `SetParent` uses
             // (`object::NamedTarget`).
             let named = match &target {
-                Value::String(s) => s
-                    .to_str()
+                LuaValue::String(s) => s
+                    .as_str()
                     .ok()
-                    .map(|n| super::object::prefetch_named_target(lua, n.as_ref(), None)),
+                    .map(|n| prefetch_named_target_context(lua, n, None)),
+                _ => None,
+            };
+            let direct_id = match &target {
+                LuaValue::Table(table) => decode_id_context(lua, table).ok(),
                 _ => None,
             };
             let new_child: Option<FrameHandle> = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 match &target {
-                    Value::Table(t) => decode_id(t)
-                        .ok()
-                        .and_then(|id| model.id_to_frame.get(&id).copied()),
-                    Value::String(_) => named.as_ref().and_then(|nt| {
+                    LuaValue::Table(_) => {
+                        direct_id.and_then(|id| model.id_to_frame.get(&id).copied())
+                    }
+                    LuaValue::String(_) => named.as_ref().and_then(|nt| {
                         super::object::resolve_named_target(&model, nt)
                             .and_then(|id| model.id_to_frame.get(&id).copied())
                     }),
@@ -233,24 +240,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 lua.app_data_mut::<Model>().expect("model").touch_layout();
             }
             Ok(())
-        })?,
+        },
     )?;
-    m.set(
-        "GetScrollChild",
-        lua.create_function(|lua, this: Table| {
-            let child = with_scroll(lua, &this, |s| s.child)?;
-            let id = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                child
-                    .filter(|&h| model.arena.frame(h).is_some())
-                    .map(|h| model.frame_id(h))
-            };
-            match id {
-                Some(id) => Ok(Value::Table(frame_wrapper(lua, id)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.table_set(&m, "SetScrollChild", function)?;
+    let function = lua.create_function("ScrollFrame:GetScrollChild", |lua, this: LuaTable| {
+        let child = with_scroll(lua, &this, |s| s.child)?;
+        let id = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            child
+                .filter(|&h| model.arena.frame(h).is_some())
+                .map(|h| model.frame_id(h))
+        };
+        match id {
+            Some(id) => Ok(LuaValue::Table(frame_wrapper_context(lua, id)?)),
+            None => Ok(LuaValue::Nil),
+        }
+    })?;
+    lua.table_set(&m, "GetScrollChild", function)?;
 
     // SetVerticalScroll(px) — stores the offset VERBATIM and, only when it actually changed,
     // re-lays the child out and fires OnVerticalScroll(self, offset) — the scrollbar's
@@ -266,9 +272,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // cost every faux list whose frame is taller than `rows × step` its last rows (B370): the
     // reference's `FauxScrollFrame_Update` drives the bar to `(n − rows) × step`, which is past
     // `n × step − frameHeight` whenever the frame has slack under its last row.
-    m.set(
-        "SetVerticalScroll",
-        lua.create_function(|lua, (this, px): (Table, f32)| {
+    let function = lua.create_function(
+        "ScrollFrame:SetVerticalScroll",
+        |lua, (this, px): (LuaTable, f32)| {
             let changed = with_scroll(lua, &this, |s| {
                 let changed = s.vertical.to_bits() != px.to_bits();
                 s.vertical = px;
@@ -279,20 +285,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             lua.app_data_mut::<Model>().expect("model").touch_layout();
             fire_scroll(lua, &this, "OnVerticalScroll", px)
-        })?,
+        },
     )?;
-    m.set(
-        "GetVerticalScroll",
-        lua.create_function(|lua, this: Table| with_scroll(lua, &this, |s| s.vertical))?,
-    )?;
-    m.set(
-        "GetVerticalScrollRange",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
+    lua.table_set(&m, "SetVerticalScroll", function)?;
+    let function = lua
+        .create_function("ScrollFrame:GetVerticalScroll", |lua, this: LuaTable| {
+            with_scroll(lua, &this, |s| s.vertical)
+        })?;
+    lua.table_set(&m, "GetVerticalScroll", function)?;
+    let function = lua.create_function(
+        "ScrollFrame:GetVerticalScrollRange",
+        |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(scroll_range(&model, h, Axis::Vertical))
-        })?,
+        },
     )?;
+    lua.table_set(&m, "GetVerticalScrollRange", function)?;
 
     // ── The horizontal axis: the same three verbs on `[+0x324]`/`[+0x31c]` ─────────────────────
     //
@@ -311,9 +320,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // — bounds x into `[min(0, frameWidth - contentWidth - 10), 0]` and y into
     // `[0, contentHeight - frameHeight]`, which is the same asymmetry read off the other side of
     // the API. See [`ScrollFrameState::horizontal`].
-    m.set(
-        "SetHorizontalScroll",
-        lua.create_function(|lua, (this, px): (Table, f32)| {
+    let function = lua.create_function(
+        "ScrollFrame:SetHorizontalScroll",
+        |lua, (this, px): (LuaTable, f32)| {
             let changed = with_scroll(lua, &this, |s| {
                 let changed = s.horizontal.to_bits() != px.to_bits();
                 s.horizontal = px;
@@ -324,20 +333,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             lua.app_data_mut::<Model>().expect("model").touch_layout();
             fire_scroll(lua, &this, "OnHorizontalScroll", px)
-        })?,
+        },
     )?;
-    m.set(
-        "GetHorizontalScroll",
-        lua.create_function(|lua, this: Table| with_scroll(lua, &this, |s| s.horizontal))?,
-    )?;
-    m.set(
-        "GetHorizontalScrollRange",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
+    lua.table_set(&m, "SetHorizontalScroll", function)?;
+    let function = lua
+        .create_function("ScrollFrame:GetHorizontalScroll", |lua, this: LuaTable| {
+            with_scroll(lua, &this, |s| s.horizontal)
+        })?;
+    lua.table_set(&m, "GetHorizontalScroll", function)?;
+    let function = lua.create_function(
+        "ScrollFrame:GetHorizontalScrollRange",
+        |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(scroll_range(&model, h, Axis::Horizontal))
-        })?,
+        },
     )?;
+    lua.table_set(&m, "GetHorizontalScrollRange", function)?;
     // UpdateScrollChildRect() — the Era template calls this after resizing its content to re-drive
     // its scrollbar. Our range is always live (never cached) against the RESOLVED rects — but a
     // script resize (`child:SetHeight(...)`) lands in `LayoutInput` immediately, while `resolved`
@@ -349,10 +361,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // fixpoint's own doc — an unrelated resize elsewhere converges in one round), and correctness
     // here matters more than dodging a resolve pass a caller who wants nothing stale already asked
     // for by name.
-    m.set(
-        "UpdateScrollChildRect",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
+    let function = lua.create_function(
+        "ScrollFrame:UpdateScrollChildRect",
+        |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
             // The reference derives the range from a child whose text is already laid out — its
             // measure is synchronous. Ours measures on the metric reads and on the host's
             // round-trip, which lands a frame later; stock `QuestLog_UpdateQuestDetails` calls
@@ -383,7 +395,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // That forced resolve can have MOVED sizes — this method exists precisely because the
             // caller just resized its content — so drain the queue before the range notify: the
             // reference fires `OnSizeChanged` from `ApplyRect`, i.e. during the layout, not after.
-            event::fire_size_changes(lua);
+            event::fire_size_changes_context(lua);
             // `OnScrollRangeChanged(self, xRange, yRange)` — **horizontal first**, and that order is
             // byte-derived rather than assumed: at `0x786eff` the vertical result is on top of the
             // x87 stack, is `fstp`'d first and therefore pushed DEEPEST, so it lands as `arg2`
@@ -392,13 +404,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // `UIPanelScrollFrameTemplate` hands `arg2` to `ScrollFrame_OnScrollRangeChanged`.
             // `arg1` was a hardcoded `0.0` here for as long as there was no horizontal range to
             // put in it.
-            if let Err(e) = event::fire_widget_handler(
+            if let Err(e) = event::fire_widget_handler_context(
                 lua,
                 id,
                 "OnScrollRangeChanged",
                 vec![
-                    Value::Number(f64::from(x_range)),
-                    Value::Number(f64::from(y_range)),
+                    LuaValue::Number(f64::from(x_range)),
+                    LuaValue::Number(f64::from(y_range)),
                 ],
             ) {
                 lua.app_data_mut::<Model>()
@@ -407,25 +419,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     .push(e.to_string());
             }
             Ok(())
-        })?,
+        },
     )?;
+    lua.table_set(&m, "UpdateScrollChildRect", function)?;
 
-    lua.set_named_registry_value(REG_SCROLLFRAME_METHODS, m)?;
+    lua.put_registry(REG_SCROLLFRAME_METHODS, m)?;
     Ok(())
 }
 
 /// Fire `On{Vertical,Horizontal}Scroll(self, offset)` (the ScrollFrame's own script slots — the
 /// reference's `[+0x334]`/`[+0x32c]`, fired from the setter clones `0x786db0`/`0x786d30`). Fired
 /// outside any model borrow; errors go to [`Model::errors`] like every other widget handler.
-fn fire_scroll(lua: &Lua, this: &Table, script: &str, value: f32) -> mlua::Result<()> {
+fn fire_scroll(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    script: &str,
+    value: f32,
+) -> benilla_lua::Result<()> {
     let id = {
-        let h = frame_handle_of(lua, this)?;
+        let h = frame_handle_of_context(lua, this)?;
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         model.frame_id(h)
     };
-    if let Err(e) =
-        event::fire_widget_handler(lua, id, script, vec![Value::Number(f64::from(value))])
-    {
+    if let Err(e) = event::fire_widget_handler_context(
+        lua,
+        id,
+        script,
+        vec![LuaValue::Number(f64::from(value))],
+    ) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
             .errors

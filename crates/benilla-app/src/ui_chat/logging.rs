@@ -83,8 +83,8 @@ impl ChatLogFiles {
 
 /// `M/D HH:MM:SS.mmm` of now, UTC.
 fn stamp() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = benilla_time::SystemTime::now()
+        .duration_since(benilla_time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = now.as_secs();
     let (_, month, day) = civil_from_days((secs / 86_400) as i64);

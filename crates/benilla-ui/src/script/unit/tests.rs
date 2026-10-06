@@ -360,7 +360,7 @@ fn set_unit_is_read_by_the_bindings() {
 
 #[test]
 fn absent_token_reports_not_existing_with_zero_numbers() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     // **nil, not `false`** — the family's false leg (decision 2043). `== nil` is the comparison a
     // boolean would invert, so it is the one worth asserting.
     assert!(s
@@ -821,11 +821,9 @@ fn unit_affecting_combat_is_one_or_nil_and_hides_the_missing_unit() {
 /// so the caller's statement is abandoned rather than continuing with a nil.
 #[test]
 fn unit_affecting_combat_raises_on_a_bad_argument() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     for call in ["UnitAffectingCombat()", "UnitAffectingCombat({})"] {
-        let err = s
-            .eval::<mlua::Value>(&format!("return {call}"))
-            .unwrap_err();
+        let err = s.eval::<bool>(&format!("return {call}")).unwrap_err();
         assert!(
             format!("{err}").contains(r#"Usage: UnitAffectingCombat("unit")"#),
             "{call} must raise the usage line, got {err}"
@@ -858,7 +856,7 @@ fn target_by_name_queues_the_name_and_the_exact_flag() {
     assert!(s.take_target_by_name_requests().is_empty());
 
     // A missing/wrong-typed name raises (`0x489d69 call 0x6f3510` → `0x489de1`).
-    let err = s.eval::<mlua::Value>("return TargetByName()").unwrap_err();
+    let err = s.eval::<bool>("return TargetByName()").unwrap_err();
     assert!(
         format!("{err}").contains(r#"Usage: TargetByName("name")"#),
         "got {err}"
@@ -1062,7 +1060,7 @@ fn a_unit_token_resolves_whatever_its_case() {
     // `("Player", "target")` reads as a non-player FIRST arg and the call answers about the wrong
     // unit — a wrong answer rather than a missing one.
     assert!(
-        s.eval::<bool>(
+        s.eval_truthy(
             r#"return UnitIsEnemy("Player", "target") == UnitIsEnemy("player", "target")"#
         )
         .unwrap(),
@@ -1074,7 +1072,7 @@ fn a_unit_token_resolves_whatever_its_case() {
     // "absent", it is not a unit token at all, and the client says so.)
     for spelling in ["Party1", "PARTY1", "raid9", "MouseOver"] {
         assert!(
-            !s.eval::<bool>(&format!(r#"return UnitExists("{spelling}")"#))
+            !s.eval_truthy(&format!(r#"return UnitExists("{spelling}")"#))
                 .unwrap(),
             "{spelling} was never seated"
         );
@@ -1989,7 +1987,7 @@ fn unit_on_taxi_is_one_or_nil_and_raises_the_reference_usage() {
         .eval::<bool>(r#"return UnitOnTaxi("target") == nil"#)
         .unwrap());
 
-    let err = s.eval::<mlua::Value>("return UnitOnTaxi()").unwrap_err();
+    let err = s.eval::<bool>("return UnitOnTaxi()").unwrap_err();
     assert!(
         err.to_string().contains(r#"Usage: UnitOnTaxi("unit")"#),
         "the gate's own message, not mlua's type error: {err}"
@@ -2130,7 +2128,7 @@ fn the_player_record_outlives_every_snapshot() {
 ///   guard, and "male" is what an all-zero record means to it.
 #[test]
 fn an_unseeded_player_record_answers_the_references_four_ways() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     assert!(s
         .eval::<bool>(r#"return UnitName("player") == nil"#)
         .unwrap());

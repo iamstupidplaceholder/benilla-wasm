@@ -28,8 +28,12 @@ use bevy::prelude::*;
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_formats::WaterSoundCatalog;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::net::Embodied;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::kit::{
@@ -51,7 +55,7 @@ const MAX_CONCURRENT: usize = 2;
 
 /// The `SoundWaterType.dbc` class→kit map. Absent when the client data didn't load.
 #[derive(Resource)]
-pub(super) struct WaterSounds(WaterSoundCatalog);
+pub(super) struct WaterSounds(pub(super) WaterSoundCatalog);
 
 /// One class's armed loop.
 struct ClassLoop {
@@ -73,11 +77,12 @@ struct LiquidLoopState {
 }
 
 /// Startup: load the `SoundWaterType` map.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_water_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_water_sound_catalog(&mut chain)
+        benilla_formats::load_water_sound_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -316,13 +321,13 @@ fn start_loop(
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.init_resource::<LiquidLoopState>()
-        .add_systems(Startup, load_water_sounds.after(AssetSet::Open))
-        .add_systems(
-            Update,
-            // Present, before the channel pump: the pump applies this frame's gains/positions.
-            drive_liquid_loops
-                .in_set(WorldStage::Present)
-                .before(kit::pump_channels),
-        );
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_water_sounds.after(AssetSet::Open));
+    app.init_resource::<LiquidLoopState>().add_systems(
+        Update,
+        // Present, before the channel pump: the pump applies this frame's gains/positions.
+        drive_liquid_loops
+            .in_set(WorldStage::Present)
+            .before(kit::pump_channels),
+    );
 }

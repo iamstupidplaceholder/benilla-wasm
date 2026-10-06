@@ -110,7 +110,7 @@ fn schema() -> Schema {
 }
 
 /// Read `SoundProviderPreferences.dbc` off the patch chain.
-pub fn load_sound_provider_catalog(chain: &mut Chain) -> Result<SoundProviderCatalog> {
+pub fn load_sound_provider_catalog(chain: &mut impl crate::FileSource) -> Result<SoundProviderCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\SoundProviderPreferences.dbc")
         .context("reading SoundProviderPreferences.dbc")?;

@@ -120,7 +120,7 @@
 //!   avoid. Not implementing it costs one `CMSG_MESSAGECHAT` that vmangos discards
 //!   (`HandleChatMessageOpcode`'s `if (!group) return`), which is the same observable nothing.
 
-use mlua::{Lua, Value};
+use benilla_lua::{Value, Vm};
 
 use super::Model;
 
@@ -297,80 +297,83 @@ fn validate_escapes(text: &mut String) -> Result<(), ()> {
 
 /// `lua_tostring` semantics + the reference's NULL replacement: strings and numbers coerce,
 /// everything else (nil, boolean, table, function) becomes the shared empty string `0x882748`
-/// (`0x49f96b`-`0x49f97a`). `Lua::coerce_string` **is** `lua_tostring`, so this is the mechanism
-/// rather than an imitation of it.
-fn lua_tostring(lua: &Lua, v: &Value) -> mlua::Result<String> {
-    Ok(lua
-        .coerce_string(v.clone())?
-        .map(|s| s.to_string_lossy())
-        .unwrap_or_default())
+/// (`0x49f96b`-`0x49f97a`).
+fn lua_tostring(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.to_string_lossy().into_owned(),
+        Value::Integer(value) => value.to_string(),
+        Value::Number(value) => super::binding_abi::lua_number_text(*value),
+        _ => String::new(),
+    }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function(
         "SendAddonMessage",
-        lua.create_function(
-            |lua, (prefix, message, distribution): (Value, Value, Value)| {
-                let prefix = lua_tostring(lua, &prefix)?;
-                let message = lua_tostring(lua, &message)?;
-                // BOTH empty is the usage error, and only both — there is no empty-prefix-only and
-                // no empty-message-only check (`0x49f97f`-`0x49f987`). AceEvent-2.0 relies on it:
-                // `SendAddonMessage("LOOT_OPENED", "", "RAID")` is 24 of the corpus's 35 call
-                // sites (the same line, in 23 addons' embedded copies) and its message is
-                // deliberately empty. An empty-message guard would break the largest row here.
-                if prefix.is_empty() && message.is_empty() {
-                    return Err(mlua::Error::RuntimeError(
-                        r#"Usage: SendAddonMessage("prefix", "message" [,"type"])"#.into(),
-                    ));
+        |lua, (prefix, message, distribution): (Value, Value, Value)| {
+            let prefix = lua_tostring(&prefix);
+            let message = lua_tostring(&message);
+            // BOTH empty is the usage error, and only both — there is no empty-prefix-only and
+            // no empty-message-only check (`0x49f97f`-`0x49f987`). AceEvent-2.0 relies on it:
+            // `SendAddonMessage("LOOT_OPENED", "", "RAID")` is 24 of the corpus's 35 call
+            // sites (the same line, in 23 addons' embedded copies) and its message is
+            // deliberately empty. An empty-message guard would break the largest row here.
+            if prefix.is_empty() && message.is_empty() {
+                return Err(benilla_lua::Error::runtime(
+                    r#"Usage: SendAddonMessage("prefix", "message" [,"type"])"#,
+                ));
+            }
+            let mut text = format!("{prefix}\t{message}");
+            // Truncate exactly where `_snprintf` does — by BYTES, since the reference is
+            // writing a C buffer. `floor_char_boundary` is not stable, so walk back to the
+            // nearest boundary: identical to the reference for ASCII (every corpus payload),
+            // and the alternative is a `String` that is not UTF-8, which cannot exist.
+            if text.len() > ADDON_MESSAGE_CAP {
+                let mut cut = ADDON_MESSAGE_CAP;
+                while cut > 0 && !text.is_char_boundary(cut) {
+                    cut -= 1;
                 }
-                let mut text = format!("{prefix}\t{message}");
-                // Truncate exactly where `_snprintf` does — by BYTES, since the reference is
-                // writing a C buffer. `floor_char_boundary` is not stable, so walk back to the
-                // nearest boundary: identical to the reference for ASCII (every corpus payload),
-                // and the alternative is a `String` that is not UTF-8, which cannot exist.
-                if text.len() > ADDON_MESSAGE_CAP {
-                    let mut cut = ADDON_MESSAGE_CAP;
-                    while cut > 0 && !text.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    text.truncate(cut);
+                text.truncate(cut);
+            }
+            // **The escape scan runs HERE — after the compose, before argument 3 is fetched**
+            // (`0x49fa06` is the sole predecessor of `0x49fa0b`; decision 1236). So a call
+            // that is wrong in both ways reports the ESCAPE, and a bad distribution beside a
+            // bad escape is never even looked at. It may truncate `text` in place, which is
+            // the reference's silent leg.
+            if validate_escapes(&mut text).is_err() {
+                return Err(benilla_lua::Error::runtime(
+                    "Invalid escape code in chat message",
+                ));
+            }
+            // The third argument goes through `lua_isstring`, which is TRUE for a number too
+            // (`0x49fa0b`/`0x49fa15`) — so `SendAddonMessage("p", "m", 1)` resolves the token
+            // `"1"`, finds nothing, and raises, rather than being read as chat type 1. Absent
+            // or non-string (nil, table, boolean) takes `0x49fa1c je 0x49fa9f`, which skips
+            // the whitelist entirely with the pre-seeded `esi = 1` — the PARTY default.
+            let asked = match distribution {
+                Value::String(token) => AddonDistribution::from_token(&token.to_string_lossy())
+                    .ok_or_else(|| benilla_lua::Error::runtime("Unknown addon chat type"))?,
+                Value::Integer(token) => AddonDistribution::from_token(&token.to_string())
+                    .ok_or_else(|| benilla_lua::Error::runtime("Unknown addon chat type"))?,
+                Value::Number(token) => {
+                    AddonDistribution::from_token(&super::binding_abi::lua_number_text(token))
+                        .ok_or_else(|| benilla_lua::Error::runtime("Unknown addon chat type"))?
                 }
-                // **The escape scan runs HERE — after the compose, before argument 3 is fetched**
-                // (`0x49fa06` is the sole predecessor of `0x49fa0b`; decision 1236). So a call
-                // that is wrong in both ways reports the ESCAPE, and a bad distribution beside a
-                // bad escape is never even looked at. It may truncate `text` in place, which is
-                // the reference's silent leg.
-                if validate_escapes(&mut text).is_err() {
-                    return Err(mlua::Error::RuntimeError(
-                        "Invalid escape code in chat message".into(),
-                    ));
-                }
-                // The third argument goes through `lua_isstring`, which is TRUE for a number too
-                // (`0x49fa0b`/`0x49fa15`) — so `SendAddonMessage("p", "m", 1)` resolves the token
-                // `"1"`, finds nothing, and raises, rather than being read as chat type 1. Absent
-                // or non-string (nil, table, boolean) takes `0x49fa1c je 0x49fa9f`, which skips
-                // the whitelist entirely with the pre-seeded `esi = 1` — the PARTY default.
-                let asked = match lua.coerce_string(distribution)? {
-                    Some(token) => AddonDistribution::from_token(&token.to_string_lossy())
-                        .ok_or_else(|| {
-                            mlua::Error::RuntimeError("Unknown addon chat type".into())
-                        })?,
-                    None => AddonDistribution::Party,
-                };
-                let in_raid = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    !model.party.raid.is_empty()
-                };
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .addon_sends
-                    .push(AddonSend {
-                        text,
-                        distribution: asked.effective(in_raid),
-                    });
-                Ok(())
-            },
-        )?,
+                _ => AddonDistribution::Party,
+            };
+            let in_raid = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                !model.party.raid.is_empty()
+            };
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .addon_sends
+                .push(AddonSend {
+                    text,
+                    distribution: asked.effective(in_raid),
+                });
+            Ok(())
+        },
     )?;
     Ok(())
 }
@@ -698,7 +701,7 @@ mod tests {
     /// argument 3 is never even read. (1235 shipped these the other way round; 1236 corrects it.)
     #[test]
     fn a_bad_escape_beats_a_bad_distribution() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         let err = s
             .run(r#"SendAddonMessage("P", "|z", "TOTALLY_BOGUS")"#)
             .expect_err("must raise");

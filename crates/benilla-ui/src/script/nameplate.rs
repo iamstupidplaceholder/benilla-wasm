@@ -287,9 +287,8 @@ impl UiScript {
     ///
     /// `geometry` is the window-derived half; passing an unchanged value costs nothing.
     pub fn sync_nameplates(&mut self, geometry: PlateGeometry, states: &[PlateState]) {
-        let lua = self.lua();
         let effects = {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let mut model = self.model_mut();
             // No WorldFrame, no plates: a VM with no interface loaded (a bare test app, the addon
             // harness) has nowhere to parent them, and inventing a root would put plates somewhere
             // an addon's walk could never find them anyway.
@@ -298,9 +297,9 @@ impl UiScript {
             };
             sync(&mut model, world, geometry, states)
         };
-        super::event::fire_visibility_changes(lua, effects.visibility);
+        super::event::fire_visibility_changes_context(&mut self.lua, effects.visibility);
         for (bar, value) in effects.values {
-            super::statusbar::fire_engine_value_changed(lua, bar, value);
+            super::statusbar::fire_engine_value_changed(&mut self.lua, bar, value);
         }
     }
 
@@ -314,8 +313,7 @@ impl UiScript {
     /// never an ancestor: an addon frame parented to a plate takes the hover in the reference too,
     /// and its OnEnter is the one that fires.
     pub fn hovered_nameplate(&self) -> Option<u64> {
-        let lua = self.lua();
-        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let model = self.model_ref();
         let frame = model.mouseover?;
         let slot = *model.nameplates.by_frame.get(&frame)?;
         model.nameplates.plates.get(slot)?.key()
@@ -325,8 +323,7 @@ impl UiScript {
     /// reference's own click slot does. Both a physical click and Lua's `plate:Click("LeftButton")`
     /// arrive here, because both go through the one click funnel.
     pub fn take_nameplate_clicks(&mut self) -> Vec<NamePlateClick> {
-        let lua = self.lua();
-        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let mut model = self.model_mut();
         std::mem::take(&mut model.nameplates.clicks)
     }
 
@@ -337,8 +334,7 @@ impl UiScript {
     /// Without it a right-drag that starts over a plate would be a plate click instead of a camera
     /// turn, and the plates would keep taking a pointer that is no longer on screen.
     pub fn set_nameplate_mouse(&mut self, enabled: bool) {
-        let lua = self.lua();
-        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let mut model = self.model_mut();
         let frames: Vec<FrameHandle> = model.nameplates.plates.iter().map(|p| p.frame).collect();
         for frame in frames {
             model.arena.set_mouse_enabled(frame, enabled);
@@ -358,8 +354,7 @@ impl UiScript {
     /// pure ground target (the resolver binds or refuses a unit word before then), so it is left
     /// unmodelled rather than guessed at.
     pub fn set_nameplate_hit_test_veto(&mut self, vetoed: bool) {
-        let lua = self.lua();
-        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let mut model = self.model_mut();
         model.nameplates.hit_test_vetoed = vetoed;
     }
 
@@ -372,9 +367,8 @@ impl UiScript {
     /// on screen. It is `0x608a10` applied to the whole active list, which is what the reference
     /// does when the master toggle clears.
     pub fn retire_nameplates(&mut self) {
-        let lua = self.lua();
         let effects = {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let mut model = self.model_mut();
             let mut effects = SyncEffects::default();
             model.nameplates.assigned.clear();
             for i in 0..model.nameplates.plates.len() {
@@ -382,20 +376,18 @@ impl UiScript {
             }
             effects
         };
-        super::event::fire_visibility_changes(lua, effects.visibility);
+        super::event::fire_visibility_changes_context(&mut self.lua, effects.visibility);
     }
 
     /// How many plate widgets the pool holds — the plate driver's census, and the tests'.
     pub fn nameplate_pool_len(&self) -> usize {
-        let lua = self.lua();
-        let model = lua.app_data_ref::<Model>().expect("model app_data");
-        model.nameplates.plates.len()
+        self.model_ref().nameplates.plates.len()
     }
 }
 
 /// Record a completed click on `id` if that frame is a live plate — [`super::button::click_button`]
 /// calls this for every button click, physical or scripted.
-pub(super) fn note_click(lua: &mlua::Lua, id: u32, button: &str) {
+pub(super) fn note_click(lua: &impl benilla_lua::LuaContext, id: u32, button: &str) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let Some(frame) = model.id_to_frame.get(&id).copied() else {
         return;

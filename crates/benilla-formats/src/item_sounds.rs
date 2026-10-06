@@ -67,7 +67,7 @@ fn item_group_sounds_schema() -> Schema {
 }
 
 /// Load `ItemGroupSounds.dbc` off the patch chain.
-pub fn load_item_group_sounds(chain: &mut Chain) -> Result<ItemGroupSoundsCatalog> {
+pub fn load_item_group_sounds(chain: &mut impl crate::FileSource) -> Result<ItemGroupSoundsCatalog> {
     let bytes = chain
         .read_file(ITEM_GROUP_SOUNDS)
         .with_context(|| format!("reading {ITEM_GROUP_SOUNDS}"))?;

@@ -105,9 +105,26 @@ fn rig_worlds(
     root_g: GlobalTransform,
     cam: Option<(Vec3, Vec3, Vec3)>,
 ) -> (Vec<GlobalTransform>, Vec<bool>) {
+    let mut worlds = Vec::new();
+    let mut touched = Vec::new();
+    rig_worlds_into(rig, root_g, cam, &mut worlds, &mut touched);
+    (worlds, touched)
+}
+
+/// Same composition with caller-owned scratch. A live system can reuse capacity
+/// across rigs/frames; every rig starts with empty matrices and false flags.
+fn rig_worlds_into(
+    rig: &RigPose,
+    root_g: GlobalTransform,
+    cam: Option<(Vec3, Vec3, Vec3)>,
+    worlds: &mut Vec<GlobalTransform>,
+    touched: &mut Vec<bool>,
+) {
     let n = rig.locals.len();
-    let mut worlds = Vec::with_capacity(n);
-    let mut touched = vec![false; n];
+    worlds.clear();
+    worlds.reserve(n);
+    touched.clear();
+    touched.resize(n, false);
     for i in 0..n {
         let parent = usize::try_from(rig.parents[i]).ok().filter(|&p| p < i);
         let parent_world = match parent {
@@ -142,7 +159,6 @@ fn rig_worlds(
         }
         worlds.push(g);
     }
-    (worlds, touched)
 }
 
 /// Seed one collapsed rig's palette rows from its CURRENT composed pose — the doodad lane's
@@ -199,6 +215,11 @@ pub fn finalize_rig_worlds(
     frames: Query<&RigFrame>,
     ibps: Res<Assets<SkinnedMeshInverseBindposes>>,
     mut palettes: ResMut<RigPalettes>,
+    mut scratch: Local<(
+        Vec<GlobalTransform>,
+        Vec<bool>,
+        Vec<(Entity, GlobalTransform)>,
+    )>,
 ) {
     let cam_basis = cam
         .single()
@@ -228,7 +249,7 @@ pub fn finalize_rig_worlds(
     }
     // The `WOW_RIG_COST` compose meter (decision 0736): how many rigs refresh and what the
     // whole finalize pass costs, beside the palette's copy/write and upload lines.
-    let cost_t0 = crate::rig_palette::rig_cost_enabled().then(std::time::Instant::now);
+    let cost_t0 = crate::rig_palette::rig_cost_enabled().then(benilla_time::Instant::now);
     let mut globals = worlds_params.p1();
     // The rigid-child re-walk's do-not-enter set, exactly the entity pass's: a nested rig with
     // its own billboard output owns its interior (and its root keeps the propagated frame).
@@ -236,6 +257,7 @@ pub fn finalize_rig_worlds(
         hosts.iter().map(|r| r.root()).collect();
     // Model frames re-seated by a patch walk → the rigs riding them re-finalize below.
     let mut cascade: Vec<Entity> = Vec::new();
+    let (worlds, touched, stack) = &mut *scratch;
     let mut finalize =
         |rig: &mut RigPose,
          skin: Option<&RigSkin>,
@@ -262,10 +284,10 @@ pub fn finalize_rig_worlds(
             // rebase is worth; see `rig_palette::rebase_origin`.)
             let origin = crate::rig_palette::rebase_origin(root_g.translation());
             let root_rel = crate::rig_palette::rebase_global(root_g, origin);
-            let (worlds, touched) = rig_worlds(rig, root_rel, cam_basis);
+            rig_worlds_into(rig, root_rel, cam_basis, worlds, touched);
             if let Some(skin) = skin {
                 if let Some(ibp) = ibps.get(&skin.ibp) {
-                    palettes.write_rig_worlds(skin, &worlds, ibp, origin);
+                    palettes.write_rig_worlds(skin, worlds, ibp, origin);
                 }
             }
             if !rig.has_special && !root_moved {
@@ -281,7 +303,7 @@ pub fn finalize_rig_worlds(
             // frame. Its palette rows are rebuilt from `root_g` either way, which is why the BODY
             // looked right while its attached items rode the stale seat — the mounted pauldron
             // swinging on the gallop while the shoulder under it did not (decision 0945).
-            let mut stack: Vec<(Entity, GlobalTransform)> = Vec::new();
+            stack.clear();
             for &(bone, anchor) in &rig.anchors {
                 let b = bone as usize;
                 if !root_moved && !touched.get(b).copied().unwrap_or(false) {

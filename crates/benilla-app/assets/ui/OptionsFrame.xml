@@ -334,6 +334,69 @@
             "Graphics", "Audio",
         }
 
+        -- Installed option vocabulary first; bilingual strings are only for
+        -- this combined window's own chrome/knobs, which vanilla never named.
+        local optionLabelKeys = {
+            ["Controls"] = "CONTROLS_LABEL", ["Action Bars"] = "ACTIONBAR_LABEL",
+            ["Chat"] = "CHAT_LABEL", ["Camera Following Style"] = "CAMERA_FOLLOWING_STYLE",
+            ["Combat Text Float Mode"] = "COMBAT_TEXT_FLOAT_MODE_LABEL",
+            ["Status Bar Text"] = "STATUS_BAR_TEXT",
+            ["Always"] = "ALWAYS", ["Smart"] = "CAMERA_SMART", ["Never"] = "CAMERA_NEVER",
+            ["Raid"] = "RAID", ["Party"] = "PARTY", ["Solo"] = "SOLO",
+            ["Scroll Up"] = "COMBAT_TEXT_SCROLL_UP", ["Scroll Down"] = "COMBAT_TEXT_SCROLL_DOWN",
+            ["Arc"] = "COMBAT_TEXT_SCROLL_ARC", ["Search"] = "SEARCH",
+            ["Defaults"] = "DEFAULTS", ["Close"] = "CLOSE",
+            ["Brightness"] = "OPTIONS_BRIGHTNESS", ["Keybindings"] = "KEY_BINDINGS",
+            ["Low"] = "LOW", ["High"] = "HIGH",
+        }
+        local optionRussian = {
+            ["Options"] = "Настройки", ["Game"] = "Игра", ["AddOns"] = "Аддоны",
+            ["Edit Mode"] = "Режим редактирования", ["Support"] = "Поддержка",
+            ["Gameplay"] = "Игровой процесс", ["System"] = "Система",
+            ["Audio"] = "Звук", ["Graphics"] = "Графика", ["Combat"] = "Бой",
+            ["Interface"] = "Интерфейс", ["Nameplates"] = "Индикаторы здоровья",
+            ["Keybindings"] = "Назначение клавиш", ["Apply"] = "Применить",
+            ["Search Results"] = "Результаты поиска", ["No results found."] = "Ничего не найдено.",
+            ["Auto Loot"] = "Автоматический сбор добычи",
+            ["Enable Sound in Background"] = "Звук в фоновом режиме",
+            ["Display Mode"] = "Режим экрана", ["Render Scale"] = "Масштаб рендеринга",
+            ["Show When"] = "Показывать", ["Party or Raid"] = "Группа или рейд",
+            ["Enemy Name Plates"] = "Индикаторы здоровья противников",
+            ["Friendly Name Plates"] = "Индикаторы здоровья союзников",
+            ["Windowed (Fullscreen)"] = "Оконный (на весь экран)", ["Windowed"] = "Оконный",
+            ["Medium"] = "Среднее", ["Minimal"] = "Минимальное", ["Full"] = "Полное",
+        }
+        function OptionsText(label, tip)
+            local key = optionLabelKeys[label]
+            if key and getglobal(key) then return getglobal(key) end
+            -- Show When's tip is a choice description, not its row label.
+            if tip and label ~= "Show When" and string.find(tip, "^OPTION_TOOLTIP_") then
+                local stem = string.gsub(tip, "^OPTION_TOOLTIP_", "")
+                local value = getglobal(stem .. "_TEXT") or getglobal(stem)
+                if type(value) == "string" then return value end
+            end
+            if GetLocale() == "ruRU" then return optionRussian[label] or label end
+            return label
+        end
+
+        function BenillaOptionsFrame_LocalizeChrome()
+            local texts = {
+                TitleText = "Options", GameTab = "Game", AddOnsTab = "AddOns",
+                CloseButton = "Close", ApplyButton = "Apply", ContainerDefaults = "Defaults",
+                SearchBoxInstructions = "Search", ContainerBodyNoResults = "No results found.",
+                CategoryListHeaderGameplayLabel = "Gameplay", CategoryListHeaderSystemLabel = "System",
+            }
+            for suffix, label in pairs(texts) do
+                local widget = getglobal("BenillaOptionsFrame" .. suffix)
+                if widget then widget:SetText(OptionsText(label)) end
+            end
+            for _, key in ipairs(OPTIONS_CATEGORY_KEYS) do
+                local row = getglobal("BenillaOptionsFrameCategoryListRow" .. key)
+                local head = getglobal("BenillaOptionsFrameContainerBodySearchHead" .. key .. "Label")
+                if head and row then head:SetText(row.pageTitle) end
+            end
+        end
+
         -- The era-window scale (shared, director-owned — the 0219 WORLDMAP_WINDOWED_SCALE
         -- pattern): the era client's UIParent draws smaller against the screen than our 1.12
         -- 768-canvas does on modern displays, and this knob is that mapping — every era-shaped
@@ -381,6 +444,7 @@
         -- (OptionsFrameTemplates.lua l.130-131). The whole row identity lives here so adding
         -- a category is one XML row + one key in the table above.
         function OptionsCategoryRow_OnLoad(row, key, label)
+            label = OptionsText(label)
             row.categoryKey = key
             row.pageTitle = label
             row:SetText(label)
@@ -658,7 +722,7 @@
             KeyBindingsPage.searchPainted = nil
             KeyBindings_SetSelected(nil)
             BenillaOptionsFrameContainerUnbind:Hide()
-            BenillaOptionsFrameContainerTitle:SetText("Search Results")
+            BenillaOptionsFrameContainerTitle:SetText(OptionsText("Search Results"))
             BenillaOptionsFrameContainerDefaults:Hide()
 
             local order, groups = OptionsSearch_FindMatches(text)
@@ -804,6 +868,21 @@
             .. "which it could only do in exclusive fullscreen. benilla applies it to the "
             .. "finished image instead, so it works in both display modes."
 
+        if GetLocale() == "ruRU" then
+            BENILLA_TOOLTIP_RENDER_SCALE =
+                "Изменяет разрешение трёхмерного мира относительно разрешения окна. Интерфейс не меняется.\n\n"
+                .. "Ниже 100% повышает частоту кадров за счёт чёткости; выше 100% сглаживает края за счёт частоты кадров. Применяется кнопкой «Применить»."
+            BENILLA_TOOLTIP_BACKGROUND_SOUND =
+                "Продолжает воспроизведение звука игры при работе в другом окне.\n\n"
+                .. "Если выключено, звук заглушается при переключении и возвращается после него. Заглушённые звуки продолжают идти и могут закончиться до вашего возвращения."
+            BENILLA_TOOLTIP_DISPLAY_MODE =
+                "Оконный режим на весь экран использует окно без рамки; обычный оконный режим — окно с рамкой.\n\n"
+                .. "Эксклюзивного полноэкранного режима нет. В WoW он удалён с версии 8.0.1; современный Classic предлагает эти же два режима."
+            BENILLA_TOOLTIP_BRIGHTNESS =
+                "Осветляет или затемняет всё изображение, в том числе ночи, пещеры и помещения.\n\n"
+                .. "В версии 1.12 эта коррекция использовала гамму дисплея и работала только в эксклюзивном полноэкранном режиме. benilla корректирует готовое изображение, поэтому настройка работает в обоих режимах."
+        end
+
         OPTIONS_PAGE_ROWS = {
             -- Seven rows became sixteen at 2180, and the nine that arrived were not new
             -- settings: every one names a CVar this client already registered AND read, with no
@@ -947,6 +1026,7 @@
         -- (UIOptionsFrame.lua l.265, `getglobal("OPTION_TOOLTIP_"..key)`), so the row is wired
         -- before GlobalStrings has to exist. nil = no 1.12 string for this setting (Auto Loot).
         function OptionsRow_OnLoad(row, cvar, label, tip, child)
+            label = OptionsText(label, tip)
             row.cvar = cvar
             row.tip = tip
             -- The search tag: the era's default is exactly the setting's display name
@@ -1250,6 +1330,7 @@
         -- initialize (Toggle's own law), and AddButton auto-checks the entry matching the
         -- capsule's selectedValue — which OptionsDropdown_ShowValue keeps equal to the CVar.
         function OptionsDropdownRow_Setup(row, entries)
+            for _, entry in ipairs(entries) do entry.text = OptionsText(entry.text) end
             row.entries = entries
             local dd = getglobal(row:GetName() .. "Dropdown")
             UIDropDownMenu_SetWidth(180, dd)
@@ -1348,7 +1429,7 @@
                 local i = math.floor(value + 0.5) + 1
                 if i < 1 then i = 1 end
                 if i > table.getn(row.stops) then i = table.getn(row.stops) end
-                return row.stops[i]
+                return OptionsText(row.stops[i])
             end
             -- A row whose stored value is a CENTRED OFFSET: show where the thumb is, as a share
             -- of the groove (2182). Brightness is the case -- its stored unit is the reference's
@@ -4539,6 +4620,7 @@
                  era remembers too — Settings.OpenToCategory's default seat). The scale re-fits
                  on every show — the era panel manager re-runs checkFit the same way. -->
             <OnShow>
+                BenillaOptionsFrame_LocalizeChrome()
                 BenillaOptionsFrame_UpdateScale()
                 BenillaOptionsFrame_SelectCategory(this.selectedCategory or "Controls")
                 if UpdateMicroButtons then UpdateMicroButtons() end

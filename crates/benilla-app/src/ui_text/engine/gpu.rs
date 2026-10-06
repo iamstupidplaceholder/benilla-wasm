@@ -20,7 +20,7 @@ use bevy::window::PrimaryWindow;
 
 use benilla_assets::WorldAssets;
 
-use super::{TextEngine, UiFontAtlas};
+use super::{source::FontSource, TextEngine, UiFontAtlas};
 use crate::ui_text::pack::CellUpload;
 
 /// Cells rasterized this frame, waiting for the render world.
@@ -34,14 +34,19 @@ struct GlyphUploads(Vec<CellUpload>);
 /// Loads the client's TTFs and drives the on-demand glyph cache.
 pub(crate) struct UiTextPlugin;
 
+/// Byte-delivery producers can order against font initialization without naming
+/// the engine's private startup system.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct FontInit;
+
 impl Plugin for UiTextPlugin {
     fn build(&self, app: &mut App) {
-        // `init` runs each Update until it succeeds: the engine needs both the patch chain (opened
-        // at `AssetSet::Open`) *and* the primary window's real `scale_factor`, which winit only
+        // `init` runs each Update until it succeeds: the engine needs both its host byte source
+        // (native patch chain or completed browser delivery) and the window's real `scale_factor`, which winit only
         // reports once the OS window exists. `publish_pages` runs in `Last`, after every producer
         // of text quads, so a cell rasterized this frame is queued before the render extract.
         app.init_resource::<GlyphUploadQueue>()
-            .add_systems(Update, init)
+            .add_systems(Update, init.in_set(FontInit))
             .add_systems(Last, publish_sheet);
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -58,7 +63,7 @@ impl Plugin for UiTextPlugin {
     }
 }
 
-/// Build the engine on the first frame both the patch chain and the window's real `scale_factor`
+/// Build the engine on the first frame both host bytes and the window's real `scale_factor`
 /// are available.
 fn init(
     mut commands: Commands,
@@ -70,10 +75,14 @@ fn init(
     if existing.is_some() {
         return;
     }
-    let (Some(world_assets), Ok(window)) = (world_assets, windows.single()) else {
+    let Ok(window) = windows.single() else {
         return;
     };
-    let Some(engine) = TextEngine::load(&world_assets, &images, window.scale_factor()) else {
+    let Some(source) = FontSource::open(world_assets.as_deref()) else {
+        return;
+    };
+    let started = benilla_time::Instant::now();
+    let Some(engine) = TextEngine::load(source, &images, window.scale_factor()) else {
         return;
     };
     commands.insert_resource(UiFontAtlas {
@@ -81,6 +90,13 @@ fn init(
         generation: 0,
         ellipsis: crate::ui_text::EllipsisMemo::default(),
     });
+    #[cfg(target_arch = "wasm32")]
+    info!(
+        "startup cost: UI text engine {:.1}ms",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = started;
 }
 
 /// The frame boundary: follow the window's DPI, carry out a pending reset, create any new page's
@@ -95,6 +111,7 @@ fn publish_sheet(
     mut images: ResMut<Assets<Image>>,
     mut queue: ResMut<GlyphUploadQueue>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    #[cfg(target_arch = "wasm32")] mut font_revision: Local<u64>,
 ) {
     let Some(mut atlas) = atlas else {
         return;
@@ -102,6 +119,12 @@ fn publish_sheet(
     let dpi = windows.single().map_or(1.0, Window::scale_factor);
     let (generation, dpi_moved) = {
         let mut e = atlas.lock();
+        #[cfg(target_arch = "wasm32")]
+        if *font_revision != benilla_interface_files::font_revision() {
+            *font_revision = benilla_interface_files::font_revision();
+            // Re-extract held text quads when pending font bytes become ready.
+            e.generation += 1;
+        }
         // A DPI change invalidates no cell — it changes which cells get *asked for*.
         let dpi_moved = (e.dpi - dpi).abs() > 1e-6;
         e.dpi = dpi;
@@ -126,7 +149,7 @@ fn publish_sheet(
     };
     // The one thing a DPI change DOES stale: the ellipsis memo's answers are keyed by a logical
     // box against a raster size that just moved.
-    if dpi_moved {
+    if dpi_moved || atlas.generation != generation {
         atlas.ellipsis = crate::ui_text::EllipsisMemo::default();
     }
     atlas.generation = generation;
@@ -197,8 +220,8 @@ fn report_cache(atlas: &UiFontAtlas) {
     if std::env::var_os("WOW_GLYPH_CACHE").is_none_or(|v| v == "0") {
         return;
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = benilla_time::SystemTime::now()
+        .duration_since(benilla_time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     if LAST.swap(now, Ordering::Relaxed) == now {
         return;

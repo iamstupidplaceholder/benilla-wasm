@@ -304,7 +304,7 @@ fn feed_item_text(
     mail: Res<MailOpen>,
     pages: Res<PageTexts>,
     items: Res<Items>,
-    names: Res<NameCache>,
+    names: (Res<NameCache>, crate::npc_text::MacroNames),
     go_templates: Res<GameObjectTemplates>,
     materials: Option<Res<PageMaterials>>,
     commands: Res<NetCommands>,
@@ -312,6 +312,7 @@ fn feed_item_text(
     self_q: Query<(&crate::net::ObjectStore, &crate::net::Guid), With<crate::net::SelfPlayer>>,
     states: Res<crate::world_state::WorldStates>,
 ) {
+    let (names, labels) = names;
     let Some(mut script) = script else {
         return;
     };
@@ -410,7 +411,7 @@ fn feed_item_text(
 
     // Page/book text is server-authored, so it runs the `$`-macro expander — the reference does it
     // from two sites in `ItemTextFrame.cpp` (decision 0754), subject = the local player.
-    let subject = crate::npc_text::player_identity(&self_q, &names, &commands);
+    let subject = crate::npc_text::player_identity(&self_q, &names, &commands, &labels);
     let text = crate::npc_text::substitute(
         &text,
         &crate::npc_text::MacroContext {

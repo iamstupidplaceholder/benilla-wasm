@@ -1,0 +1,33 @@
+name: benilla-web
+services:
+  benilla:
+    image: ${BENILLA_IMAGE:-benilla-web:local}
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${BENILLA_BIND_IP:-0.0.0.0}:${BENILLA_PORT:-8000}:8000"
+    environment:
+      BENILLA_HOST: ${BENILLA_HOST:-}
+      BENILLA_PUBLIC_URL: ${BENILLA_PUBLIC_URL:-}
+      BENILLA_PUBLIC_PORT: ${BENILLA_PORT:-8000}
+      UPSTREAM_HOST: ${UPSTREAM_HOST:-}
+      AUTH_UPSTREAM: ${AUTH_UPSTREAM:-}
+      WORLD_UPSTREAM: ${WORLD_UPSTREAM:-}
+      AUTH_PORT: ${AUTH_PORT:-3724}
+      WORLD_PORT: ${WORLD_PORT:-8085}
+    volumes:
+      - type: bind
+        source: ${WOW_CLIENT_DIR:?Set WOW_CLIENT_DIR to the installed WoW client directory}
+        target: /wow
+        read_only: true
+        bind:
+          create_host_path: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /run/benilla:uid=10001,gid=10001,mode=0700
+      - /tmp:uid=10001,gid=10001,mode=0700
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]

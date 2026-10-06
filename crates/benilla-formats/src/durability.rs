@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
+use crate::chain::FileSource;
 use crate::dbc::{f32_at, parse, u32_at};
 
 const DURABILITY_COSTS: &str = "DBFilesClient\\DurabilityCosts.dbc";
@@ -108,7 +108,7 @@ fn qualities_schema() -> Schema {
 }
 
 /// Load both durability tables off the patch chain.
-pub fn load_durability_tables(chain: &mut Chain) -> Result<DurabilityTables> {
+pub fn load_durability_tables(chain: &mut impl FileSource) -> Result<DurabilityTables> {
     let bytes = chain
         .read_file(DURABILITY_COSTS)
         .with_context(|| format!("reading {DURABILITY_COSTS}"))?;

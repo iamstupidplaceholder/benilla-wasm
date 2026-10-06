@@ -45,7 +45,7 @@ fn session() -> UiScript {
         "Interface\\FrameXML\\BattlefieldFrame.xml",
         "Interface\\FrameXML\\Minimap.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s.resolve();
     s
@@ -72,7 +72,7 @@ fn empty() -> BattlefieldQueueSlot {
     }
 }
 
-fn visible(s: &UiScript, frame: &str) -> bool {
+fn visible(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsVisible()"))
         .unwrap()
 }
@@ -83,12 +83,12 @@ fn visible(s: &UiScript, frame: &str) -> bool {
 fn the_queue_icon_follows_the_slots_across_update_battlefield_status() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = session();
-    assert!(!visible(&s, "MiniMapBattlefieldFrame"), "no queue at load");
+    assert!(!visible(&mut s, "MiniMapBattlefieldFrame"), "no queue at load");
 
     s.set_battlefield_queue(vec![slot(529, "Arathi Basin", 1, 0), empty(), empty()], 0);
     s.fire_event("UPDATE_BATTLEFIELD_STATUS", vec![]);
     assert!(
-        visible(&s, "MiniMapBattlefieldFrame"),
+        visible(&mut s, "MiniMapBattlefieldFrame"),
         "a queued slot shows the icon"
     );
     let tooltip = s
@@ -108,13 +108,13 @@ fn the_queue_icon_follows_the_slots_across_update_battlefield_status() {
         tooltip.ends_with("|cffffffff<Right Click> for PvP Options|r"),
         "{tooltip}"
     );
-    assert!(!visible(&s, "StaticPopup1"), "queued is not yet a question");
+    assert!(!visible(&mut s, "StaticPopup1"), "queued is not yet a question");
 
     // Ready: the confirm dialog with the map name and the port countdown.
     s.set_battlefield_queue(vec![slot(529, "Arathi Basin", 2, 3), empty(), empty()], 0);
     s.fire_event("UPDATE_BATTLEFIELD_STATUS", vec![]);
     assert!(
-        visible(&s, "StaticPopup1"),
+        visible(&mut s, "StaticPopup1"),
         "confirm raises CONFIRM_BATTLEFIELD_ENTRY"
     );
     assert_eq!(
@@ -139,7 +139,7 @@ fn the_queue_icon_follows_the_slots_across_update_battlefield_status() {
     s.set_battlefield_queue(vec![empty(), empty(), empty()], 0);
     s.fire_event("UPDATE_BATTLEFIELD_STATUS", vec![]);
     assert!(
-        !visible(&s, "MiniMapBattlefieldFrame"),
+        !visible(&mut s, "MiniMapBattlefieldFrame"),
         "no queue hides the icon"
     );
 }
@@ -167,9 +167,9 @@ fn the_list_window_opens_on_battlefields_show_and_joins_the_selection() {
         group_queue: true,
     });
     s.set_battlefield_queue(vec![empty(), empty(), empty()], 0);
-    assert!(!visible(&s, "BattlefieldFrame"));
+    assert!(!visible(&mut s, "BattlefieldFrame"));
     s.fire_event("BATTLEFIELDS_SHOW", vec![]);
-    assert!(visible(&s, "BattlefieldFrame"), "the event shows the panel");
+    assert!(visible(&mut s, "BattlefieldFrame"), "the event shows the panel");
     assert_eq!(
         s.eval::<String>("return BattlefieldFrameFrameLabel:GetText()")
             .unwrap(),
@@ -191,7 +191,7 @@ fn the_list_window_opens_on_battlefields_show_and_joins_the_selection() {
         "Arathi Basin 9"
     );
     assert!(
-        !visible(&s, "BattlefieldZone4"),
+        !visible(&mut s, "BattlefieldZone4"),
         "two instances, three rows"
     );
     assert_eq!(
@@ -200,7 +200,7 @@ fn the_list_window_opens_on_battlefields_show_and_joins_the_selection() {
         "The Arathi Basin is one of the main staging points."
     );
     assert!(
-        visible(&s, "BattlefieldFrameGroupJoinButton"),
+        visible(&mut s, "BattlefieldFrameGroupJoinButton"),
         "the map allows group queues: the button shows"
     );
     assert!(
@@ -212,7 +212,7 @@ fn the_list_window_opens_on_battlefields_show_and_joins_the_selection() {
     // Join the default selection (row 1 = first available), then a specific instance.
     s.run("BattlefieldFrameJoinButton:Click()").unwrap();
     assert_eq!(s.take_battlefield_join_requests(), vec![(0, false)]);
-    assert!(!visible(&s, "BattlefieldFrame"), "joining hides the panel");
+    assert!(!visible(&mut s, "BattlefieldFrame"), "joining hides the panel");
     s.fire_event("BATTLEFIELDS_SHOW", vec![]);
     s.run("BattlefieldZone3:Click()").unwrap();
     assert_eq!(s.eval::<i64>("return GetSelectedBattlefield()").unwrap(), 2);
@@ -220,10 +220,10 @@ fn the_list_window_opens_on_battlefields_show_and_joins_the_selection() {
     assert_eq!(s.take_battlefield_join_requests(), vec![(9, false)]);
 
     s.fire_event("BATTLEFIELDS_SHOW", vec![]);
-    assert!(visible(&s, "BattlefieldFrame"));
+    assert!(visible(&mut s, "BattlefieldFrame"));
     s.fire_event("BATTLEFIELDS_CLOSED", vec![]);
     assert!(
-        !visible(&s, "BattlefieldFrame"),
+        !visible(&mut s, "BattlefieldFrame"),
         "the leash's event hides it"
     );
 }

@@ -22,17 +22,17 @@ use super::test_ui::load_ui as load_xml;
 fn ui_with_the_cinematic_frame() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua"); // StaticPopup's money row, or UiPanels errors at load
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\CinematicFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua"); // StaticPopup's money row, or UiPanels errors at load
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CinematicFrame.xml");
     s.resolve();
     s
 }
@@ -184,7 +184,7 @@ fn the_screenshot_key_is_handed_back_to_its_binding() {
 #[test]
 fn a_cinematic_hides_the_hud_through_uiparent_and_spares_the_cinematic_frame() {
     let mut s = ui_with_the_cinematic_frame();
-    let visible = |s: &UiScript, f: &str| {
+    let visible = |s: &mut UiScript, f: &str| {
         s.eval::<i64>(&format!("return {f}:IsVisible() and 1 or 0"))
             .unwrap()
             == 1
@@ -194,13 +194,13 @@ fn a_cinematic_hides_the_hud_through_uiparent_and_spares_the_cinematic_frame() {
     // dragging the whole action bar in, and what is under test is the cascade, not which frame.
     s.eval::<i64>("StaticPopup1:Show() return 0").unwrap();
     s.resolve();
-    assert!(visible(&s, "UIParent"), "the HUD's parent starts visible");
-    assert!(visible(&s, "StaticPopup1"), "and so does its child");
+    assert!(visible(&mut s, "UIParent"), "the HUD's parent starts visible");
+    assert!(visible(&mut s, "StaticPopup1"), "and so does its child");
 
     start_cinematic(&mut s);
-    assert!(!visible(&s, "UIParent"), "SetFullScreenFrame hid UIParent");
+    assert!(!visible(&mut s, "UIParent"), "SetFullScreenFrame hid UIParent");
     assert!(
-        !visible(&s, "StaticPopup1"),
+        !visible(&mut s, "StaticPopup1"),
         "and the hide cascaded to its children — this is the whole point of the 72 restored \
          parent= declarations, and the assertion that fails if one is dropped again"
     );
@@ -211,7 +211,7 @@ fn a_cinematic_hides_the_hud_through_uiparent_and_spares_the_cinematic_frame() {
         "cascaded, not shown=false: the frame keeps its own state and gets it back untouched"
     );
     assert!(
-        visible(&s, "CinematicFrame"),
+        visible(&mut s, "CinematicFrame"),
         "**and the fly-by itself survives** — the reference declares CinematicFrame with no \
          parent precisely so the frame being shown escapes the hide that showing it performs"
     );
@@ -219,8 +219,8 @@ fn a_cinematic_hides_the_hud_through_uiparent_and_spares_the_cinematic_frame() {
     s.set_in_cinematic(false);
     s.fire_event("CINEMATIC_STOP", vec![]);
     s.resolve();
-    assert!(visible(&s, "UIParent"), "and the world's UI comes back");
-    assert!(visible(&s, "StaticPopup1"), "with the child that was up");
+    assert!(visible(&mut s, "UIParent"), "and the world's UI comes back");
+    assert!(visible(&mut s, "StaticPopup1"), "with the child that was up");
 }
 
 /// **The screenshot confirmation survives the HUD hide — because the reference seats it outside
@@ -250,11 +250,11 @@ fn the_screenshot_confirmation_shows_during_a_cinematic() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
 
-    let visible = |s: &UiScript, f: &str| {
+    let visible = |s: &mut UiScript, f: &str| {
         s.eval::<i64>(&format!(
             "local x = getglobal('{f}') if not x then return -1 end return x:IsVisible() and 1 or 0"
         ))
@@ -262,13 +262,13 @@ fn the_screenshot_confirmation_shows_during_a_cinematic() {
     };
 
     start_cinematic(&mut s);
-    assert_eq!(visible(&s, "UIParent"), 0, "the fly-by hid the HUD");
+    assert_eq!(visible(&mut s, "UIParent"), 0, "the fly-by hid the HUD");
 
     // The engine's own report of a finished capture (`crate::screenshot` → SCREENSHOT_SUCCEEDED).
     s.fire_event("SCREENSHOT_SUCCEEDED", vec![]);
     s.resolve();
     assert_eq!(
-        visible(&s, "ScreenshotStatus"),
+        visible(&mut s, "ScreenshotStatus"),
         1,
         "\"Screen Captured\" is readable over the fly-by — a confirmation that cannot appear \
          while the UI is hidden is no confirmation, and the cinematic is the case the reference \

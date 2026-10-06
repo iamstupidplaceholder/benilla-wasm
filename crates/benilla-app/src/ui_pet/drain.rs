@@ -325,10 +325,7 @@ pub(super) fn pet_stop_on_old_target_clear(
 /// the server sets the flag and the mover together, so the flag standing in for both is faithful
 /// until possession itself is built.
 pub(super) fn possessing(store: Option<&ObjectStore>, self_guid: Option<u64>) -> bool {
-    store.is_some_and(|s| {
-        s.0.unit_flags() & UNIT_FLAG_POSSESSED != 0
-            && s.0.unit_owner(benilla_protocol::OwnerFallback::CreatedBy) == self_guid
-    })
+    self_guid.is_some_and(|guid| store.is_some_and(|s| s.0.unit_possessed_by(guid)))
 }
 
 /// Is this press the ATTACK **order** — the one slot word that runs a validator before it sends?

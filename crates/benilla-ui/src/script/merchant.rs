@@ -25,7 +25,20 @@
 //! vendor `muid` — decision 0081). vanilla's client-side `CloseMerchant()` sends no packet, so it
 //! just flags the app to clear its local state (the gossip pattern).
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
+
+/// Host-provided immutable repair arithmetic; the UI owns no asset loader.
+pub trait RepairCostCatalog: Send + Sync {
+    fn repair_cost(
+        &self,
+        points: u32,
+        level: u32,
+        quality: u32,
+        class: u32,
+        subclass: u32,
+        discount: f32,
+    ) -> u32;
+}
 
 use super::container::UiCursorMode;
 use super::cursor::CursorPayload;
@@ -171,6 +184,32 @@ impl super::UiScript {
     pub fn repair_mode(&self) -> bool {
         self.model_ref().repair_mode
     }
+
+    /// Share the loaded repair catalog with tooltip bindings, without a second
+    /// loader or a copy of the repair arithmetic.
+    pub fn set_repair_tables(&mut self, tables: std::sync::Arc<dyn RepairCostCatalog>) {
+        let mut model = self.model_mut();
+        if !model
+            .repair_tables
+            .as_ref()
+            .is_some_and(|old| std::sync::Arc::ptr_eq(old, &tables))
+        {
+            model.repair_tables = Some(tables);
+        }
+    }
+
+    pub fn set_item_repair_level(&mut self, item_id: u32, item_level: u32) {
+        self.model_mut()
+            .item_repair_levels
+            .insert(item_id, item_level);
+    }
+
+    /// The cancellation owns the right gesture and its press edge, including
+    /// a press/release delivered together before the world input pass.
+    pub fn repair_cancel_right_active(&self) -> bool {
+        let model = self.model_ref();
+        model.repair_cancel_right || model.repair_cancel_right_press
+    }
 }
 
 /// `1`/`nil` — how the client pushes a usable flag (`pushnumber(1.0)` / `pushnil`).
@@ -196,57 +235,43 @@ fn invalid_tuple() -> Vec<Value> {
 }
 
 /// Register the merchant globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // → the number of rows the open vendor has (0 when no vendor is open).
-    g.set(
-        "GetMerchantNumItems",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.merchant.as_ref().map_or(0, |m| m.items.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("GetMerchantNumItems", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.merchant.as_ref().map_or(0, |m| m.items.len()) as i64)
+    })?;
 
     // GetMerchantItemInfo(index) → name, texture, price, quantity, numAvailable, isUsable — the
     // byte-verified 5875 6-tuple (0x4fb150; see the module doc). `index` is 1-based; an invalid
     // index answers the fixed tuple (nil, nil, 0, 1, 0, 1).
-    g.set(
-        "GetMerchantItemInfo",
-        lua.create_function(|lua, index: usize| {
-            let (item, usable) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let item = model
-                    .merchant
-                    .as_ref()
-                    .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
-                    .cloned();
-                let usable = item
-                    .as_ref()
-                    .is_none_or(|it| super::item_stats::item_usable_by_id(&model, it.item_id));
-                (item, usable)
-            };
-            let Some(it) = item else {
-                return Ok(MultiValue::from_vec(invalid_tuple()));
-            };
-            let name = match &it.name {
-                Some(n) => Value::String(lua.create_string(n)?),
-                None => Value::Nil,
-            };
-            let texture = match &it.texture {
-                Some(t) => Value::String(lua.create_string(t)?),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                name,
-                texture,
-                Value::Integer(i64::from(it.price)),
-                Value::Integer(i64::from(it.quantity)),
-                Value::Integer(i64::from(it.num_available)),
-                usable_value(usable),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetMerchantItemInfo", |lua, index: usize| {
+        let (item, usable) = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let item = model
+                .merchant
+                .as_ref()
+                .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
+                .cloned();
+            let usable = item
+                .as_ref()
+                .is_none_or(|it| super::item_stats::item_usable_by_id(&model, it.item_id));
+            (item, usable)
+        };
+        let Some(it) = item else {
+            return Ok(MultiValue::from(invalid_tuple()));
+        };
+        let name = it.name.map_or(Value::Nil, Value::from);
+        let texture = it.texture.map_or(Value::Nil, Value::from);
+        Ok(MultiValue::from(vec![
+            name,
+            texture,
+            Value::Integer(i64::from(it.price)),
+            Value::Integer(i64::from(it.quantity)),
+            Value::Integer(i64::from(it.num_available)),
+            usable_value(usable),
+        ]))
+    })?;
 
     // GetMerchantItemLink(index) → the row's full escaped `|cff…|Hitem:…|h[Name]|h|r` link | nil.
     // 1-based like GetMerchantItemInfo; nil out of range and nil while the row's template answer is
@@ -255,23 +280,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // and `ChatFrameEditBox:Insert(...)` (`:306`); ours routes the second through
     // `BenillaChatEdit_InsertLink`, whose whole job is the nil this getter can answer. Merchant rows
     // only: see [`MerchantItem::link`] for why a buyback row carries none. Decision 1059.
-    g.set(
-        "GetMerchantItemLink",
-        lua.create_function(|lua, index: usize| {
-            let link = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .merchant
-                    .as_ref()
-                    .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
-                    .and_then(|it| it.link.clone())
-            };
-            match link {
-                Some(link) => Ok(Value::String(lua.create_string(&link)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetMerchantItemLink", |lua, index: usize| {
+        let link = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .merchant
+                .as_ref()
+                .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
+                .and_then(|it| it.link.clone())
+        };
+        Ok(link.map_or(Value::Nil, Value::from))
+    })?;
 
     // GetMerchantItemMaxStack(index) → the stack size ONE slot can hold for that row's item, or
     // nil while its template answer is in flight / the index is out of range.
@@ -285,61 +304,55 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // The value was on the wire and parsed the whole time (`item_template.stackable`); nothing on
     // the Lua side could reach it until now, which is why the reference's merchant window listed
     // this as one of its two missing verbs.
-    g.set(
-        "GetMerchantItemMaxStack",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .merchant
-                .as_ref()
-                .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
-                .and_then(|it| it.max_stack)
-                .map_or(Value::Nil, |n| Value::Integer(i64::from(n))))
-        })?,
-    )?;
+    lua.register_function("GetMerchantItemMaxStack", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .merchant
+            .as_ref()
+            .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
+            .and_then(|it| it.max_stack)
+            .map_or(Value::Nil, |n| Value::Integer(i64::from(n))))
+    })?;
 
     // BenillaGetMerchantItemStats(index) → quality, invType, class, subclass, dmgMin, dmgMax,
     // dmgType, delayMs, armor, block — the tooltip stat head ([`ItemStatsHead`]), or nil while
     // the row's template answer is in flight / the index is out of range. Benilla-named: 1.12's Lua
     // API never carried these (item tooltip content was C++'s alone — `SetMerchantItem 0x534080`).
-    g.set(
-        "BenillaGetMerchantItemStats",
-        lua.create_function(|lua, index: usize| {
-            let stats = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .merchant
-                    .as_ref()
-                    .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
-                    .and_then(|it| it.stats)
-            };
-            let Some(s) = stats else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(i64::from(s.quality)),
-                Value::Integer(i64::from(s.inventory_type)),
-                Value::Integer(i64::from(s.class)),
-                Value::Integer(i64::from(s.subclass)),
-                Value::Number(f64::from(s.dmg_min)),
-                Value::Number(f64::from(s.dmg_max)),
-                Value::Integer(i64::from(s.dmg_type)),
-                Value::Integer(i64::from(s.delay_ms)),
-                Value::Integer(i64::from(s.armor)),
-                Value::Integer(i64::from(s.block)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("BenillaGetMerchantItemStats", |lua, index: usize| {
+        let stats = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .merchant
+                .as_ref()
+                .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
+                .and_then(|it| it.stats)
+        };
+        let Some(s) = stats else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::Integer(i64::from(s.quality)),
+            Value::Integer(i64::from(s.inventory_type)),
+            Value::Integer(i64::from(s.class)),
+            Value::Integer(i64::from(s.subclass)),
+            Value::Number(f64::from(s.dmg_min)),
+            Value::Number(f64::from(s.dmg_max)),
+            Value::Integer(i64::from(s.dmg_type)),
+            Value::Integer(i64::from(s.delay_ms)),
+            Value::Integer(i64::from(s.armor)),
+            Value::Integer(i64::from(s.block)),
+        ]))
+    })?;
 
     // BuyMerchantItem(index [, quantity]) — queue the 1-based row + stack count (default 1); the app
     // maps the row to the item entry the wire addresses.
-    g.set(
+    lua.register_function(
         "BuyMerchantItem",
-        lua.create_function(|lua, (index, quantity): (u32, Option<u32>)| {
+        |lua, (index, quantity): (u32, Option<u32>)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.merchant_buys.push((index, quantity.unwrap_or(1)));
             Ok(())
-        })?,
+        },
     )?;
 
     // PickupMerchantItem(index) — **two verbs behind one name** (`0x4fb760`, wow-re
@@ -366,236 +379,194 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // It does **not** test stock and does **not** test the item cache: a sold-out row grabs fine
     // and the buy still goes out, and the server refuses it. `numAvailable` is read exactly once
     // image-wide, by `GetMerchantItemInfo`, for display.
-    g.set(
-        "PickupMerchantItem",
-        lua.create_function(|lua, index: Option<f64>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    lua.register_function("PickupMerchantItem", |lua, index: Option<f64>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
 
-            // The sell fork, and it comes FIRST — before the argument is even looked at. The
-            // clear is the SELL clear, not `ClearCursor`: it fires `CURSOR_UPDATE` and leaves the
-            // source slot greyed until the server's inventory update
-            // (`cursor::take_cursor_item_for_sale`, shared with the interact ladder's vendor arm,
-            // which is the same `0x494b60` call — decision 1914).
-            if let Some(item) = crate::script::cursor::take_cursor_item_for_sale(&mut model) {
-                model.merchant_cursor_sells.push((item.bag, item.slot));
-                return Ok(());
-            }
+        // The sell fork, and it comes FIRST — before the argument is even looked at. The
+        // clear is the SELL clear, not `ClearCursor`: it fires `CURSOR_UPDATE` and leaves the
+        // source slot greyed until the server's inventory update
+        // (`cursor::take_cursor_item_for_sale`, shared with the interact ladder's vendor arm,
+        // which is the same `0x494b60` call — decision 1914).
+        if let Some(item) = crate::script::cursor::take_cursor_item_for_sale(&mut model) {
+            model.merchant_cursor_sells.push((item.bag, item.slot));
+            return Ok(());
+        }
 
-            // From here every leg clears the cursor and answers nothing. Holding a mode-5 payload
-            // and calling this again is the toggle-off, which is the same clear.
-            let held = match &model.cursor {
-                Some(CursorPayload::Merchant(m)) => Some(m.row),
-                _ => None,
-            };
-            model.cursor = None;
+        // From here every leg clears the cursor and answers nothing. Holding a mode-5 payload
+        // and calling this again is the toggle-off, which is the same clear.
+        let held = match &model.cursor {
+            Some(CursorPayload::Merchant(m)) => Some(m.row),
+            _ => None,
+        };
+        model.cursor = None;
 
-            let Some(index) = index else { return Ok(()) };
-            // `_ftol` truncates toward zero; the bound is then applied signed, so a negative or
-            // a zero index falls out here rather than wrapping into a row. NaN is written as its
-            // own test rather than as a negated `>=` — same answer, and the intent is on the page.
-            //
-            // The upper bound is ours and it is load-bearing, not defensive: without it a Lua
-            // index of `2^32 + 1` truncates on the cast to row 0 and would grab the FIRST row.
-            // The reference cannot have that bug — its bound is against the vendor count, which
-            // it applies before any narrowing.
-            let row = index.trunc();
-            if row.is_nan() || row < 1.0 || row > f64::from(u32::MAX) {
-                return Ok(());
-            }
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let row0 = row as u32 - 1;
-            let Some(merchant) = model.merchant.as_ref() else {
-                return Ok(());
-            };
-            let Some(item) = merchant.items.get(row0 as usize) else {
-                return Ok(());
-            };
-            // The toggle-off: naming the row already on the cursor puts nothing back.
-            if held == Some(row0) {
-                return Ok(());
-            }
-            let payload = CursorPayload::Merchant(super::cursor::CursorMerchantItem {
-                item_id: item.item_id,
-                row: row0,
-                texture: item.texture.clone(),
-            });
-            model.cursor = Some(payload);
-            Ok(())
-        })?,
-    )?;
+        let Some(index) = index else { return Ok(()) };
+        // `_ftol` truncates toward zero; the bound is then applied signed, so a negative or
+        // a zero index falls out here rather than wrapping into a row. NaN is written as its
+        // own test rather than as a negated `>=` — same answer, and the intent is on the page.
+        //
+        // The upper bound is ours and it is load-bearing, not defensive: without it a Lua
+        // index of `2^32 + 1` truncates on the cast to row 0 and would grab the FIRST row.
+        // The reference cannot have that bug — its bound is against the vendor count, which
+        // it applies before any narrowing.
+        let row = index.trunc();
+        if row.is_nan() || row < 1.0 || row > f64::from(u32::MAX) {
+            return Ok(());
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let row0 = row as u32 - 1;
+        let Some(merchant) = model.merchant.as_ref() else {
+            return Ok(());
+        };
+        let Some(item) = merchant.items.get(row0 as usize) else {
+            return Ok(());
+        };
+        // The toggle-off: naming the row already on the cursor puts nothing back.
+        if held == Some(row0) {
+            return Ok(());
+        }
+        let payload = CursorPayload::Merchant(super::cursor::CursorMerchantItem {
+            item_id: item.item_id,
+            row: row0,
+            texture: item.texture.clone(),
+        });
+        model.cursor = Some(payload);
+        Ok(())
+    })?;
 
     // CloseMerchant() — client-side close (no packet, vanilla): flag it so the app clears its state.
-    g.set(
-        "CloseMerchant",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.merchant_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseMerchant", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.merchant_close = true;
+        Ok(())
+    })?;
 
     // → how many buyback slots are filled (ref GetNumBuybackItems; 0 with no vendor open).
-    g.set(
-        "GetNumBuybackItems",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.merchant.as_ref().map_or(0, |m| m.buyback.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumBuybackItems", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.merchant.as_ref().map_or(0, |m| m.buyback.len()) as i64)
+    })?;
 
     // GetBuybackItemInfo(index) → name, texture, price, quantity, numAvailable, isUsable (the
     // same 6-tuple; 0x4fb310, wow-re ui/scratch/buyback-data-path.md). `index` is 1-based
     // oldest-first; an invalid index answers the fixed tuple (nil, nil, 0, 1, 0, 1). isUsable is
     // the same 0x5ea930 gate over the sold item's template (0x4fb4f7) — yes, even a just-sold
     // item reds if the seller can't use it (a mule selling a wrong-class drop).
-    g.set(
-        "GetBuybackItemInfo",
-        lua.create_function(|lua, index: usize| {
-            let (item, usable) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let item = model
-                    .merchant
-                    .as_ref()
-                    .and_then(|m| index.checked_sub(1).and_then(|n| m.buyback.get(n)))
-                    .cloned();
-                let usable = item
-                    .as_ref()
-                    .is_none_or(|it| super::item_stats::item_usable_by_id(&model, it.item_id));
-                (item, usable)
-            };
-            let Some(it) = item else {
-                return Ok(MultiValue::from_vec(invalid_tuple()));
-            };
-            let name = match &it.name {
-                Some(n) => Value::String(lua.create_string(n)?),
-                None => Value::Nil,
-            };
-            let texture = match &it.texture {
-                Some(t) => Value::String(lua.create_string(t)?),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                name,
-                texture,
-                Value::Integer(i64::from(it.price)),
-                Value::Integer(i64::from(it.quantity)),
-                Value::Integer(i64::from(it.num_available)),
-                usable_value(usable),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetBuybackItemInfo", |lua, index: usize| {
+        let (item, usable) = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let item = model
+                .merchant
+                .as_ref()
+                .and_then(|m| index.checked_sub(1).and_then(|n| m.buyback.get(n)))
+                .cloned();
+            let usable = item
+                .as_ref()
+                .is_none_or(|it| super::item_stats::item_usable_by_id(&model, it.item_id));
+            (item, usable)
+        };
+        let Some(it) = item else {
+            return Ok(MultiValue::from(invalid_tuple()));
+        };
+        let name = it.name.map_or(Value::Nil, Value::from);
+        let texture = it.texture.map_or(Value::Nil, Value::from);
+        Ok(MultiValue::from(vec![
+            name,
+            texture,
+            Value::Integer(i64::from(it.price)),
+            Value::Integer(i64::from(it.quantity)),
+            Value::Integer(i64::from(it.num_available)),
+            usable_value(usable),
+        ]))
+    })?;
 
     // BenillaGetBuybackItemStats(index) — the buyback hover's tooltip stat head, same shape and
     // reason as BenillaGetMerchantItemStats.
-    g.set(
-        "BenillaGetBuybackItemStats",
-        lua.create_function(|lua, index: usize| {
-            let stats = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .merchant
-                    .as_ref()
-                    .and_then(|m| index.checked_sub(1).and_then(|n| m.buyback.get(n)))
-                    .and_then(|it| it.stats)
-            };
-            let Some(s) = stats else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(i64::from(s.quality)),
-                Value::Integer(i64::from(s.inventory_type)),
-                Value::Integer(i64::from(s.class)),
-                Value::Integer(i64::from(s.subclass)),
-                Value::Number(f64::from(s.dmg_min)),
-                Value::Number(f64::from(s.dmg_max)),
-                Value::Integer(i64::from(s.dmg_type)),
-                Value::Integer(i64::from(s.delay_ms)),
-                Value::Integer(i64::from(s.armor)),
-                Value::Integer(i64::from(s.block)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("BenillaGetBuybackItemStats", |lua, index: usize| {
+        let stats = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .merchant
+                .as_ref()
+                .and_then(|m| index.checked_sub(1).and_then(|n| m.buyback.get(n)))
+                .and_then(|it| it.stats)
+        };
+        let Some(s) = stats else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::Integer(i64::from(s.quality)),
+            Value::Integer(i64::from(s.inventory_type)),
+            Value::Integer(i64::from(s.class)),
+            Value::Integer(i64::from(s.subclass)),
+            Value::Number(f64::from(s.dmg_min)),
+            Value::Number(f64::from(s.dmg_max)),
+            Value::Integer(i64::from(s.dmg_type)),
+            Value::Integer(i64::from(s.delay_ms)),
+            Value::Integer(i64::from(s.armor)),
+            Value::Integer(i64::from(s.block)),
+        ]))
+    })?;
 
     // BuybackItem(index) — queue the 1-based buyback slot; the app maps it to the wire's absolute
     // inventory slot.
-    g.set(
-        "BuybackItem",
-        lua.create_function(|lua, index: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.merchant_buybacks.push(index);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("BuybackItem", |lua, index: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.merchant_buybacks.push(index);
+        Ok(())
+    })?;
 
     // CanMerchantRepair() → 1/nil (the Era boolean shape) — whether the open vendor repairs.
-    g.set(
-        "CanMerchantRepair",
-        lua.create_function(|lua, ()| {
-            let can = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.merchant.as_ref().is_some_and(|m| m.can_repair)
-            };
-            Ok(if can { Value::Integer(1) } else { Value::Nil })
-        })?,
-    )?;
+    lua.register_function("CanMerchantRepair", |lua, ()| {
+        let can = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.merchant.as_ref().is_some_and(|m| m.can_repair)
+        };
+        Ok(if can { Value::Integer(1) } else { Value::Nil })
+    })?;
 
     // GetRepairAllCost() → cost, canRepair — the app-computed repair-all total; canRepair is
     // "there is damage to pay for" (ref MerchantFrame_OnShow enables the button on it).
-    g.set(
-        "GetRepairAllCost",
-        lua.create_function(|lua, ()| {
-            let cost = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.merchant.as_ref().map_or(0, |m| m.repair_all_cost)
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(i64::from(cost)),
-                Value::Boolean(cost > 0),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetRepairAllCost", |lua, ()| {
+        let cost = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.merchant.as_ref().map_or(0, |m| m.repair_all_cost)
+        };
+        Ok(MultiValue::from(vec![
+            Value::Integer(i64::from(cost)),
+            Value::Boolean(cost > 0),
+        ]))
+    })?;
 
     // RepairAllItems() — flag the repair-all intent for the app to send.
-    g.set(
-        "RepairAllItems",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.repair_all = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RepairAllItems", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.repair_all = true;
+        Ok(())
+    })?;
 
     // The repair-mode latch trio (ref MerchantRepairItemButton OnClick): ShowRepairCursor arms
     // "next item click repairs", HideRepairCursor disarms, InRepairMode() → 1/nil reads it. The
     // app reads UiScript::repair_mode to route clicks + swap the hardware cursor.
-    g.set(
-        "ShowRepairCursor",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .repair_mode = true;
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "HideRepairCursor",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .repair_mode = false;
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "InRepairMode",
-        lua.create_function(|lua, ()| {
-            let mode = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .repair_mode;
-            Ok(if mode { Value::Integer(1) } else { Value::Nil })
-        })?,
-    )?;
+    lua.register_function("ShowRepairCursor", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .repair_mode = true;
+        Ok(())
+    })?;
+    lua.register_function("HideRepairCursor", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .repair_mode = false;
+        Ok(())
+    })?;
+    lua.register_function("InRepairMode", |lua, ()| {
+        let mode = lua
+            .app_data_ref::<Model>()
+            .expect("model app_data")
+            .repair_mode;
+        Ok(if mode { Value::Integer(1) } else { Value::Nil })
+    })?;
 
     // ShowMerchantSellCursor(index) (5875 `0x4fbab0`, "buying from vendor") and
     // ShowBuybackSellCursor(index) (`0x4fbbb0`, "re-buying") — the vendor-item hover cursor
@@ -605,24 +576,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // hovered (Ctrl-hover swaps to `ShowInspectCursor` instead); OnLeave `ResetCursor`s it. An
     // unresolvable index leaves the cursor unchanged — the binary's every-fail-path `ret` with no
     // `CursorSetMode` (the in-flight item lock and base-mode-Point gates live app-side).
-    g.set(
-        "ShowMerchantSellCursor",
-        lua.create_function(|lua, index: usize| {
-            arm_vendor_cursor(lua, |m| {
-                m.items.get(index.wrapping_sub(1)).map(|it| it.price)
-            });
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "ShowBuybackSellCursor",
-        lua.create_function(|lua, index: usize| {
-            arm_vendor_cursor(lua, |m| {
-                m.buyback.get(index.wrapping_sub(1)).map(|it| it.price)
-            });
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ShowMerchantSellCursor", |lua, index: usize| {
+        arm_vendor_cursor(lua, |m| {
+            m.items.get(index.wrapping_sub(1)).map(|it| it.price)
+        });
+        Ok(())
+    })?;
+    lua.register_function("ShowBuybackSellCursor", |lua, index: usize| {
+        arm_vendor_cursor(lua, |m| {
+            m.buyback.get(index.wrapping_sub(1)).map(|it| it.price)
+        });
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -632,7 +597,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 /// `ShowBuybackSellCursor` (which differ only in which price list they read). A `None` price (no
 /// vendor open, or the 1-based index out of range) leaves the cursor untouched — the binary bails
 /// without a `CursorSetMode` (wow-re cursor-system.md §7).
-fn arm_vendor_cursor(lua: &Lua, price_of: impl FnOnce(&MerchantState) -> Option<u32>) {
+fn arm_vendor_cursor(lua: &impl LuaContext, price_of: impl FnOnce(&MerchantState) -> Option<u32>) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     // The sell-cursor family bails on `IsTargeting` at its first instruction (wow-re
     // `item-target-cursor-and-dropitemonunit.md`) — an armed spell keeps its cast cursor.

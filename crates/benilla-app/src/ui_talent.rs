@@ -77,7 +77,7 @@ fn load_talents(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_talent_catalog(&mut chain)
+        benilla_formats::load_talent_catalog(&mut *chain)
     };
     match loaded {
         Ok(catalog) => {
@@ -148,12 +148,8 @@ fn feed_talents(
     // The reference strings the pages carry are read off the player's own `GlobalStrings.lua`
     // (2045). Scoped, because the lookup borrows the VM and the push below needs it mutably.
     let fresh = {
-        let get = |key: &str| {
-            script
-                .lua()
-                .globals()
-                .get::<String>(key)
-                .ok()
+        let mut get = |key: &str| {
+            benilla_ui::strings::global_context(script.vm_mut(), key)
                 .filter(|t| !t.is_empty())
         };
         build_pages(
@@ -163,7 +159,7 @@ fn feed_talents(
             race,
             class,
             points,
-            &get,
+            &mut get,
         )
     };
     if fresh != memory.pushed {
@@ -233,7 +229,7 @@ pub(crate) fn build_pages(
     points: (u32, u32),
     // The VM's own `GlobalStrings.lua`, for the three red requirement lines — `None` for a key
     // the install does not carry, which renders no line (decision 2045).
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> TalentUiState {
     let mut tabs = Vec::new();
     let mut pages = Vec::new();
@@ -259,7 +255,7 @@ pub(crate) fn build_pages(
             let mut req_lines = Vec::new();
             if !tier_unlocked {
                 req_lines.extend(
-                    get("TOOLTIP_TALENT_TIER_POINTS")
+                    (&mut *get)("TOOLTIP_TALENT_TIER_POINTS")
                         .map(|f| fill(&f, &[Arg::D(i64::from(t.row * 5)), Arg::S(&tab.name)])),
                 );
             }
@@ -268,7 +264,7 @@ pub(crate) fn build_pages(
             // NOT the `LOCKED_WITH_*`/`SPELL_FAILED_*` family, which reads identically in enUS.
             if !meets_prereq {
                 if let Some(req) = spells.get(t.required_spell) {
-                    req_lines.extend(get("ITEM_REQ_SKILL").map(|f| fill(&f, &[Arg::S(&req.name)])));
+                    req_lines.extend((&mut *get)("ITEM_REQ_SKILL").map(|f| fill(&f, &[Arg::S(&req.name)])));
                 }
             }
             let mut prereqs = Vec::new();

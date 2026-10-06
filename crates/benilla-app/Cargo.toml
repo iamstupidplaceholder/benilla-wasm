@@ -9,46 +9,17 @@ description = "The Bevy app as a library: everything but the build-id stamp, whi
 workspace = true
 
 [features]
-# **The dev/player seam** (decisions 0026 + 1173). Default-ON, so every ordinary `cargo run`,
-# capture, probe and gate builds exactly what it built before. `--no-default-features` compiles
-# the instruments — the debug panel, the perf HUD, the inspector, the capture harness and the
-# probe fleet — physically OUT: not dormant behind a runtime flag, absent. That is the whole
-# requirement a player client has of them, and a runtime toggle cannot meet it.
-#
-# The rule the seam enforces is one-directional: **dev may see anything; nothing may depend on
-# dev.** It is enforced by `cargo build -p benilla --no-default-features` in `scripts/gates.sh`,
-# not by anyone remembering it — 0026 adopted the rule in June 2026 with no failing build behind
-# it, and twenty-four couplings had accumulated by August (1173).
-default = ["dev"]
-#
-# The three benilla crates below are taken with `default-features = false` and their `dev`
-# re-exported here (1175). Their `dev` is default-on too, so without the round trip a
-# `--no-default-features` build gets the feature back through unification — and the binary
-# carries the build machine's source-tree path after all. Same trap as the shim's, one level down.
-dev = ["benilla-assets/dev", "benilla-formats/dev", "benilla-world/dev", "dep:bevy_egui"]
-# Opt-in Tracy profiling: `cargo run --features tracy` streams per-system `info_span!` markers (on the
-# hot systems) + render-pass CPU timings to a Tracy capture (decision 0026 — the dev/player seam;
-# a `docs/howto/running.md` this once cited never landed).
-tracy = ["bevy/trace_tracy"]
-# Opt-in Chrome-trace profiling: `cargo run --features trace_chrome` writes a `trace-<ts>.json` of
-# every system's per-run span next to the working dir. Tracy's offline twin — it needs no GUI and no
-# live capture, so a per-system cost question is answerable from a terminal (and from a run someone
-# else recorded). Aggregate it with `scripts/tracesum.py`.
-trace_chrome = ["bevy/trace_chrome"]
+# Development and profiling features are not exposed by this preview.
+default = []
+port-gates = []
 
 [dependencies]
 anyhow.workspace = true
-# OS clipboard access for the UI EditBox copy/cut/paste chords (chat input). Already in the tree via
-# bevy_egui; pinned to the same 3.x so there's one copy. Read on the main thread (the UI key feed is
-# a NonSend system) — required for the macOS NSPasteboard path. Covers macOS, Windows, and Linux/BSD
-# under X11; the Wayland backend is `smithay-clipboard` below (decision 0702).
-arboard = "3"
 benilla-ui = { path = "../benilla-ui" }
+benilla-settings = { path = "../benilla-settings" }
+benilla-interface-files = { path = "../benilla-interface-files" }
 bevy.workspace = true
 wgpu.workspace = true
-# Optional: the dev overlays are its only consumers (the panel, the perf pill, the inspector
-# card), so a player build does not link it at all (`dev` feature, decision 1173).
-bevy_egui = { version = "0.39", optional = true }
 # Zero-copy POD→bytes for the shared light storage buffer (one per-frame write_buffer). Already in
 # the tree transitively; pinned to the same version as the dev-dep below.
 bytemuck = { version = "1", features = ["derive"] }
@@ -81,6 +52,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # (std's mpsc Sender is `!Sync`, so it can't be a Bevy resource without a mutex — the very thing this
 # bridge deletes). The canonical Bevy background-thread→channel→system idiom. See decision 0006.
 crossbeam-channel = "0.5"
+benilla-time.workspace = true
 benilla-assets = { path = "../benilla-assets", default-features = false }
 benilla-formats = { path = "../benilla-formats", default-features = false }
 benilla-protocol = { path = "../benilla-protocol" }
@@ -106,29 +78,6 @@ cosmic-text = "0.16"
 # public-in-crate types). Pinned to the exact version `cosmic-text` 0.16 depends on so there's one
 # `fontdb` in the graph.
 fontdb = "0.23"
-# kira renders the mix; the device it plays through is OURS (`sound::output`, decision 1857) —
-# kira's own `cpal` backend is not enabled on any target. On macOS that took cpal out of the graph
-# entirely: it could neither report a lost default device nor rebuild on one, and it discarded the
-# IO-cycle timestamp the deadline meters need. Off macOS cpal is back (1920) but as OUR device
-# layer under the same backend, not as kira's — the ring, the render thread and the meters are the
-# same code on every platform.
-kira = { version = "0.12", default-features = false, features = ["mp3", "wav", "pcm", "adpcm"] }
-# The realtime-audio allocation tripwire (decision 1857): `assert_no_alloc(|| …)` around the output
-# IO callback and the render pass aborts a DEBUG build on any allocation inside them, so a
-# realtime-safety regression fails a test or a smoke instead of reaching an ear. Release builds
-# compile it out (`disable_release`, the crate's default) and carry no allocator wrapper.
-assert_no_alloc = "1.1"
-# kira's own decoder, named directly for one trait: the mixer feeds streams through its own
-# `MediaSource` so kira's per-stream decode thread runs OUR code and can promote its QoS (decision
-# 1109 — a bare-spawned decode thread starves under the world-entry burst and zero-fills the mix).
-# No codecs of its own (kira's features enable those); must stay the version kira resolves — one
-# symphonia in the graph, or the trait impl won't line up.
-symphonia = { version = "0.5", default-features = false }
-# The mix tap's audio-thread → writer-thread ring (decision 1112): the tap effect must never
-# block or allocate on the render path. kira's own SPSC ring crate; kept on the version kira
-# resolves so the graph carries one rtrb.
-rtrb = "0.3"
-mint = "0.5"
 # The gossip greeting is a weighted random DRAW per menu-open, not a fixed pick (wow-re
 # `gossip-npctext-law.md` — the reference re-rolls in its gossip handler), so the app needs a uniform
 # source. Pinned to 0.8: the version `benilla-srp` already depends on, so this adds no crate.
@@ -187,8 +136,41 @@ objc2-foundation = { version = "0.2", features = ["NSArray", "NSData", "NSGeomet
 # unit, the discarded IO-cycle timestamp) are exactly what 1857 went direct to escape. On an
 # unsupported target cpal compiles to its Null host, which reports no device — the same silent
 # posture the old `stub.rs` had, without a second file to rot.
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))'.dependencies]
 cpal = "0.17"
+
+# arboard has no wasm32 backend; the browser uses the app's clipboard adapter.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = "3"
+# The production mixer remains native-only while the browser composition uses
+# an intentionally silent sound-message sink. kira has no cpal backend enabled;
+# the app owns the output device and realtime ring (decisions 1857/1920).
+kira = { version = "0.12", default-features = false, features = ["mp3", "wav", "pcm", "adpcm"] }
+assert_no_alloc = "1.1"
+# Keep the decoder and ring versions aligned with kira's graph.
+symphonia = { version = "0.5", default-features = false }
+rtrb = "0.3"
+mint = "0.5"
+
+# `rand` uses the browser's Web Crypto API on wasm32; getrandom deliberately requires the
+# embedding application to opt into that backend.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+kira = { version = "0.12", default-features = false, features = ["symphonia"] }
+serde_json = "1"
+benilla-auth-web = { path = "../benilla-auth-web" }
+getrandom = { workspace = true, features = ["js"] }
+js-sys = "0.3"
+wasm-bindgen = "=0.2.122"
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "CloseEvent",
+    "ErrorEvent",
+    "Event",
+    "Location",
+    "MessageEvent",
+    "WebSocket",
+    "Window",
+] }
 
 # Windows: the journal's and the probes' CPU clocks (decision 2219, `perf::clock`) —
 # `GetProcessTimes`, `GetThreadTimes` and `GetSystemTimes`, the twins of the `getrusage`,

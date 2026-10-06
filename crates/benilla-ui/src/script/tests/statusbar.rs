@@ -5,7 +5,7 @@ use crate::script::*;
 
 #[test]
 fn statusbar_methods_exist_only_on_statusbars() {
-    let s = script();
+    let mut s = script();
     let ok: bool = s
         .eval(
             r#"
@@ -23,7 +23,7 @@ fn statusbar_methods_exist_only_on_statusbars() {
 
 #[test]
 fn statusbar_value_clamps_and_minmax_swaps() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local b = CreateFrame("StatusBar", "SbClamp")
@@ -44,7 +44,7 @@ fn statusbar_value_clamps_and_minmax_swaps() {
 
 #[test]
 fn statusbar_setvalue_fires_onvaluechanged() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local b = CreateFrame("StatusBar", "SbEvt")
@@ -181,7 +181,7 @@ fn statusbar_bar_region_crops_its_texture_rather_than_stretching_it() {
 
 #[test]
 fn statusbar_get_texture_returns_the_bar_region() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local b = CreateFrame("StatusBar", "SbTex")

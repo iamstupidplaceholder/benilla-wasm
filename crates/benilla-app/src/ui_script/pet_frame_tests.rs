@@ -26,23 +26,23 @@ use super::test_ui::load_ui as load_xml;
 fn load_pet_frame() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\BuffFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\CombatFeedback.xml");
-    load_xml(&s, "Interface\\FrameXML\\PlayerFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PartyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\TargetFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BuffFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CombatFeedback.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PlayerFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PartyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TargetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PetFrame.xml");
     s.set_unit(
         "player",
         Some(UnitState {
@@ -452,7 +452,7 @@ fn every_leg_of_the_pet_frame_click_reaches_a_live_binding() {
 /// The GlobalStrings the happiness tooltip resolves by key. Loaded from the MPQ in production; the
 /// test declares the ones it reads, the pet-bar tests' convention. (That the real keys exist in the
 /// shipped file is asserted separately, by name, in `ui_pet_stats`.)
-fn declare_happiness_strings(s: &UiScript) {
+fn declare_happiness_strings(s: &mut UiScript) {
     s.run(
         "PET_HAPPINESS1 = 'Unhappy' PET_HAPPINESS2 = 'Content' PET_HAPPINESS3 = 'Happy' \
          PET_DAMAGE_PERCENTAGE = 'Damage: %d%%' \
@@ -490,7 +490,7 @@ fn stats(
 #[test]
 fn the_happiness_icon_shows_per_bucket_and_hides_for_a_non_hunter_pet() {
     let mut s = load_pet_frame();
-    declare_happiness_strings(&s);
+    declare_happiness_strings(&mut s);
     s.set_unit("pet", Some(pet("Grimjaw", 72, 45, 80, 2)));
 
     for (bucket, tip, rate, loyalty_line) in [
@@ -537,7 +537,7 @@ fn the_happiness_icon_shows_per_bucket_and_hides_for_a_non_hunter_pet() {
 #[test]
 fn happiness_bucket_zero_keeps_the_icon_showing() {
     let mut s = load_pet_frame();
-    declare_happiness_strings(&s);
+    declare_happiness_strings(&mut s);
     s.set_unit("pet", Some(pet("Grimjaw", 72, 45, 80, 2)));
 
     s.set_pet_stats(true, stats(true, Some(0), 100.0, 0.0));
@@ -561,7 +561,7 @@ fn happiness_bucket_zero_keeps_the_icon_showing() {
 #[test]
 fn unit_happiness_repaints_only_the_icon() {
     let mut s = load_pet_frame();
-    declare_happiness_strings(&s);
+    declare_happiness_strings(&mut s);
     s.set_unit("pet", Some(pet("Grimjaw", 72, 45, 80, 2)));
     s.set_pet_stats(true, stats(true, Some(1), 75.0, -10.0));
     s.fire_event("UNIT_PET", vec![ScriptValue::Str("player".into())]);
@@ -600,7 +600,7 @@ fn unit_happiness_repaints_only_the_icon() {
 /// the mana bar and simply covers the rail.
 #[test]
 fn the_pet_art_paints_over_the_bars() {
-    let s = load_pet_frame();
+    let mut s = load_pet_frame();
     let level: (i64, i64, i64) = s
         .eval(
             "return PetFrameTexture:GetParent():GetFrameLevel(), \

@@ -316,6 +316,8 @@ impl Plugin for UiUnitPlugin {
             load_exhaustion_rows.in_set(crate::ui_script::UiFeed),
         )
         .add_systems(PostStartup, (load_default_languages, load_languages));
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(PostStartup, load_unit_names);
     }
 }
 
@@ -330,12 +332,37 @@ pub(crate) struct DefaultLanguagesRes(pub(crate) benilla_formats::DefaultLanguag
 #[derive(Resource)]
 pub(crate) struct LanguagesRes(pub(crate) benilla_formats::Languages);
 
+#[derive(Resource)]
+pub(crate) struct UnitNamesRes(pub(crate) benilla_formats::UnitNames);
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct UnitCatalogs<'w> {
+    pub(crate) classes: Option<Res<'w, crate::chr_classes::ChrClassTable>>,
+    pub(crate) names: Option<Res<'w, UnitNamesRes>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_unit_names(mut commands: Commands, assets: Option<Res<benilla_assets::WorldAssets>>) {
+    let Some(assets) = assets else { return };
+    use benilla_assets::LockRecover;
+    let loaded = {
+        let mut chain = assets.chain.lock_recover();
+        benilla_formats::load_unit_names(&mut *chain)
+    };
+    match loaded {
+        Ok(names) => {
+            commands.insert_resource(UnitNamesRes(names));
+        }
+        Err(error) => warn!("ui_unit: localized unit names unavailable: {error:#}"),
+    }
+}
+
 fn load_languages(mut commands: Commands, assets: Option<Res<benilla_assets::WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         use benilla_assets::LockRecover;
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_languages(&mut chain)
+        benilla_formats::load_languages(&mut *chain)
     };
     match loaded {
         Ok(langs) => {
@@ -448,7 +475,7 @@ fn load_default_languages(
     let loaded = {
         use benilla_assets::LockRecover;
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_default_languages(&mut chain)
+        benilla_formats::load_default_languages(&mut *chain)
     };
     match loaded {
         Ok(langs) => {
@@ -532,18 +559,25 @@ fn feed_default_language(
 fn load_exhaustion_rows(
     script: Option<NonSendMut<UiScript>>,
     assets: Option<Res<benilla_assets::WorldAssets>>,
+    delivered: Option<Res<ExhaustionRows>>,
     mut seeded: Local<crate::ui_script::VmMemo<bool>>,
 ) {
-    let (Some(mut script), Some(assets)) = (script, assets) else {
+    let Some(mut script) = script else {
         return;
     };
+    if delivered.is_none() && assets.is_none() {
+        return;
+    }
     if !seeded.claim(&script) {
         return;
     }
-    let loaded = {
+    let loaded = if let Some(rows) = delivered {
+        Ok(rows.0.clone())
+    } else {
         use benilla_assets::LockRecover;
+        let assets = assets.unwrap();
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_exhaustion(&mut chain)
+        benilla_formats::load_exhaustion(&mut *chain)
     };
     match loaded {
         Ok(rows) => {
@@ -557,6 +591,9 @@ fn load_exhaustion_rows(
         Err(e) => error!("ui_unit: Exhaustion.dbc failed — shipped-table fallback holds: {e:#}"),
     }
 }
+
+#[derive(Resource)]
+pub(crate) struct ExhaustionRows(pub(crate) Vec<benilla_formats::ExhaustionRow>);
 
 /// Melee swing → the `UNIT_COMBAT` vocabulary (§5-verified shape, wow-re
 /// `unit-combat-event-law.md`): the action comes from the melee wrapper's per-victim-state table
@@ -1058,9 +1095,8 @@ pub(crate) struct UnitStores<'w, 's> {
 /// its cache-resolved name and its `UnitReaction` value (`1..8`, or `0` for tokens whose reaction we
 /// don't resolve — everything but `"target"`; see [`feed_units`]).
 ///
-/// `classes` is `ChrClasses.dbc`, absent when the client data failed to load. Only the relic column
-/// is read off it — the class NAMES are this file's own table, because they are localized display
-/// strings rather than a DBC column we can key on.
+/// `classes` is the original ChrClasses.dbc, supplying both the localized display
+/// name and the relic-slot column. Stable file tokens remain independent of locale.
 pub(crate) fn snapshot(
     store: &ObjectStore,
     name: Option<String>,
@@ -1122,7 +1158,10 @@ pub(crate) fn snapshot(
         reaction,
         race: race.map(|(n, _)| n.to_string()),
         race_file: race.map(|(_, f)| f.to_string()),
-        class: class.map(|(n, _)| n.to_string()),
+        class: class_id
+            .and_then(|id| classes.and_then(|c| c.name(u32::from(id))))
+            .map(str::to_string)
+            .or_else(|| class.map(|(n, _)| n.to_string())),
         class_file: class.map(|(_, f)| f.to_string()),
         // `UnitHasRelicSlot 0x519e50` — the class byte against `ChrClasses.dbc` field 16, under
         // the reference's own gate and in its order: TYPEMASK_PLAYER first (`0x519e8d`,
@@ -1196,8 +1235,8 @@ pub(crate) fn snapshot(
 /// Fill a snapshot's guid-keyed tooltip fields (decision 0276's unit law): players flag
 /// `is_player` (the "Race Class (Player)" level line); creatures pull subtitle/type/rank/
 /// civilian/leader from the ask-once template record, and resolve the faction-name line.
-/// The type word is `CreatureType.dbc`'s enUS display list (ids 1..9 — a fixed 1.12
-/// vocabulary; 10 "Not specified" shows nothing).
+/// Display names come from the active original ChrRaces / CreatureType catalogs.
+/// Type 10 "Not specified" retains the existing tooltip omission policy.
 pub(crate) fn enrich_unit(
     state: &mut UnitState,
     guid: u64,
@@ -1205,7 +1244,15 @@ pub(crate) fn enrich_unit(
     store: &ObjectStore,
     factions: Option<&Factions>,
     self_store: Option<&ObjectStore>,
+    unit_names: Option<&benilla_formats::UnitNames>,
 ) {
+    if let Some(names) = unit_names {
+        state.race = store
+            .0
+            .unit_race()
+            .and_then(|id| names.race(u32::from(id)))
+            .map(str::to_string);
+    }
     if benilla_protocol::guid::is_player(guid) {
         state.is_player = true;
         // No faction line for players — their PLAYER,* factions carry no reputation slot, so
@@ -1222,7 +1269,14 @@ pub(crate) fn enrich_unit(
     let rec = names.creature_record(entry);
     if let Some(rec) = rec {
         state.subtitle = rec.subname.clone();
-        state.creature_type_name = creature_type_word(rec.creature_type).map(str::to_string);
+        state.creature_type_name = if let Some(names) = unit_names {
+            (rec.creature_type != 10)
+                .then(|| names.creature(rec.creature_type))
+                .flatten()
+                .map(str::to_string)
+        } else {
+            creature_type_word(rec.creature_type).map(str::to_string)
+        };
         // The client's one rank getter, both gates (`gated_rank`, decision 0782) — never `rec.rank`
         // directly: an enslaved elite reads rank 0, so it loses its border dragon, its ELITE
         // tooltip word and its world-boss skull together, exactly as in the reference.
@@ -1603,7 +1657,7 @@ fn feed_units(
     // `ChrClasses.dbc` field 16, the only thing `UnitHasRelicSlot` reads. Absent when the client
     // data failed to load, in which case no class reads as having a relic slot — the reference's
     // own bounds-check-fails leg.
-    classes: Option<Res<crate::chr_classes::ChrClassTable>>,
+    catalogs: UnitCatalogs,
 
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
     selection: Res<Selection>,
@@ -1650,6 +1704,8 @@ fn feed_units(
     {
         script.set_billing_time_rested(entered);
     }
+    let classes = &catalogs.classes;
+    let unit_names = catalogs.names.as_deref().map(|n| &n.0);
     let chr = classes.as_deref().map(|t| &t.0);
     // One reborrow so the memo (`feed.vm`) and `feed.warned_sideless` can be borrowed as the
     // disjoint fields they are — through the `ResMut` deref they would alias.
@@ -1698,6 +1754,8 @@ fn feed_units(
             || group_changed
             || reps_changed
             || factions_changed
+            || classes.as_ref().is_some_and(|r| r.is_changed())
+            || catalogs.names.as_ref().is_some_and(|r| r.is_changed())
             || interact_changed,
     );
     stores.removed.clear();
@@ -1712,6 +1770,15 @@ fn feed_units(
     let player = self_pair.map(|(store, guid)| {
         let name = names.resolve(guid.0, &commands).map(str::to_string);
         let mut s = snapshot(store, name, 0, chr);
+        enrich_unit(
+            &mut s,
+            guid.0,
+            &names,
+            store,
+            factions.as_deref(),
+            Some(store),
+            unit_names,
+        );
         s.is_player = true;
         // The stated `is_connected` gap, closed for every token this feed pushes — the field's own
         // doc names the feed as what must set it ("mirroring `exists`"), and a token we push at all
@@ -1802,6 +1869,7 @@ fn feed_units(
             store,
             factions.as_deref(),
             self_pair.map(|(s, _)| s),
+            unit_names,
         );
         Some(s)
     });
@@ -1850,6 +1918,7 @@ fn feed_units(
                 store,
                 factions.as_deref(),
                 self_pair.map(|(s, _)| s),
+                unit_names,
             );
             Some(s)
         });
@@ -1938,6 +2007,7 @@ fn feed_units(
                 store,
                 factions.as_deref(),
                 self_pair.map(|(s, _)| s),
+                unit_names,
             );
             Some(s)
         });
@@ -2043,7 +2113,7 @@ fn feed_units(
             // (byte-verified: login is structurally silent). The pool watcher never messages.
             if let Some(p) = prev {
                 let line = rest_state_message(p.0, rest.0)
-                    .and_then(|key| crate::ui_action::keyed_line(&script, key));
+                    .and_then(|key| crate::ui_action::keyed_line(&mut script, key));
                 crate::ui_action::show_messages(&mut script, &mut sink, "ui_unit", line);
             }
             // The two self-only flag events, each on its own bits' edge (`0x5eead0` and
@@ -2264,12 +2334,9 @@ fn feed_units(
             // not one, so it is emitted `unkeyed` on the handler's own chat surface rather than
             // pushed through `Shown::keyed`, whose unknown-key fallback would turn it RED (2054).
             let lines = [
-                crate::ui_action::keyed_line(&script, toast),
+                crate::ui_action::keyed_line(&mut script, toast),
                 script
-                    .lua()
-                    .globals()
-                    .get::<String>(verbose)
-                    .ok()
+                    .global_string(verbose)
                     .filter(|t| !t.is_empty())
                     .map(|t| {
                         crate::ui_action::Shown::unkeyed(benilla_ui::messages::MsgKind::Chat, t)
@@ -2463,7 +2530,7 @@ mod tests {
             )
             .unwrap();
             fire_transitions(&mut s, "pet", prev.as_ref(), &cur, edges);
-            s.eval::<Vec<String>>("return SEEN").unwrap()
+            s.eval_sequence::<String>("return SEEN").unwrap()
         };
         const PET: u64 = 0xF140_0000_0000_0001;
         let base = UnitState {
@@ -2521,7 +2588,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<crate::player::Player>()
             .add_systems(Update, (feed_player_control, feed_farsight_focus));
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 r#"
@@ -2547,7 +2614,7 @@ mod tests {
             app.update();
             let mut s = app.world_mut().non_send_resource_mut::<UiScript>();
             s.resolve();
-            let out = s.eval::<Vec<String>>("return SEEN").unwrap();
+            let out = s.eval_sequence::<String>("return SEEN").unwrap();
             s.run("SEEN = {}").unwrap();
             out
         };
@@ -2603,7 +2670,7 @@ mod tests {
             )
             .unwrap();
             fire_transitions(&mut s, "target", Some(&prev), &cur, &FieldEdges::default());
-            s.eval::<Vec<String>>("return SEEN").unwrap()
+            s.eval_sequence::<String>("return SEEN").unwrap()
         };
         let base = UnitState {
             exists: true,
@@ -2678,7 +2745,7 @@ mod tests {
             )
             .unwrap();
             fire_transitions(&mut s, "target", prev.as_ref(), &cur, edges);
-            s.eval::<Vec<String>>("return SEEN").unwrap()
+            s.eval_sequence::<String>("return SEEN").unwrap()
         };
         const THEM: u64 = 0x2a;
         let base = UnitState {
@@ -2753,7 +2820,7 @@ mod tests {
             )
             .unwrap();
             fire_transitions(&mut s, "target", prev.as_ref(), &cur, edges);
-            s.eval::<Vec<String>>("return SEEN").unwrap()
+            s.eval_sequence::<String>("return SEEN").unwrap()
         };
         const MOB: u64 = 0xF130_0000_0000_0007;
         let moved = FieldEdges::of(&[(MOB, benilla_protocol::field::FIELD_UNIT_DYNAMIC_FLAGS)]);
@@ -2814,7 +2881,7 @@ mod tests {
             .init_resource::<crate::ui_guild::GuildState>();
         let (tx, _rx) = crossbeam_channel::unbounded();
         app.insert_resource(NetCommands(tx));
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 r#"
@@ -2854,7 +2921,7 @@ mod tests {
             app.world_mut().run_system_once(feed_units).unwrap();
             let mut s = app.world_mut().non_send_resource_mut::<UiScript>();
             s.resolve();
-            let out = s.eval::<Vec<String>>("return SEEN").unwrap();
+            let out = s.eval_sequence::<String>("return SEEN").unwrap();
             s.run("SEEN = {}").unwrap();
             out
         };
@@ -3170,7 +3237,7 @@ mod tests {
         let rank_of = |fields: &[(u16, u32)]| {
             let store = ObjectStore(ObjectFields::from_pairs(fields));
             let mut s = UnitState::default();
-            enrich_unit(&mut s, GUID, &names, &store, None, None);
+            enrich_unit(&mut s, GUID, &names, &store, None, None, None);
             s.rank
         };
 
@@ -3190,7 +3257,7 @@ mod tests {
         // border stays plain until the creature query answers.
         let store = ObjectStore(ObjectFields::from_pairs(&[]));
         let mut s = UnitState::default();
-        enrich_unit(&mut s, GUID ^ (1 << 24), &names, &store, None, None);
+        enrich_unit(&mut s, GUID ^ (1 << 24), &names, &store, None, None, None);
         assert_eq!(s.rank, 0, "an un-queried creature has no classification");
     }
 
@@ -3243,7 +3310,15 @@ mod tests {
 
         let line_for = |names: &NameCache| {
             let mut state = UnitState::default();
-            enrich_unit(&mut state, GUID, names, &store, Some(&factions), Some(&me));
+            enrich_unit(
+                &mut state,
+                GUID,
+                names,
+                &store,
+                Some(&factions),
+                Some(&me),
+                None,
+            );
             state
         };
 
@@ -3327,9 +3402,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = UiScript::new().expect("VM");
+        let mut s = UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).unwrap_or_default();
+        let mut g = |key: &str| s.global_string(key).unwrap_or_default();
 
         for (was, now) in [(false, true), (true, false)] {
             let (toast, verbose) = pvp_announcement(Some(was), now).expect("an edge speaks");

@@ -158,13 +158,27 @@ fn read_monster_move_spline(r: &mut &[u8], catmull_rom: bool) -> io::Result<Vec<
     }
     // Endpoint (absolute) + packed offsets from it; invert to absolute, endpoint last.
     if count == 0 {
+        if r.len() == 12 {
+            return Ok(vec![Vector3d::read(r)?]);
+        }
         return Ok(Vec::new());
     }
     let endpoint = Vector3d::read(r)?;
     let mut points = Vec::with_capacity(capacity_hint(count, 0xFFFF));
     // `count == 2` ⇒ the producer skipped its offset loop entirely (`last_idx > 1`); the destination is
     // the whole payload, and the caller pairs it with the packet's exact `start`.
-    let offsets = if count > 2 { count - 1 } else { 0 };
+    // MaNGOS Zero's WriteLinearPath writes an OFFSET count, followed by
+    // destination + exactly count packed offsets. vMaNGOS writes a point
+    // count (count - 1 offsets, with its documented count==2 exception).
+    // Recognize Zero by its exact remaining span, not by swallowing a tail.
+    let zero_span = u64::from(count) * 4;
+    let offsets = if r.len() as u64 == zero_span {
+        count
+    } else if count > 2 {
+        count - 1
+    } else {
+        0
+    };
     for _ in 0..offsets {
         let off = packed_to_vector3d(read_i32_le(r)?);
         points.push(Vector3d {

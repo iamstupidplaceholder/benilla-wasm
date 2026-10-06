@@ -153,18 +153,15 @@ fn feed_craft(
         let store = self_store.single().ok()?;
         let (rank, max_rank, bonus) = skill_rank(store, line);
         let effective = rank.saturating_add_signed(bonus);
-        let name = skill_lines
-            .catalog
-            .line(line)
-            .map(|l| l.name.clone())
-            .unwrap_or_else(|| format!("Skill {line}"));
-        let text = crate::ui_script::token_text(&script);
-        let ctx = benilla_formats::TokenContext {
+        let name = skill_lines.catalog.line(line)?.name.clone();
+        let mut get = |key: &str| script.global_string(key);
+        let mut text = crate::ui_script::token_text(&mut get);
+        let mut ctx = benilla_formats::TokenContext {
             durations: &spells.durations,
             radii: &spells.radii,
             lookup: &|id| spells.catalog.get(id),
             home_area: None,
-            text: &text,
+            text: &mut text,
         };
         // The **admission law** — `0x5e9c20`, byte-verified (decision 1124): the player knows the
         // spell, it is not hidden (`Attributes & 0x20`), and its `castUI` **equals this window's
@@ -253,7 +250,7 @@ fn feed_craft(
                     description: d
                         .description
                         .as_deref()
-                        .map(|t| benilla_formats::substitute(t, d, &ctx)),
+                        .map(|t| benilla_formats::substitute(t, d, &mut ctx)),
                     needs_item_target,
                     reagents,
                     tools,

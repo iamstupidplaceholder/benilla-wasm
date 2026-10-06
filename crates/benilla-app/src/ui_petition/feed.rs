@@ -83,8 +83,8 @@ pub(super) fn feed_petition(
     let resolved: Vec<crate::ui_action::Shown> = composed
         .iter()
         .filter_map(|e| {
-            crate::ui_action::ui_error_text(e, &|key| {
-                script.lua().globals().get::<String>(key).ok()
+            crate::ui_action::ui_error_text(e, &mut |key| {
+                script.global_string(key)
             })
             .map(|text| crate::ui_action::Shown::keyed(e.key, text))
         })

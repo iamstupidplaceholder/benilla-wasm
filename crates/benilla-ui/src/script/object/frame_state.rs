@@ -4,7 +4,9 @@
 //! id/handle plumbing, `CreateFrame`, and the method-table wiring stay there; this module's
 //! [`install`] just populates its share of the one shared method table.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{
+    FromLua, LuaContext, MultiValue as LuaMultiValue, Table as LuaTable, Value as LuaValue, Vm,
+};
 
 use crate::script::region_map::{set_shared, Side};
 
@@ -12,79 +14,80 @@ use crate::order::Strata;
 use crate::script::{event, Backdrop, Insets, Model};
 use crate::widget::FrameKind;
 
-use super::{decode_id, draw_layer_from_str, frame_handle_of, frame_wrapper, strata_from_str};
+use super::{
+    decode_id_context, draw_layer_from_str, frame_handle_of_context, frame_wrapper_context,
+    strata_from_str,
+};
+
+fn type_chain(kind: FrameKind) -> &'static [&'static str] {
+    match kind {
+        FrameKind::Frame => &["Frame", "Region"],
+        FrameKind::WorldFrame => &["Frame", "Region"],
+        FrameKind::Button => &["Button", "Frame", "Region"],
+        FrameKind::CheckButton => &["CheckButton", "Button", "Frame", "Region"],
+        // `CLootButton::IsObjectType 0x495af0` prepends its own name to the base's three
+        // (`"Button"` `[0x879954]`, `"Frame"` `[0x878560]`, `"Region"` `[0x878870]`) — read
+        // off the function, not assumed from the class hierarchy.
+        FrameKind::LootButton => &["LootButton", "Button", "Frame", "Region"],
+        FrameKind::EditBox => &["EditBox", "Frame", "Region"],
+        FrameKind::StatusBar => &["StatusBar", "Frame", "Region"],
+        FrameKind::Slider => &["Slider", "Frame", "Region"],
+        FrameKind::ScrollFrame => &["ScrollFrame", "Frame", "Region"],
+        FrameKind::Model => &["Model", "Frame", "Region"],
+        // 4 deep: `PlayerModel` derives from `Model`, and `DressUpModel` (1969) and
+        // `TabardModel` (1977) derive from it in turn, for the roster's maximum depth of 5
+        // (wow-re `ui/scratch/widget-type-identity.md` §6).
+        FrameKind::PlayerModel => &["PlayerModel", "Model", "Frame", "Region"],
+        FrameKind::DressUpModel => &["DressUpModel", "PlayerModel", "Model", "Frame", "Region"],
+        FrameKind::TabardModel => &["TabardModel", "PlayerModel", "Model", "Frame", "Region"],
+        FrameKind::MessageFrame => &["MessageFrame", "Frame", "Region"],
+        FrameKind::ScrollingMessageFrame => &["ScrollingMessageFrame", "Frame", "Region"],
+        FrameKind::ColorSelect => &["ColorSelect", "Frame", "Region"],
+        FrameKind::SimpleHtml => &["SimpleHTML", "Frame", "Region"],
+        FrameKind::MovieFrame => &["MovieFrame", "Frame", "Region"],
+        FrameKind::GameTooltip => &["GameTooltip", "Frame", "Region"],
+        FrameKind::Minimap => &["Minimap", "Frame", "Region"],
+    }
+}
+
+fn chain_of_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<&'static [&'static str]> {
+    let h = frame_handle_of_context(lua, this)?;
+    let model = lua.app_data_ref::<Model>().expect("model");
+    Ok(model
+        .arena
+        .frame(h)
+        .map_or(&["Frame", "Region"][..], |f| type_chain(f.kind)))
+}
 
 /// Populate `m`'s visibility/hierarchy/strata/backdrop/mouse methods (see the module doc).
-pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install(vm: &mut Vm, methods: &LuaTable) -> benilla_lua::Result<()> {
     // Show / Hide / visibility. **`SetShown` is not here and must not come back**: the branchless
     // setter belongs to a later expansion — no 1.12 method table registers it, and neither the
     // stock chain nor either addon corpus calls it (decision 2142's census). A frame is shown or
     // hidden by the two verbs the era has.
-    m.set(
-        "Show",
-        lua.create_function(|lua, this: Table| set_shown(lua, &this, true))?,
-    )?;
-    m.set(
-        "Hide",
-        lua.create_function(|lua, this: Table| set_shown(lua, &this, false))?,
-    )?;
-    m.set(
-        "IsShown",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(
-                model.arena.frame(h).map(|f| f.shown).unwrap_or(false),
-            ))
-        })?,
-    )?;
-    m.set(
-        "IsVisible",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(
-                model
-                    .arena
-                    .frame(h)
-                    .map(|f| f.effective_visible)
-                    .unwrap_or(false),
-            ))
-        })?,
-    )?;
     // Identity / hierarchy
-    set_shared(lua, m, Side::Frame, "GetName", |lua, this: Table| {
-        let h = frame_handle_of(lua, &this)?;
-        let name = {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            model.arena.frame(h).and_then(|f| f.name.clone())
-        };
-        match name {
-            Some(n) => Ok(Value::String(lua.create_string(&n)?)),
-            None => Ok(Value::Nil),
-        }
-    })?;
+    set_shared(
+        vm,
+        &methods,
+        Side::Frame,
+        "GetName",
+        |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let name = {
+                let model = lua.app_data_ref::<Model>().expect("model");
+                model.arena.frame(h).and_then(|f| f.name.clone())
+            };
+            match name {
+                Some(name) => Ok(LuaValue::from(name)),
+                None => Ok(LuaValue::Nil),
+            }
+        },
+    )?;
     // GetID/SetID — the app-meaning-free numeric label (XML `id=`, the client's `+0xb4`): a
     // dropdown row's list position, a tab index. Default 0 (see `Frame::wow_id`).
-    m.set(
-        "GetID",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(model.arena.frame(h).map(|f| f.wow_id).unwrap_or(0))
-        })?,
-    )?;
-    m.set(
-        "SetID",
-        lua.create_function(|lua, (this, id): (Table, i64)| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            if let Some(f) = model.arena.frame_mut(h) {
-                f.wow_id = id;
-            }
-            Ok(())
-        })?,
-    )?;
     // ── GetObjectType / IsObjectType, frame side (wow-re `widget-type-identity.md` §6) ──────────
     //
     // The region side landed first because a FontString found it; `_Nameplates` is why this half
@@ -108,80 +111,48 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //    `FrameKind::Cooldown` that modelled the mechanism first-class (0137 phase 4) is gone, so
     //    `CreateFrame("Cooldown")` is the reference's own unknown-type refusal, never an announced
     //    Era type to a Lua ecosystem that branches on presence (the superset 1189 took back out).
-    fn type_chain(kind: FrameKind) -> &'static [&'static str] {
-        match kind {
-            FrameKind::Frame => &["Frame", "Region"],
-            FrameKind::WorldFrame => &["Frame", "Region"],
-            FrameKind::Button => &["Button", "Frame", "Region"],
-            FrameKind::CheckButton => &["CheckButton", "Button", "Frame", "Region"],
-            // `CLootButton::IsObjectType 0x495af0` prepends its own name to the base's three
-            // (`"Button"` `[0x879954]`, `"Frame"` `[0x878560]`, `"Region"` `[0x878870]`) — read
-            // off the function, not assumed from the class hierarchy.
-            FrameKind::LootButton => &["LootButton", "Button", "Frame", "Region"],
-            FrameKind::EditBox => &["EditBox", "Frame", "Region"],
-            FrameKind::StatusBar => &["StatusBar", "Frame", "Region"],
-            FrameKind::Slider => &["Slider", "Frame", "Region"],
-            FrameKind::ScrollFrame => &["ScrollFrame", "Frame", "Region"],
-            FrameKind::Model => &["Model", "Frame", "Region"],
-            // 4 deep: `PlayerModel` derives from `Model`, and `DressUpModel` (1969) and
-            // `TabardModel` (1977) derive from it in turn, for the roster's maximum depth of 5
-            // (wow-re `ui/scratch/widget-type-identity.md` §6).
-            FrameKind::PlayerModel => &["PlayerModel", "Model", "Frame", "Region"],
-            FrameKind::DressUpModel => &["DressUpModel", "PlayerModel", "Model", "Frame", "Region"],
-            FrameKind::TabardModel => &["TabardModel", "PlayerModel", "Model", "Frame", "Region"],
-            FrameKind::MessageFrame => &["MessageFrame", "Frame", "Region"],
-            FrameKind::ScrollingMessageFrame => &["ScrollingMessageFrame", "Frame", "Region"],
-            FrameKind::ColorSelect => &["ColorSelect", "Frame", "Region"],
-            FrameKind::SimpleHtml => &["SimpleHTML", "Frame", "Region"],
-            FrameKind::MovieFrame => &["MovieFrame", "Frame", "Region"],
-            FrameKind::GameTooltip => &["GameTooltip", "Frame", "Region"],
-            FrameKind::Minimap => &["Minimap", "Frame", "Region"],
-        }
-    }
-    fn chain_of(lua: &Lua, this: &Table) -> mlua::Result<&'static [&'static str]> {
-        let h = frame_handle_of(lua, this)?;
-        let model = lua.app_data_ref::<Model>().expect("model");
-        Ok(model
-            .arena
-            .frame(h)
-            .map_or(&["Frame", "Region"][..], |f| type_chain(f.kind)))
-    }
-
-    set_shared(lua, m, Side::Frame, "GetObjectType", |lua, this: Table| {
-        Ok(Value::String(lua.create_string(chain_of(lua, &this)?[0])?))
-    })?;
+    set_shared(
+        vm,
+        &methods,
+        Side::Frame,
+        "GetObjectType",
+        |lua, this: LuaTable| Ok(LuaValue::from(chain_of_context(lua, &this)?[0])),
+    )?;
 
     // Same four traps as the region twin (see `script::region`): case-insensitive whole-string,
     // number 1 on a hit and nil on a miss, exactly one value either way, and a non-string
     // non-number argument raises the reference's own `Usage:` text.
     set_shared(
-        lua,
-        m,
+        vm,
+        &methods,
         Side::Frame,
         "IsObjectType",
-        |lua, (this, want): (Table, Value)| {
-            let chain = chain_of(lua, &this)?;
+        |lua, (this, want): (LuaTable, LuaValue)| {
+            let chain = chain_of_context(lua, &this)?;
             let want = match &want {
-                Value::String(s) => s.to_str()?.to_string(),
-                Value::Number(n) => n.to_string(),
-                Value::Integer(i) => i.to_string(),
+                LuaValue::String(value) => value
+                    .as_str()
+                    .map(str::to_owned)
+                    .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?,
+                LuaValue::Number(number) => number.to_string(),
+                LuaValue::Integer(integer) => integer.to_string(),
                 _ => {
-                    let h = frame_handle_of(lua, &this)?;
+                    let h = frame_handle_of_context(lua, &this)?;
                     let model = lua.app_data_ref::<Model>().expect("model");
                     let who = model
                         .arena
                         .frame(h)
                         .and_then(|f| f.name.clone())
                         .unwrap_or_else(|| "<unnamed>".to_string());
-                    return Err(mlua::Error::runtime(format!(
+                    return Err(benilla_lua::Error::runtime(format!(
                         "Usage: {who}:IsObjectType(\"TYPE\")"
                     )));
                 }
             };
             Ok(if chain.iter().any(|t| want.eq_ignore_ascii_case(t)) {
-                Value::Number(1.0)
+                LuaValue::Number(1.0)
             } else {
-                Value::Nil
+                LuaValue::Nil
             })
         },
     )?;
@@ -219,56 +190,27 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // read. No caller in the 219-addon corpus, the director's AddOns, or the shipped FrameXML ever
     // omits the argument: `JIM_toolbox/Config2/Pulse_Config.lua:118` is the corpus's only
     // `IsFrameType` site and it passes `"Slider"`.
-    m.set(
-        "GetFrameType",
-        lua.create_function(|lua, this: Table| {
-            Ok(Value::String(lua.create_string(chain_of(lua, &this)?[0])?))
-        })?,
-    )?;
-    m.set(
-        "IsFrameType",
-        lua.create_function(|lua, (this, want): (Table, Value)| {
-            let chain = chain_of(lua, &this)?;
-            let want = match &want {
-                Value::String(s) => s.to_str()?.to_string(),
-                Value::Number(n) => n.to_string(),
-                Value::Integer(i) => i.to_string(),
-                _ => {
-                    let h = frame_handle_of(lua, &this)?;
-                    let model = lua.app_data_ref::<Model>().expect("model");
-                    let who = model
-                        .arena
-                        .frame(h)
-                        .and_then(|f| f.name.clone())
-                        .unwrap_or_else(|| "<unnamed>".to_string());
-                    return Err(mlua::Error::runtime(format!(
-                        "Usage: {who}:IsFrameType(\"TYPE\")"
-                    )));
-                }
+    set_shared(
+        vm,
+        &methods,
+        Side::Frame,
+        "GetParent",
+        |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let parent_id = {
+                let mut model = lua.app_data_mut::<Model>().expect("model");
+                model
+                    .arena
+                    .frame(h)
+                    .and_then(|f| f.parent)
+                    .map(|p| model.frame_id(p))
             };
-            Ok(if chain.iter().any(|t| want.eq_ignore_ascii_case(t)) {
-                Value::Number(1.0)
-            } else {
-                Value::Nil
-            })
-        })?,
+            match parent_id {
+                Some(id) => Ok(LuaValue::Table(frame_wrapper_context(lua, id)?)),
+                None => Ok(LuaValue::Nil),
+            }
+        },
     )?;
-
-    set_shared(lua, m, Side::Frame, "GetParent", |lua, this: Table| {
-        let h = frame_handle_of(lua, &this)?;
-        let parent_id = {
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            model
-                .arena
-                .frame(h)
-                .and_then(|f| f.parent)
-                .map(|p| model.frame_id(p))
-        };
-        match parent_id {
-            Some(pid) => Ok(Value::Table(frame_wrapper(lua, pid)?)),
-            None => Ok(Value::Nil),
-        }
-    })?;
     // ── The four structure queries: GetChildren / GetNumChildren / GetRegions / GetNumRegions ──
     //
     // Registered bindings in 1.12 (`GetNumRegions 0x773e60`, `GetRegions 0x773f60`,
@@ -332,38 +274,31 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // `<Frames>` descent, the ninth (`[Minimap+0x338]`) being the arrow `SetPlayerFacing 0x4eb8e0`
     // writes. We create none of them, so index 9 is nil here until the minimap grows its engine
     // children.
-    m.set(
-        "GetChildren",
-        lua.create_function(|lua, this: Table| {
-            let ids = children_of(lua, &this)?;
-            let mut out = Vec::with_capacity(ids.len());
-            for id in ids {
-                out.push(Value::Table(frame_wrapper(lua, id)?));
-            }
-            Ok(mlua::MultiValue::from_vec(out))
-        })?,
-    )?;
-    m.set(
-        "GetNumChildren",
-        lua.create_function(|lua, this: Table| Ok(children_of(lua, &this)?.len()))?,
-    )?;
-    m.set(
-        "GetRegions",
-        lua.create_function(|lua, this: Table| {
-            let ids = regions_of(lua, &this)?;
-            let mut out = Vec::with_capacity(ids.len());
-            for id in ids {
-                out.push(Value::Table(crate::script::region::region_wrapper(
-                    lua, id,
-                )?));
-            }
-            Ok(mlua::MultiValue::from_vec(out))
-        })?,
-    )?;
-    m.set(
-        "GetNumRegions",
-        lua.create_function(|lua, this: Table| Ok(regions_of(lua, &this)?.len()))?,
-    )?;
+    let get_children = vm.create_function("Frame:GetChildren", |lua, this: LuaTable| {
+        children_of_context(lua, &this)?
+            .into_iter()
+            .map(|id| frame_wrapper_context(lua, id).map(LuaValue::Table))
+            .collect::<benilla_lua::Result<LuaMultiValue>>()
+    })?;
+    vm.table_set_function(&methods, "GetChildren", &get_children)?;
+
+    let get_num_children = vm.create_function("Frame:GetNumChildren", |lua, this: LuaTable| {
+        Ok(children_of_context(lua, &this)?.len())
+    })?;
+    vm.table_set_function(&methods, "GetNumChildren", &get_num_children)?;
+
+    let get_regions = vm.create_function("Frame:GetRegions", |lua, this: LuaTable| {
+        regions_of_context(lua, &this)?
+            .into_iter()
+            .map(|id| crate::script::region::region_wrapper_context(lua, id).map(LuaValue::Table))
+            .collect::<benilla_lua::Result<LuaMultiValue>>()
+    })?;
+    vm.table_set_function(&methods, "GetRegions", &get_regions)?;
+
+    let get_num_regions = vm.create_function("Frame:GetNumRegions", |lua, this: LuaTable| {
+        Ok(regions_of_context(lua, &this)?.len())
+    })?;
+    vm.table_set_function(&methods, "GetNumRegions", &get_num_regions)?;
     // SetParent — the runtime reparent, per the byte-verified law (wow-re
     // `ui/scratch/setparent-runtime-strata-level.md`; decision 1323). The binding half
     // (`0x7a1550`): the parent argument is a frame table, a NAME string (`0x76c760`), or an
@@ -375,17 +310,17 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // state for direction, so hide and show must be fired from their own phase, never one
     // combined list.
     set_shared(
-        lua,
-        m,
+        vm,
+        &methods,
         Side::Frame,
         "SetParent",
-        |lua, args: mlua::MultiValue| {
+        |lua, args: LuaMultiValue| {
             let mut it = args.into_iter();
             let this = match it.next() {
-                Some(Value::Table(t)) => t,
-                _ => return Err(mlua::Error::runtime("expected a frame")),
+                Some(LuaValue::Table(table)) => table,
+                _ => return Err(benilla_lua::Error::runtime("expected a frame")),
             };
-            let h = frame_handle_of(lua, &this)?;
+            let h = frame_handle_of_context(lua, &this)?;
             let who = {
                 let model = lua.app_data_ref::<Model>().expect("model");
                 model
@@ -399,28 +334,31 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             // `$parent` expansion: `0x7a1550` calls `0x76c760` directly, and only the layout
             // vtable's `0x76c700` runs the token.
             let named = match &parent_arg {
-                Some(Value::String(s)) => Some(match s.to_str() {
-                    Ok(n) => super::prefetch_named_target(lua, n.as_ref(), None),
+                Some(LuaValue::String(value)) => Some(match value.as_str() {
+                    Ok(name) => super::prefetch_named_target_context(lua, name, None),
                     Err(_) => super::NamedTarget::unreadable(),
                 }),
+                _ => None,
+            };
+            let parent_table_id = match &parent_arg {
+                Some(LuaValue::Table(table)) => decode_id_context(lua, table).ok(),
                 _ => None,
             };
             let new_parent = {
                 let model = lua.app_data_ref::<Model>().expect("model");
                 match &parent_arg {
                     // Explicit nil reparents to the screen root (the strata/level RESET path).
-                    Some(Value::Nil) => None,
-                    Some(Value::Table(t)) => Some(
-                        decode_id(t)
-                            .ok()
+                    Some(LuaValue::Nil) => None,
+                    Some(LuaValue::Table(_)) => Some(
+                        parent_table_id
                             .and_then(|id| model.id_to_frame.get(&id).copied())
                             .ok_or_else(|| {
-                                mlua::Error::runtime(format!(
+                                benilla_lua::Error::runtime(format!(
                                     "{who}:SetParent(): Couldn't find region named ''"
                                 ))
                             })?,
                     ),
-                    Some(Value::String(_)) => {
+                    Some(LuaValue::String(_)) => {
                         // `_G[name]` + the **Frame** tag check — the reference's `0x76c760`
                         // (`0x7a1550`'s NAME-string path) type-guards against `[0xcf0c10]`, the
                         // narrow Frame id, not `SetPoint`'s root `[0xcf0c3c]`. So a global naming
@@ -429,7 +367,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                         let hit = super::resolve_named_target(&model, nt)
                             .and_then(|id| model.id_to_frame.get(&id).copied());
                         Some(hit.ok_or_else(|| {
-                            mlua::Error::runtime(format!(
+                            benilla_lua::Error::runtime(format!(
                                 "{who}:SetParent(): Couldn't find region named '{}'",
                                 nt.name
                             ))
@@ -438,7 +376,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     // Absent argument, or any other type: the reference never reaches the
                     // reparent slot (`0x87cb48` raise).
                     _ => {
-                        return Err(mlua::Error::runtime(format!(
+                        return Err(benilla_lua::Error::runtime(format!(
                             "{who}:SetParent(): Couldn't find region named ''"
                         )))
                     }
@@ -454,7 +392,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                         .frame(np)
                         .and_then(|f| f.name.clone())
                         .unwrap_or_else(|| "<unnamed>".to_string());
-                    return Err(mlua::Error::runtime(format!(
+                    return Err(benilla_lua::Error::runtime(format!(
                         "{who}:SetParent(): Would create a loop parenting to {pname}"
                     )));
                 }
@@ -467,7 +405,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             // the layout touch.
             let Some(hidden) = hidden else { return Ok(()) };
             let was_visible = !hidden.is_empty();
-            event::fire_visibility_changes(lua, hidden);
+            event::fire_visibility_changes_context(lua, hidden);
             let shown = {
                 let mut model = lua.app_data_mut::<Model>().expect("model");
                 let shown = model.arena.reparent_finish(h, new_parent, was_visible);
@@ -485,137 +423,15 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 model.touch_measure_all();
                 shown
             };
-            event::fire_visibility_changes(lua, shown);
+            event::fire_visibility_changes_context(lua, shown);
             Ok(())
         },
     )?;
-    // Strata / level / scale / alpha
-    m.set(
-        "SetFrameStrata",
-        lua.create_function(|lua, (this, strata): (Table, String)| {
-            let h = frame_handle_of(lua, &this)?;
-            let s = strata_from_str(&strata)
-                .ok_or_else(|| mlua::Error::runtime(format!("unknown frameStrata '{strata}'")))?;
-            lua.app_data_mut::<Model>()
-                .expect("model")
-                .arena
-                .set_frame_strata(h, s);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "GetFrameStrata",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let s = model.arena.frame(h).map(|f| f.strata).unwrap_or_default();
-            Ok(strata_name(s).to_string())
-        })?,
-    )?;
-    m.set(
-        "SetFrameLevel",
-        lua.create_function(|lua, (this, level): (Table, i64)| {
-            let h = frame_handle_of(lua, &this)?;
-            let lvl = level.clamp(0, i64::from(u16::MAX)) as u16;
-            // **A script level change carries no children** — the binding `0x774560` calls
-            // `set_frame_level 0x76a4f0` with `propagate=0` (wow-re `ui/ui.md`, default levels).
-            // Only the toplevel raise shifts a subtree. Stock `BonusActionButtonTemplate` is written
-            // for this: it raises the button +2 and then its cooldown +2 by hand, landing the sweep
-            // one level over the button — carrying the children made it three, over the
-            // cooldown-count text an addon hangs at button + 2 (decision 2189).
-            lua.app_data_mut::<Model>()
-                .expect("model")
-                .arena
-                .set_frame_level(h, lvl, false);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "GetFrameLevel",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(i64::from(
-                model.arena.frame(h).map(|f| f.level).unwrap_or(0),
-            ))
-        })?,
-    )?;
-    m.set(
-        "SetScale",
-        lua.create_function(|lua, (this, scale): (Table, f32)| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            // Effective-scale changes ride the propagation's own eps gate; the own-scale compare
-            // is the cheap superset (same own scale => no effective change is possible).
-            let changed = model.arena.frame(h).is_some_and(|f| f.scale != scale);
-            model.arena.set_scale(h, scale);
-            if changed {
-                model.touch_layout();
-                // The owner's effective scale is in every descendant FontString's measure key.
-                model.touch_measure_all();
-            }
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "GetScale",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(model.arena.frame(h).map(|f| f.scale).unwrap_or(1.0))
-        })?,
-    )?;
-    m.set(
-        "SetAlpha",
-        lua.create_function(|lua, (this, alpha): (Table, f32)| {
-            let h = frame_handle_of(lua, &this)?;
-            // The 1.12 API clamps to 0..1 — ref Lua leans on it (fade code that passes a 0..255
-            // alpha stays fully opaque until the value falls below 1/255).
-            lua.app_data_mut::<Model>()
-                .expect("model")
-                .arena
-                .set_alpha(h, alpha.clamp(0.0, 1.0));
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "GetAlpha",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(model.arena.frame(h).map(|f| f.alpha).unwrap_or(1.0))
-        })?,
-    )?;
+    // Strata / level / scale / alpha are installed through the neutral VM below.
     // Backdrop (backdrop-mechanism.md): SetBackdrop(table|nil) installs (or, with nil, tears down)
     // the frame's tiled bg + 8-piece border plate. The two color setters tint the bg / all 8 border
     // pieces (never the reverse — spec §4). The Lua-table SetBackdrop defaults both colors to WHITE
     // (the ctor), so a caller must SetBackdropColor after to tint (the tooltip's OnLoad does).
-    m.set(
-        "SetBackdrop",
-        lua.create_function(|lua, (this, arg): (Table, Value)| {
-            let h = frame_handle_of(lua, &this)?;
-            let bd = match arg {
-                Value::Nil => None,
-                Value::Table(t) => Some(backdrop_from_table(&t)?),
-                other => {
-                    return Err(mlua::Error::runtime(format!(
-                        "SetBackdrop: expected a table or nil, got {}",
-                        other.type_name()
-                    )))
-                }
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            match bd {
-                Some(b) => {
-                    model.backdrops.insert(h, b);
-                }
-                None => {
-                    model.backdrops.remove(&h);
-                }
-            }
-            Ok(())
-        })?,
-    )?;
     // `GetBackdrop()` (`0x777370`; wow-re `ui/scratch/widget-api-batch-benilla.md` Q5) — five things
     // a plausible implementation gets wrong, so each is spelled out with its reason:
     //
@@ -648,128 +464,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //
     // No `bgColor`/`edgeColor`/`alpha` key exists: the two colors live in the struct but the reader
     // never pushes them (`GetBackdropColor`/`GetBackdropBorderColor` are their only accessors).
-    m.set(
-        "GetBackdrop",
-        lua.create_function(|lua, (this, target): (Table, Value)| {
-            let h = frame_handle_of(lua, &this)?;
-            // Copied out before a single Lua write: filling a *caller-supplied* table can run a
-            // `__newindex` metamethod, which can re-enter us and would panic on the app-data borrow.
-            let bd = {
-                let model = lua.app_data_ref::<Model>().expect("model");
-                model.backdrops.get(&h).cloned()
-            };
-            let Some(bd) = bd else {
-                return Ok(mlua::MultiValue::new()); // trap 2 — zero values, not nil
-            };
-            let t = match target {
-                Value::Table(t) => t,
-                _ => lua.create_table()?,
-            };
-            t.set("bgFile", bd.bg_file.as_deref().unwrap_or(""))?;
-            t.set("edgeFile", bd.edge_file.as_deref().unwrap_or(""))?;
-            t.set(
-                "tile",
-                if bd.tile {
-                    Value::Number(1.0) // trap 4
-                } else {
-                    Value::Nil // trap 4 — erases the key from a recycled table
-                },
-            )?;
-            t.set("tileSize", f64::from(bd.tile_size))?;
-            t.set("edgeSize", f64::from(bd.edge_size))?;
-            let insets = match t.get::<Value>("insets") {
-                Ok(Value::Table(existing)) => existing, // trap 5 — reuse, don't replace
-                _ => {
-                    let fresh = lua.create_table()?;
-                    t.set("insets", &fresh)?;
-                    fresh
-                }
-            };
-            insets.set("left", f64::from(bd.insets.left))?;
-            insets.set("right", f64::from(bd.insets.right))?;
-            insets.set("top", f64::from(bd.insets.top))?;
-            insets.set("bottom", f64::from(bd.insets.bottom))?;
-            Ok(mlua::MultiValue::from_vec(vec![Value::Table(t)]))
-        })?,
-    )?;
-    m.set(
-        "SetBackdropColor",
-        lua.create_function(|lua, (this, args): (Table, mlua::MultiValue)| {
-            let color = backdrop_color(lua, args);
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            if let Some(bd) = model.backdrops.get_mut(&h) {
-                bd.bg_color = color;
-            }
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "SetBackdropBorderColor",
-        lua.create_function(|lua, (this, args): (Table, mlua::MultiValue)| {
-            let color = backdrop_color(lua, args);
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            if let Some(bd) = model.backdrops.get_mut(&h) {
-                bd.border_color = color;
-            }
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "GetBackdropColor",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            match model.backdrops.get(&h) {
-                Some(bd) => Ok((
-                    bd.bg_color[0],
-                    bd.bg_color[1],
-                    bd.bg_color[2],
-                    bd.bg_color[3],
-                )),
-                None => Ok((1.0, 1.0, 1.0, 1.0)),
-            }
-        })?,
-    )?;
-    m.set(
-        "GetBackdropBorderColor",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            match model.backdrops.get(&h) {
-                Some(bd) => Ok((
-                    bd.border_color[0],
-                    bd.border_color[1],
-                    bd.border_color[2],
-                    bd.border_color[3],
-                )),
-                None => Ok((1.0, 1.0, 1.0, 1.0)),
-            }
-        })?,
-    )?;
     // Mouse interaction (EnableMouse gates hit-testing; keyboard focus is out of scope)
-    m.set(
-        "EnableMouse",
-        lua.create_function(|lua, (this, enable): (Table, bool)| {
-            let h = frame_handle_of(lua, &this)?;
-            lua.app_data_mut::<Model>()
-                .expect("model")
-                .arena
-                .set_mouse_enabled(h, enable);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "IsMouseEnabled",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(
-                model.arena.is_mouse_enabled(h),
-            ))
-        })?,
-    )?;
     // EnableKeyboard(flag) / IsKeyboardEnabled() — `0x776f90` / `0x776ff0`, real Frame entries in
     // wow-re's frame-API carve, beside the mouse pair above.
     //
@@ -785,27 +480,6 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // got a raise that killed the enclosing function. And per
     // `frame-key-script-delivery.md` §3.2 being enabled genuinely is separable from having a
     // handler, so the flag is a real piece of the model, not a placeholder for one.
-    m.set(
-        "EnableKeyboard",
-        lua.create_function(|lua, (this, enable): (Table, bool)| {
-            let h = frame_handle_of(lua, &this)?;
-            lua.app_data_mut::<Model>()
-                .expect("model")
-                .arena
-                .set_keyboard_enabled(h, enable);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "IsKeyboardEnabled",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(
-                model.arena.is_keyboard_enabled(h),
-            ))
-        })?,
-    )?;
     // `EnableMouseWheel(flag)` / `IsMouseWheelEnabled()` — the wheel's own gate, a separate flag
     // from `EnableMouse` in the reference and separate here (decision 1198).
     //
@@ -829,20 +503,149 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // decision: `draw_layer_from_str` is the same parser `SetDrawLayer` and `CreateTexture` use,
     // and what the reference does with an unparseable name in THIS pair has not been read out of
     // the binary. Both corpus callers (pfUI, MoveAnything) pass literals from the five-name set.
+    // Clamp-to-screen (`0x776c00`/`0x776cb0`, geometry flags bit4 — layout.md): the layout resolve
+    // keeps the frame's assembled rect inside the window, size preserved. GameTooltip frames
+    // default true by construction (widget::Frame::clamped_to_screen — decision 0352).
+    // Hit-rect insets — the MOUSE rect only (widget::Frame::hit_rect_insets): the hit test shrinks
+    // the resolved rect by these four before testing the cursor, and nothing else reads them, so a
+    // frame's geometry/draw/anchor answers are unchanged. The ref sets them wherever a button's
+    // frame is larger than its art (the micro buttons' 18 px empty header).
+    install_neutral_frame_state(vm, methods)
+}
+
+/// Install the state-only frame methods through the backend-neutral callback boundary.
+///
+/// The property callbacks touch [`Model`] directly. `Show`/`Hide` use the same neutral event path
+/// so their synchronous hover, button, toplevel, handler and EditBox-focus effects remain one
+/// operation.
+fn install_neutral_frame_state(vm: &mut Vm, methods: &LuaTable) -> benilla_lua::Result<()> {
+    let set_backdrop = vm.create_function(
+        "Frame:SetBackdrop",
+        |lua, (this, arg): (LuaTable, LuaValue)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let backdrop = match arg {
+                LuaValue::Nil => None,
+                LuaValue::Table(table) => Some(backdrop_from_table(lua, &table)?),
+                other => {
+                    return Err(benilla_lua::Error::runtime(format!(
+                        "SetBackdrop: expected a table or nil, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            match backdrop {
+                Some(backdrop) => {
+                    model.backdrops.insert(h, backdrop);
+                }
+                None => {
+                    model.backdrops.remove(&h);
+                }
+            }
+            Ok(())
+        },
+    )?;
+    vm.table_set_function(methods, "SetBackdrop", &set_backdrop)?;
+
+    let get_backdrop = vm.create_function(
+        "Frame:GetBackdrop",
+        |lua, (this, target): (LuaTable, LuaValue)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            // Release app data before table writes: __newindex may re-enter this callback.
+            let backdrop = {
+                let model = lua.app_data_ref::<Model>().expect("model");
+                model.backdrops.get(&h).cloned()
+            };
+            let Some(backdrop) = backdrop else {
+                return Ok(LuaMultiValue::new());
+            };
+            let table = match target {
+                LuaValue::Table(table) => table,
+                _ => lua.create_table()?,
+            };
+            lua.table_set(&table, "bgFile", backdrop.bg_file.as_deref().unwrap_or(""))?;
+            lua.table_set(
+                &table,
+                "edgeFile",
+                backdrop.edge_file.as_deref().unwrap_or(""),
+            )?;
+            lua.table_set(
+                &table,
+                "tile",
+                if backdrop.tile {
+                    LuaValue::Number(1.0)
+                } else {
+                    LuaValue::Nil
+                },
+            )?;
+            lua.table_set(&table, "tileSize", f64::from(backdrop.tile_size))?;
+            lua.table_set(&table, "edgeSize", f64::from(backdrop.edge_size))?;
+            let insets = match lua.table_get(&table, "insets") {
+                Ok(LuaValue::Table(existing)) => existing,
+                _ => {
+                    let fresh = lua.create_table()?;
+                    lua.table_set(&table, "insets", fresh.clone())?;
+                    fresh
+                }
+            };
+            lua.table_set(&insets, "left", f64::from(backdrop.insets.left))?;
+            lua.table_set(&insets, "right", f64::from(backdrop.insets.right))?;
+            lua.table_set(&insets, "top", f64::from(backdrop.insets.top))?;
+            lua.table_set(&insets, "bottom", f64::from(backdrop.insets.bottom))?;
+            Ok(vec![LuaValue::Table(table)])
+        },
+    )?;
+    vm.table_set_function(methods, "GetBackdrop", &get_backdrop)?;
+
+    for (name, border) in [
+        ("SetBackdropColor", false),
+        ("SetBackdropBorderColor", true),
+    ] {
+        let function =
+            vm.create_function(name, move |lua, (this, args): (LuaTable, LuaMultiValue)| {
+                let color = backdrop_color(args);
+                let h = frame_handle_of_context(lua, &this)?;
+                let mut model = lua.app_data_mut::<Model>().expect("model");
+                if let Some(bd) = model.backdrops.get_mut(&h) {
+                    if border {
+                        bd.border_color = color;
+                    } else {
+                        bd.bg_color = color;
+                    }
+                }
+                Ok(())
+            })?;
+        vm.table_set_function(methods, name, &function)?;
+    }
+    for (name, border) in [
+        ("GetBackdropColor", false),
+        ("GetBackdropBorderColor", true),
+    ] {
+        let function = vm.create_function(name, move |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let color = model
+                .backdrops
+                .get(&h)
+                .map(|bd| if border { bd.border_color } else { bd.bg_color })
+                .unwrap_or([1.0; 4]);
+            Ok((color[0], color[1], color[2], color[3]))
+        })?;
+        vm.table_set_function(methods, name, &function)?;
+    }
     for (name, disable) in [("EnableDrawLayer", false), ("DisableDrawLayer", true)] {
-        m.set(
-            name,
-            lua.create_function(move |lua, (this, layer): (Table, Value)| {
-                let Some(l) = layer
-                    .as_string()
-                    .and_then(|s| s.to_str().ok().and_then(|s| draw_layer_from_str(&s)))
-                else {
+        let function =
+            vm.create_function(name, move |lua, (this, layer): (LuaTable, LuaValue)| {
+                let Some(layer) = (match layer {
+                    LuaValue::String(value) => value.as_str().ok().and_then(draw_layer_from_str),
+                    _ => None,
+                }) else {
                     return Ok(());
                 };
-                let h = frame_handle_of(lua, &this)?;
+                let h = frame_handle_of_context(lua, &this)?;
                 let mut model = lua.app_data_mut::<Model>().expect("model");
                 if let Some(frame) = model.arena.frame_mut(h) {
-                    let bit = 1u8 << l.index();
+                    let bit = 1u8 << layer.index();
                     if disable {
                         frame.disabled_layers |= bit;
                     } else {
@@ -850,37 +653,13 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     }
                 }
                 Ok(())
-            })?,
-        )?;
+            })?;
+        vm.table_set_function(methods, name, &function)?;
     }
-    m.set(
-        "EnableMouseWheel",
-        lua.create_function(|lua, (this, enable): (Table, bool)| {
-            let h = frame_handle_of(lua, &this)?;
-            lua.app_data_mut::<Model>()
-                .expect("model")
-                .arena
-                .set_mouse_wheel_enabled(h, enable);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "IsMouseWheelEnabled",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(
-                model.arena.is_mouse_wheel_enabled(h),
-            ))
-        })?,
-    )?;
-    // Clamp-to-screen (`0x776c00`/`0x776cb0`, geometry flags bit4 — layout.md): the layout resolve
-    // keeps the frame's assembled rect inside the window, size preserved. GameTooltip frames
-    // default true by construction (widget::Frame::clamped_to_screen — decision 0352).
-    m.set(
-        "SetClampedToScreen",
-        lua.create_function(|lua, (this, clamp): (Table, bool)| {
-            let h = frame_handle_of(lua, &this)?;
+    let set_clamped = vm.create_function(
+        "Frame:SetClampedToScreen",
+        |lua, (this, clamp): (LuaTable, bool)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let changed = model.arena.is_clamped_to_screen(h) != clamp;
             model.arena.set_clamped_to_screen(h, clamp);
@@ -888,45 +667,273 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 model.touch_layout();
             }
             Ok(())
-        })?,
+        },
     )?;
-    m.set(
-        "IsClampedToScreen",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(
-                model.arena.is_clamped_to_screen(h),
-            ))
-        })?,
+    vm.table_set_function(methods, "SetClampedToScreen", &set_clamped)?;
+
+    let is_clamped = vm.create_function("Frame:IsClampedToScreen", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(neutral_flag(model.arena.is_clamped_to_screen(h)))
+    })?;
+    vm.table_set_function(methods, "IsClampedToScreen", &is_clamped)?;
+
+    let set_insets = vm.create_function(
+        "Frame:SetHitRectInsets",
+        |lua, (this, left, right, top, bottom): (LuaTable, f32, f32, f32, f32)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .arena
+                .set_hit_rect_insets(h, [left, right, top, bottom]);
+            Ok(())
+        },
     )?;
-    // Hit-rect insets — the MOUSE rect only (widget::Frame::hit_rect_insets): the hit test shrinks
-    // the resolved rect by these four before testing the cursor, and nothing else reads them, so a
-    // frame's geometry/draw/anchor answers are unchanged. The ref sets them wherever a button's
-    // frame is larger than its art (the micro buttons' 18 px empty header).
-    m.set(
-        "SetHitRectInsets",
-        lua.create_function(
-            |lua, (this, left, right, top, bottom): (Table, f32, f32, f32, f32)| {
-                let h = frame_handle_of(lua, &this)?;
-                lua.app_data_mut::<Model>()
-                    .expect("model")
-                    .arena
-                    .set_hit_rect_insets(h, [left, right, top, bottom]);
+    vm.table_set_function(methods, "SetHitRectInsets", &set_insets)?;
+
+    let get_insets = vm.create_function("Frame:GetHitRectInsets", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let i = model.arena.hit_rect_insets(h);
+        Ok((i[0], i[1], i[2], i[3]))
+    })?;
+    vm.table_set_function(methods, "GetHitRectInsets", &get_insets)?;
+
+    for (name, kind) in [
+        ("EnableMouse", 0),
+        ("EnableKeyboard", 1),
+        ("EnableMouseWheel", 2),
+    ] {
+        let function =
+            vm.create_function(name, move |lua, (this, enabled): (LuaTable, LuaValue)| {
+                // Plain Lua truthiness, not a strict boolean: `EnableMouseWheel(1)`
+                // enables, like every other flag binding in this family.
+                let enabled = !matches!(enabled, LuaValue::Nil | LuaValue::Boolean(false));
+                let h = frame_handle_of_context(lua, &this)?;
+                let mut model = lua.app_data_mut::<Model>().expect("model");
+                match kind {
+                    0 => model.arena.set_mouse_enabled(h, enabled),
+                    1 => model.arena.set_keyboard_enabled(h, enabled),
+                    _ => model.arena.set_mouse_wheel_enabled(h, enabled),
+                }
                 Ok(())
-            },
-        )?,
-    )?;
-    m.set(
-        "GetHitRectInsets",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
+            })?;
+        vm.table_set_function(methods, name, &function)?;
+    }
+    for (name, kind) in [
+        ("IsMouseEnabled", 0),
+        ("IsKeyboardEnabled", 1),
+        ("IsMouseWheelEnabled", 2),
+    ] {
+        let function = vm.create_function(name, move |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model");
-            let i = model.arena.hit_rect_insets(h);
-            Ok((i[0], i[1], i[2], i[3]))
-        })?,
+            Ok(neutral_flag(match kind {
+                0 => model.arena.is_mouse_enabled(h),
+                1 => model.arena.is_keyboard_enabled(h),
+                _ => model.arena.is_mouse_wheel_enabled(h),
+            }))
+        })?;
+        vm.table_set_function(methods, name, &function)?;
+    }
+    let show = vm.create_function("Frame:Show", |lua, this: LuaTable| {
+        set_shown_context(lua, &this, true)
+    })?;
+    vm.table_set_function(&methods, "Show", &show)?;
+
+    let hide = vm.create_function("Frame:Hide", |lua, this: LuaTable| {
+        set_shown_context(lua, &this, false)
+    })?;
+    vm.table_set_function(&methods, "Hide", &hide)?;
+
+    let is_shown = vm.create_function("Frame:IsShown", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(neutral_flag(
+            model.arena.frame(h).map(|f| f.shown).unwrap_or(false),
+        ))
+    })?;
+    vm.table_set_function(&methods, "IsShown", &is_shown)?;
+
+    let is_visible = vm.create_function("Frame:IsVisible", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(neutral_flag(
+            model
+                .arena
+                .frame(h)
+                .map(|f| f.effective_visible)
+                .unwrap_or(false),
+        ))
+    })?;
+    vm.table_set_function(&methods, "IsVisible", &is_visible)?;
+
+    let get_id = vm.create_function("Frame:GetID", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(model.arena.frame(h).map(|f| f.wow_id).unwrap_or(0))
+    })?;
+    vm.table_set_function(&methods, "GetID", &get_id)?;
+
+    let set_id = vm.create_function("Frame:SetID", |lua, (this, id): (LuaTable, i64)| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        if let Some(frame) = model.arena.frame_mut(h) {
+            frame.wow_id = id;
+        }
+        Ok(())
+    })?;
+    vm.table_set_function(&methods, "SetID", &set_id)?;
+
+    let get_frame_type = vm.create_function("Frame:GetFrameType", |lua, this: LuaTable| {
+        Ok(chain_of_context(lua, &this)?[0].to_owned())
+    })?;
+    vm.table_set_function(&methods, "GetFrameType", &get_frame_type)?;
+
+    let is_frame_type = vm.create_function(
+        "Frame:IsFrameType",
+        |lua, (this, want): (LuaTable, LuaValue)| {
+            let chain = chain_of_context(lua, &this)?;
+            let want = match &want {
+                LuaValue::String(value) => value
+                    .as_str()
+                    .map_err(|error| {
+                        benilla_lua::Error::runtime(format!(
+                            "frame type is not valid UTF-8: {error}"
+                        ))
+                    })?
+                    .to_owned(),
+                LuaValue::Number(value) => value.to_string(),
+                LuaValue::Integer(value) => value.to_string(),
+                _ => {
+                    let h = frame_handle_of_context(lua, &this)?;
+                    let model = lua.app_data_ref::<Model>().expect("model");
+                    let who = model
+                        .arena
+                        .frame(h)
+                        .and_then(|frame| frame.name.clone())
+                        .unwrap_or_else(|| "<unnamed>".to_owned());
+                    return Err(benilla_lua::Error::runtime(format!(
+                        "Usage: {who}:IsFrameType(\"TYPE\")"
+                    )));
+                }
+            };
+            Ok(if chain.iter().any(|ty| want.eq_ignore_ascii_case(ty)) {
+                LuaValue::Number(1.0)
+            } else {
+                LuaValue::Nil
+            })
+        },
     )?;
-    Ok(())
+    vm.table_set_function(&methods, "IsFrameType", &is_frame_type)?;
+
+    let set_frame_strata = vm.create_function(
+        "Frame:SetFrameStrata",
+        |lua, (this, strata): (LuaTable, String)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let strata = strata_from_str(&strata).ok_or_else(|| {
+                benilla_lua::Error::runtime(format!("unknown frameStrata '{strata}'"))
+            })?;
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .arena
+                .set_frame_strata(h, strata);
+            Ok(())
+        },
+    )?;
+    vm.table_set_function(&methods, "SetFrameStrata", &set_frame_strata)?;
+
+    let get_frame_strata = vm.create_function("Frame:GetFrameStrata", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let strata = model.arena.frame(h).map(|f| f.strata).unwrap_or_default();
+        Ok(strata_name(strata).to_owned())
+    })?;
+    vm.table_set_function(&methods, "GetFrameStrata", &get_frame_strata)?;
+
+    let set_frame_level = vm.create_function(
+        "Frame:SetFrameLevel",
+        |lua, (this, level): (LuaTable, i64)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let level = level.clamp(0, i64::from(u16::MAX)) as u16;
+            // **A script level change carries no children** — the binding `0x774560` calls
+            // `set_frame_level 0x76a4f0` with `propagate=0` (wow-re `ui/ui.md`, default
+            // levels). Only the toplevel raise shifts a subtree. Stock
+            // `BonusActionButtonTemplate` is written for this: it raises the button +2 and
+            // then its cooldown +2 by hand, landing the sweep one level over the button —
+            // carrying the children made it three, over the cooldown-count text an addon
+            // hangs at button + 2 (decision 2189).
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .arena
+                .set_frame_level(h, level, false);
+            Ok(())
+        },
+    )?;
+    vm.table_set_function(&methods, "SetFrameLevel", &set_frame_level)?;
+
+    let get_frame_level = vm.create_function("Frame:GetFrameLevel", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(i64::from(
+            model.arena.frame(h).map(|f| f.level).unwrap_or(0),
+        ))
+    })?;
+    vm.table_set_function(&methods, "GetFrameLevel", &get_frame_level)?;
+
+    let set_scale =
+        vm.create_function("Frame:SetScale", |lua, (this, scale): (LuaTable, f32)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            // Effective-scale changes ride the propagation's own eps gate; the own-scale
+            // compare is the cheap superset (same own scale => no effective change is
+            // possible).
+            let changed = model.arena.frame(h).is_some_and(|f| f.scale != scale);
+            model.arena.set_scale(h, scale);
+            if changed {
+                model.touch_layout();
+                // The owner's effective scale is in every descendant FontString's measure
+                // key.
+                model.touch_measure_all();
+            }
+            Ok(())
+        })?;
+    vm.table_set_function(&methods, "SetScale", &set_scale)?;
+
+    let get_scale = vm.create_function("Frame:GetScale", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(model.arena.frame(h).map(|f| f.scale).unwrap_or(1.0))
+    })?;
+    vm.table_set_function(&methods, "GetScale", &get_scale)?;
+
+    let set_alpha =
+        vm.create_function("Frame:SetAlpha", |lua, (this, alpha): (LuaTable, f32)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            // The 1.12 API clamps to 0..1 — ref Lua leans on it (fade code that passes a
+            // 0..255 alpha stays fully opaque until the value falls below 1/255).
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .arena
+                .set_alpha(h, alpha.clamp(0.0, 1.0));
+            Ok(())
+        })?;
+    vm.table_set_function(&methods, "SetAlpha", &set_alpha)?;
+
+    let get_alpha = vm.create_function("Frame:GetAlpha", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(model.arena.frame(h).map(|f| f.alpha).unwrap_or(1.0))
+    })?;
+    vm.table_set_function(methods, "GetAlpha", &get_alpha)
+}
+
+fn neutral_flag(value: bool) -> LuaValue {
+    if value {
+        LuaValue::Integer(1)
+    } else {
+        LuaValue::Nil
+    }
 }
 
 /// Parse a Lua `SetBackdrop` table into a [`Backdrop`] (backdrop-mechanism.md §1). The keys read —
@@ -935,45 +942,50 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
 /// edgeSize 32), and `insets{left,right,top,bottom}` (numbers, each default 0). A non-string file or
 /// non-number size is treated as absent (the client's per-key type gate). Colors stay the ctor
 /// white — SetBackdrop never reads a color key; the color setters do that.
-fn backdrop_from_table(t: &Table) -> mlua::Result<Backdrop> {
+fn backdrop_from_table(lua: &mut impl LuaContext, t: &LuaTable) -> benilla_lua::Result<Backdrop> {
     let mut bd = Backdrop::default();
-    if let Ok(Value::String(s)) = t.get::<Value>("bgFile") {
-        bd.bg_file = Some(s.to_str()?.to_string());
+    if let Ok(LuaValue::String(s)) = lua.table_get(t, "bgFile") {
+        bd.bg_file = Some(
+            s.as_str()
+                .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?
+                .to_owned(),
+        );
     }
-    if let Ok(Value::String(s)) = t.get::<Value>("edgeFile") {
-        bd.edge_file = Some(s.to_str()?.to_string());
+    if let Ok(LuaValue::String(s)) = lua.table_get(t, "edgeFile") {
+        bd.edge_file = Some(
+            s.as_str()
+                .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?
+                .to_owned(),
+        );
     }
     // `tile` — Lua truthiness (nil/false ⇒ false; a missing key reads as Nil).
     bd.tile = !matches!(
-        t.get::<Value>("tile").unwrap_or(Value::Nil),
-        Value::Nil | Value::Boolean(false)
+        lua.table_get(t, "tile").unwrap_or(LuaValue::Nil),
+        LuaValue::Nil | LuaValue::Boolean(false)
     );
-    if let Ok(Value::Number(n)) = t.get::<Value>("tileSize") {
-        bd.tile_size = n as f32;
-    } else if let Ok(Value::Integer(n)) = t.get::<Value>("tileSize") {
-        bd.tile_size = n as f32;
+    if let Some(n) = backdrop_number(lua.table_get(t, "tileSize")) {
+        bd.tile_size = n;
     }
-    if let Ok(Value::Number(n)) = t.get::<Value>("edgeSize") {
-        bd.edge_size = n as f32;
-    } else if let Ok(Value::Integer(n)) = t.get::<Value>("edgeSize") {
-        bd.edge_size = n as f32;
+    if let Some(n) = backdrop_number(lua.table_get(t, "edgeSize")) {
+        bd.edge_size = n;
     }
-    if let Ok(Value::Table(ins)) = t.get::<Value>("insets") {
-        let num = |k: &str| -> f32 {
-            match ins.get::<Value>(k) {
-                Ok(Value::Number(n)) => n as f32,
-                Ok(Value::Integer(n)) => n as f32,
-                _ => 0.0,
-            }
-        };
+    if let Ok(LuaValue::Table(ins)) = lua.table_get(t, "insets") {
         bd.insets = Insets {
-            left: num("left"),
-            right: num("right"),
-            top: num("top"),
-            bottom: num("bottom"),
+            left: backdrop_number(lua.table_get(&ins, "left")).unwrap_or(0.0),
+            right: backdrop_number(lua.table_get(&ins, "right")).unwrap_or(0.0),
+            top: backdrop_number(lua.table_get(&ins, "top")).unwrap_or(0.0),
+            bottom: backdrop_number(lua.table_get(&ins, "bottom")).unwrap_or(0.0),
         };
     }
     Ok(bd)
+}
+
+fn backdrop_number(value: benilla_lua::Result<LuaValue>) -> Option<f32> {
+    match value.ok()? {
+        LuaValue::Number(n) => Some(n as f32),
+        LuaValue::Integer(n) => Some(n as f32),
+        _ => None,
+    }
 }
 
 fn strata_name(s: Strata) -> &'static str {
@@ -991,20 +1003,27 @@ fn strata_name(s: Strata) -> &'static str {
     }
 }
 
-fn set_shown(lua: &Lua, this: &Table, shown: bool) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+fn set_shown_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    shown: bool,
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, this)?;
     let changed = {
         let mut model = lua.app_data_mut::<Model>().expect("model");
         model.arena.set_shown(h, shown)
     };
-    event::fire_visibility_changes(lua, changed);
+    event::fire_visibility_changes_context(lua, changed);
     Ok(())
 }
 
 /// This frame's child frames as stable ids, in the arena's insertion order — the one walk
 /// `GetChildren` and `GetNumChildren` share (see their comment on why they must share it).
-fn children_of(lua: &Lua, this: &Table) -> mlua::Result<Vec<u32>> {
-    let h = frame_handle_of(lua, this)?;
+fn children_of_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<Vec<u32>> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
     let Some(children) = model.arena.frame(h).map(|f| f.children.clone()) else {
         return Ok(Vec::new());
@@ -1032,8 +1051,8 @@ fn children_of(lua: &Lua, this: &Table) -> mlua::Result<Vec<u32>> {
 /// A Button's label and its four state textures are deliberately NOT excluded: they link through
 /// `0x77fd10` like any other region in the reference, and ours go through `create_region` like any
 /// other region here.
-fn regions_of(lua: &Lua, this: &Table) -> mlua::Result<Vec<u32>> {
-    let h = frame_handle_of(lua, this)?;
+fn regions_of_context(lua: &mut impl LuaContext, this: &LuaTable) -> benilla_lua::Result<Vec<u32>> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
     let Some((regions, title)) = model
         .arena
@@ -1069,13 +1088,12 @@ fn regions_of(lua: &Lua, this: &Table) -> mlua::Result<Vec<u32>> {
 /// bare truncate `chat-window-record.md`'s colour path uses. The field is a packed `0xAARRGGBB`
 /// byte quad, so nothing finer survives the store and we quantize on the way in rather than
 /// pretend to a precision `GetBackdropColor` could not read back.
-fn backdrop_channel(lua: &Lua, v: Option<Value>, gated: bool) -> f32 {
+fn backdrop_channel(v: Option<LuaValue>, gated: bool) -> f32 {
     let x = if gated {
         // `lua_isnumber` — a number or a numeric string; anything else takes the staged default.
-        v.and_then(|v| lua.coerce_number(v).ok().flatten())
-            .unwrap_or(1.0)
+        v.and_then(|v| f64::from_lua(v).ok()).unwrap_or(1.0)
     } else {
-        crate::script::binding_abi::coerced_number(lua, v)
+        v.and_then(|v| f64::from_lua(v).ok()).unwrap_or(0.0)
     };
     let clamped = if x.is_nan() { 1.0 } else { x.clamp(0.0, 1.0) };
     // `×255 + 0.5` then `__ftol` (truncate toward zero) = round-half-up over `[0,1]`.
@@ -1086,12 +1104,11 @@ fn backdrop_channel(lua: &Lua, v: Option<Value>, gated: bool) -> f32 {
 /// The four channels of a backdrop colour setter, in the reference's own gating (see
 /// [`backdrop_channel`]). Takes the raw stack so a missing argument and an explicit `nil` reach
 /// the same place they do there.
-fn backdrop_color(lua: &Lua, args: mlua::MultiValue) -> [f32; 4] {
-    let a: Vec<Value> = args.into_iter().collect();
+fn backdrop_color(args: LuaMultiValue) -> [f32; 4] {
     [
-        backdrop_channel(lua, a.first().cloned(), false),
-        backdrop_channel(lua, a.get(1).cloned(), false),
-        backdrop_channel(lua, a.get(2).cloned(), false),
-        backdrop_channel(lua, a.get(3).cloned(), true),
+        backdrop_channel(args.first().cloned(), false),
+        backdrop_channel(args.get(1).cloned(), false),
+        backdrop_channel(args.get(2).cloned(), false),
+        backdrop_channel(args.get(3).cloned(), true),
     ]
 }

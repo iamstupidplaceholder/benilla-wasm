@@ -16,6 +16,7 @@ use benilla_dbc::{FieldType, Schema, SchemaField};
 use std::collections::HashMap;
 
 use crate::dbc::{parse, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 const STABLE_SLOT_PRICES: &str = "DBFilesClient\\StableSlotPrices.dbc";
@@ -50,7 +51,7 @@ fn schema() -> Schema {
 }
 
 /// Load `StableSlotPrices.dbc` from the patch chain.
-pub fn load_stable_slot_prices(chain: &mut Chain) -> Result<StableSlotPrices> {
+pub fn load_stable_slot_prices(chain: &mut impl crate::FileSource) -> Result<StableSlotPrices> {
     let bytes = chain
         .read_file(STABLE_SLOT_PRICES)
         .with_context(|| format!("reading {STABLE_SLOT_PRICES}"))?;

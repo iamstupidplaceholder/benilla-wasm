@@ -277,9 +277,9 @@ mod tests {
     /// The display legs: Calculating before the ring fills, then a minutes figure.
     #[test]
     fn the_text_walks_calculating_then_minutes() {
-        let strings = GlueStrings::default();
+        let mut strings = GlueStrings::default();
         let (q, last) = ring_of(&[100, 99, 98], 1_000);
-        let calculating = q.text(last, Some("Benilla"), &strings);
+        let calculating = q.text(last, Some("Benilla"), &mut strings);
         assert!(calculating.starts_with("Benilla is Full"), "{calculating}");
         assert!(
             calculating.contains("Position in queue: 98"),
@@ -288,7 +288,7 @@ mod tests {
         assert!(calculating.contains("Calculating..."), "{calculating}");
 
         let (q, last) = ring_of(&[100, 99, 98, 97, 96, 95, 94, 93], 1_000);
-        let minutes = q.text(last, Some("Benilla"), &strings);
+        let minutes = q.text(last, Some("Benilla"), &mut strings);
         assert!(minutes.contains("Position in queue: 93"), "{minutes}");
         assert!(minutes.contains("1 min"), "{minutes}");
         assert!(!minutes.contains("Calculating"), "{minutes}");
@@ -298,9 +298,9 @@ mod tests {
     /// people ahead that the inflation above cannot carry it over the threshold.
     #[test]
     fn a_short_wait_reads_under_a_minute() {
-        let strings = GlueStrings::default();
+        let mut strings = GlueStrings::default();
         let (q, last) = ring_of(&[8, 7, 6, 5, 4, 3, 2, 1], 1_000);
-        let text = q.text(last, Some("Benilla"), &strings);
+        let text = q.text(last, Some("Benilla"), &mut strings);
         assert!(text.contains("Position in queue: 1"), "{text}");
         assert!(text.contains("< 1 minute"), "{text}");
     }
@@ -309,12 +309,12 @@ mod tests {
     /// placeholder behind.
     #[test]
     fn a_nameless_realm_uses_the_plain_form() {
-        let strings = GlueStrings::default();
+        let mut strings = GlueStrings::default();
         let (q, last) = ring_of(&[100, 99, 98], 1_000);
-        let plain = q.text(last, None, &strings);
+        let plain = q.text(last, None, &mut strings);
         assert!(plain.starts_with("Realm is Full"), "{plain}");
         assert!(!plain.contains("%s") && !plain.contains("%d"), "{plain}");
-        let named = q.text(last, Some("Benilla"), &strings);
+        let named = q.text(last, Some("Benilla"), &mut strings);
         assert!(!named.contains("%s") && !named.contains("%d"), "{named}");
     }
 }

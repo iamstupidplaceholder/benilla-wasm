@@ -25,10 +25,10 @@ fn harness(money: u64) -> UiScript {
     // below is deliberate rather than an artefact of an unfed VM — a flat 8px per digit makes
     // every expected number readable as `digits x 8 + icon`.
     s.set_text_measurer(Box::new(super::FixedWidthFont(8.0)));
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml"); // `message`, the kit's own error path
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml"); // `message`, the kit's own error path
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
 
     let doc = benilla_ui::framexml::parse(
         r#"<Ui>
@@ -41,7 +41,7 @@ fn harness(money: u64) -> UiScript {
         </Ui>"#,
     )
     .unwrap();
-    let report = benilla_ui::loader::load(&s, &doc, &|_| None);
+    let report = benilla_ui::loader::load(&mut s, &doc, &|_| None);
     assert!(
         report.errors.is_empty(),
         "loader errors: {:?}",
@@ -52,8 +52,8 @@ fn harness(money: u64) -> UiScript {
 }
 
 /// The three coins' text, gold → silver → copper.
-fn coins(s: &UiScript, frame: &str) -> (String, String, String) {
-    let one = |d: &str| {
+fn coins(s: &mut UiScript, frame: &str) -> (String, String, String) {
+    let mut one = |d: &str| {
         s.eval::<String>(&format!("return {frame}{d}ButtonText:GetText() or ''"))
             .unwrap()
     };
@@ -61,8 +61,8 @@ fn coins(s: &UiScript, frame: &str) -> (String, String, String) {
 }
 
 /// Which of the three coins are showing, gold → silver → copper.
-fn shown(s: &UiScript, frame: &str) -> (bool, bool, bool) {
-    let one = |d: &str| {
+fn shown(s: &mut UiScript, frame: &str) -> (bool, bool, bool) {
+    let mut one = |d: &str| {
         s.eval::<bool>(&format!("return {frame}{d}Button:IsShown()"))
             .unwrap()
     };
@@ -74,17 +74,17 @@ fn shown(s: &UiScript, frame: &str) -> (bool, bool, bool) {
 /// `MoneyFrame_SetType("PLAYER")`.
 #[test]
 fn a_money_frame_loads_as_the_player_purse_and_splits_the_denominations() {
-    let s = harness(12_345); // 1g 23s 45c
+    let mut s = harness(12_345); // 1g 23s 45c
     assert_eq!(
         s.eval::<String>("return TestPurse.moneyType").unwrap(),
         "PLAYER"
     );
     assert_eq!(
-        coins(&s, "TestPurse"),
+        coins(&mut s, "TestPurse"),
         ("1".into(), "23".into(), "45".into())
     );
     assert_eq!(
-        coins(&s, "TestBigPurse"),
+        coins(&mut s, "TestBigPurse"),
         ("1".into(), "23".into(), "45".into())
     );
     assert_eq!(
@@ -103,7 +103,7 @@ fn a_money_frame_loads_as_the_player_purse_and_splits_the_denominations() {
 /// take the mouse (`canPickup`), and how they collapse.
 #[test]
 fn set_type_rewires_the_source_the_mouse_and_the_collapse() {
-    let s = harness(12_345);
+    let mut s = harness(12_345);
 
     // PLAYER: canPickup, so all three coins are mouse-enabled.
     for d in ["Gold", "Silver", "Copper"] {
@@ -122,7 +122,7 @@ fn set_type_rewires_the_source_the_mouse_and_the_collapse() {
         s.eval::<String>("return TestPurse.moneyType").unwrap(),
         "STATIC"
     );
-    assert_eq!(coins(&s, "TestPurse"), ("0".into(), "0".into(), "7".into()));
+    assert_eq!(coins(&mut s, "TestPurse"), ("0".into(), "0".into(), "7".into()));
     for d in ["Gold", "Silver", "Copper"] {
         assert!(
             !s.eval::<bool>(&format!("return TestPurse{d}Button:IsMouseEnabled()"))
@@ -131,13 +131,13 @@ fn set_type_rewires_the_source_the_mouse_and_the_collapse() {
         );
     }
     // STATIC collapses and does NOT showSmallerCoins: 7 copper is copper alone.
-    assert_eq!(shown(&s, "TestPurse"), (false, false, true));
+    assert_eq!(shown(&mut s, "TestPurse"), (false, false, true));
 
     // → back to PLAYER: the purse returns, and so does the mouse.
     s.run("this = TestPurse MoneyFrame_SetType(\"PLAYER\") this = nil")
         .unwrap();
     assert_eq!(
-        coins(&s, "TestPurse"),
+        coins(&mut s, "TestPurse"),
         ("1".into(), "23".into(), "45".into())
     );
     assert!(s
@@ -151,11 +151,11 @@ fn set_type_rewires_the_source_the_mouse_and_the_collapse() {
 /// STATIC does not, so the same amount is gold alone.
 #[test]
 fn showsmallercoins_is_what_keeps_the_zero_coins_visible() {
-    let s = harness(50_000); // exactly 5g
+    let mut s = harness(50_000); // exactly 5g
 
-    assert_eq!(coins(&s, "TestPurse"), ("5".into(), "0".into(), "0".into()));
+    assert_eq!(coins(&mut s, "TestPurse"), ("5".into(), "0".into(), "0".into()));
     assert_eq!(
-        shown(&s, "TestPurse"),
+        shown(&mut s, "TestPurse"),
         (true, true, true),
         "PLAYER showSmallerCoins = \"Backpack\" keeps the zero silver and copper (ref l.30)"
     );
@@ -165,7 +165,7 @@ fn showsmallercoins_is_what_keeps_the_zero_coins_visible() {
     )
     .unwrap();
     assert_eq!(
-        shown(&s, "TestPurse"),
+        shown(&mut s, "TestPurse"),
         (true, false, false),
         "STATIC collapses with no showSmallerCoins — 5g is gold alone (ref l.32-38)"
     );
@@ -173,7 +173,7 @@ fn showsmallercoins_is_what_keeps_the_zero_coins_visible() {
     // A pure-copper amount under a collapsing type: the leading zeros go, the copper stays.
     s.run("TestPurse.staticMoney = 42 this = TestPurse MoneyFrame_UpdateMoney() this = nil")
         .unwrap();
-    assert_eq!(shown(&s, "TestPurse"), (false, false, true));
+    assert_eq!(shown(&mut s, "TestPurse"), (false, false, true));
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -182,14 +182,14 @@ fn showsmallercoins_is_what_keeps_the_zero_coins_visible() {
 /// frame's own width is recomputed from the coins that survived the collapse.
 #[test]
 fn update_paints_a_static_frame_by_name_and_resizes_it() {
-    let s = harness(0);
+    let mut s = harness(0);
     s.run("this = TestPurse MoneyFrame_SetType(\"STATIC\") this = nil")
         .unwrap();
 
     s.run("MoneyFrame_Update(\"TestPurse\", 20304)").unwrap(); // 2g 3s 4c
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
-    assert_eq!(coins(&s, "TestPurse"), ("2".into(), "3".into(), "4".into()));
-    assert_eq!(shown(&s, "TestPurse"), (true, true, true));
+    assert_eq!(coins(&mut s, "TestPurse"), ("2".into(), "3".into(), "4".into()));
+    assert_eq!(shown(&mut s, "TestPurse"), (true, true, true));
     assert_eq!(
         s.eval::<i64>("return TestPurse.staticMoney").unwrap(),
         20_304
@@ -214,7 +214,7 @@ fn update_paints_a_static_frame_by_name_and_resizes_it() {
 
     // Collapse away two denominations and the frame shrinks to match: 13 + 21 = 34.
     s.run("MoneyFrame_Update(\"TestPurse\", 9)").unwrap();
-    assert_eq!(shown(&s, "TestPurse"), (false, false, true));
+    assert_eq!(shown(&mut s, "TestPurse"), (false, false, true));
     assert_eq!(s.eval::<f64>("return TestPurse:GetWidth()").unwrap(), 34.0);
 }
 
@@ -222,7 +222,7 @@ fn update_paints_a_static_frame_by_name_and_resizes_it() {
 /// constants (`MONEY_ICON_WIDTH` / `MONEY_BUTTON_SPACING`), selected purely by `this.small`.
 #[test]
 fn the_large_template_measures_with_the_nineteen_pixel_icon() {
-    let s = harness(20_304);
+    let mut s = harness(20_304);
     // One 8px digit + the 19px icon — the same digit sum as the small template, over the other
     // icon constant. That the two differ ONLY by the icon is what this test is for.
     assert_eq!(
@@ -249,7 +249,7 @@ fn the_large_template_measures_with_the_nineteen_pixel_icon() {
 /// it had.
 #[test]
 fn an_unknown_money_type_leaves_the_frame_on_the_one_it_had() {
-    let s = harness(12_345);
+    let mut s = harness(12_345);
     s.run("this = TestPurse MoneyFrame_SetType(\"NOT_A_TYPE\") this = nil")
         .unwrap();
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
@@ -259,7 +259,7 @@ fn an_unknown_money_type_leaves_the_frame_on_the_one_it_had() {
         "the bad SetType returned before touching info/moneyType"
     );
     assert_eq!(
-        coins(&s, "TestPurse"),
+        coins(&mut s, "TestPurse"),
         ("1".into(), "23".into(), "45".into())
     );
 }
@@ -327,7 +327,7 @@ fn set_money_frame_color_recolours_the_digits_and_not_the_icons() {
 /// their engine getters hold (`GetSendMailMoney`/`GetSendMailCOD`, built by 1962).
 #[test]
 fn the_money_type_table_carries_all_seven_reference_types() {
-    let s = harness(12_345);
+    let mut s = harness(12_345);
     for t in [
         "PLAYER",
         "STATIC",
@@ -375,13 +375,13 @@ fn the_money_type_table_carries_all_seven_reference_types() {
 #[test]
 fn the_chains_money_input_frame_splits_an_amount_across_its_three_boxes() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = UiScript::new().unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua"); // COPPER_PER_GOLD / COPPER_PER_SILVER live here
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
+    let mut s = UiScript::new().unwrap();
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua"); // COPPER_PER_GOLD / COPPER_PER_SILVER live here
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
     // The manifest's own order: the `.lua` brings the ten verbs, the `.xml` the template.
-    load_xml(&s, r"Interface\FrameXML\MoneyInputFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyInputFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyInputFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyInputFrame.xml");
 
     let doc = benilla_ui::framexml::parse(
         r#"<Ui>
@@ -391,7 +391,7 @@ fn the_chains_money_input_frame_splits_an_amount_across_its_three_boxes() {
         </Ui>"#,
     )
     .unwrap();
-    let report = benilla_ui::loader::load_in(&s, &doc, "test", &|_: &str| None);
+    let report = benilla_ui::loader::load_in(&mut s, &doc, "test", &|_: &str| None);
     assert!(report.errors.is_empty(), "{:?}", report.errors);
 
     // 1234g 56s 78c.

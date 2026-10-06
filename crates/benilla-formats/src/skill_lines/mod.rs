@@ -69,7 +69,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const SKILL_LINE: &str = "DBFilesClient\\SkillLine.dbc";
 const SKILL_LINE_ABILITY: &str = "DBFilesClient\\SkillLineAbility.dbc";
@@ -519,7 +519,7 @@ fn skill_line_category_schema() -> Schema {
 
 /// Load `SkillLineCategory.dbc` — id → (name, displayOrder). Missing/unparseable degrades to an
 /// empty map (the skills pane then renders one flat group).
-fn load_categories(chain: &mut Chain) -> HashMap<u32, (String, u32)> {
+fn load_categories(chain: &mut impl FileSource) -> HashMap<u32, (String, u32)> {
     let mut map = HashMap::new();
     let Ok(bytes) = chain.read_file(SKILL_LINE_CATEGORY) else {
         return map;
@@ -550,7 +550,7 @@ fn skill_race_class_info_schema() -> Schema {
 
 /// The `SkillRaceClassInfo.dbc` rows keyed by skill line — the General-collapse routing table. A
 /// missing/unparseable file returns an empty map (the caller degrades to "each line its own tab").
-fn load_race_class_info(chain: &mut Chain) -> HashMap<u32, Vec<SrciRow>> {
+fn load_race_class_info(chain: &mut impl FileSource) -> HashMap<u32, Vec<SrciRow>> {
     let mut map: HashMap<u32, Vec<SrciRow>> = HashMap::new();
     let bytes = match chain.read_file(SKILL_RACE_CLASS_INFO) {
         Ok(b) => b,
@@ -582,7 +582,7 @@ fn load_race_class_info(chain: &mut Chain) -> HashMap<u32, Vec<SrciRow>> {
 }
 
 /// Load the joined skill-line catalog off the patch chain.
-pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
+pub fn load_skill_line_catalog(chain: &mut impl FileSource) -> Result<SkillLineCatalog> {
     let icons = crate::dbc::load_spell_icon_map(chain)?;
 
     let sl_bytes = chain

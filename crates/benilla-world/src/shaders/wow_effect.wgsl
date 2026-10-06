@@ -46,7 +46,60 @@ struct WowLight {
 @group(0) @binding(0) var<uniform> view: View;
 @group(1) @binding(0) var effect_texture: texture_2d<f32>;
 @group(1) @binding(1) var effect_sampler: sampler;
+#ifdef WOW_LIGHT_TEXTURE
+@group(1) @binding(2) var wow_light_texture: texture_2d<u32>;
+const WOW_TABLE_WIDTH: u32 = 2048u;
+fn wow_effect_light_row(row: u32) -> vec4<f32> {
+    let words = textureLoad(
+        wow_light_texture,
+        vec2<i32>(i32(row % WOW_TABLE_WIDTH), i32(row / WOW_TABLE_WIDTH)),
+        0,
+    );
+    return bitcast<vec4<f32>>(words);
+}
+#else
 @group(1) @binding(2) var<storage, read> wow_light: WowLight;
+#endif
+
+fn wow_effect_ambient() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_effect_light_row(0u);
+#else
+    return wow_light.light_ambient;
+#endif
+}
+
+fn wow_effect_diffuse() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_effect_light_row(1u);
+#else
+    return wow_light.light_diffuse;
+#endif
+}
+
+fn wow_effect_sun() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_effect_light_row(2u);
+#else
+    return wow_light.light_sun;
+#endif
+}
+
+fn wow_effect_fog_color() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_effect_light_row(4u);
+#else
+    return wow_light.fog_color;
+#endif
+}
+
+fn wow_effect_fog_params() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_effect_light_row(5u);
+#else
+    return wow_light.fog_params;
+#endif
+}
 // Per-draw params (a dynamic offset into the canonical trio): x = the fog COLOUR policy
 // (0 = off — the "unfogged" file flag 0x8; 1 = scene — the ordinary day-night fog; 2 = BLACK —
 // an Add-blend emitter fades under a veil instead of gaining grey, the same per-blend fog
@@ -144,7 +197,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Missing it here was bug B39. No pop: the scene fog end is `min(fog_end, farclip)`, so a
     // quad reaching the wall has already faded to the fog colour — toward BLACK for an
     // Add-blend emitter, i.e. to nothing under `One` blend.
-    if (wow_light.fog_params.w > 0.0 && in.view_z > wow_light.fog_params.w) {
+    if (wow_effect_fog_params().w > 0.0 && in.view_z > wow_effect_fog_params().w) {
         discard;
     }
     // The gamma-space product — texture bytes × raw authored vertex colour, exactly what the
@@ -199,10 +252,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     //
     // N and L must be in the SAME frame; that is where the invariance comes from. Both are world
     // here (Bevy axes: WoW's +Z up is Bevy +Y).
-    let L = -normalize(wow_light.light_sun.xyz);
+    let L = -normalize(wow_effect_sun().xyz);
     let N = vec3<f32>(0.0, 1.0, 0.0);
     let lit = clamp(
-        wow_light.light_ambient.rgb + wow_light.light_diffuse.rgb * max(dot(N, L), 0.0),
+        wow_effect_ambient().rgb + wow_effect_diffuse().rgb * max(dot(N, L), 0.0),
         vec3<f32>(0.0),
         vec3<f32>(1.0),
     );
@@ -213,11 +266,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // geometry — same start/end, same day-night colour, applied in gamma space BEFORE blend,
     // with NO additive special-case. The blend equation then does the whole night split by
     // itself. Missing fog was the "night smoke glows" bug. (Planar eye-Z, like terrain fog.)
-    if (wow_light.fog_color.w > 0.5 && wow_params.fog.x > 0.5) {
-        let denom = max(wow_light.fog_params.y - wow_light.fog_params.x, 0.001);
-        let factor = clamp((wow_light.fog_params.y - in.view_z) / denom, 0.0, 1.0);
+    if (wow_effect_fog_color().w > 0.5 && wow_params.fog.x > 0.5) {
+        let denom = max(wow_effect_fog_params().y - wow_effect_fog_params().x, 0.001);
+        let factor = clamp((wow_effect_fog_params().y - in.view_z) / denom, 0.0, 1.0);
         // The fog COLOUR follows the policy in wow_params.fog.x (see its declaration).
-        var fog_rgb = wow_light.fog_color.xyz;
+        var fog_rgb = wow_effect_fog_color().xyz;
         if (wow_params.fog.x > 1.5 && wow_params.fog.x < 2.5) { fog_rgb = vec3<f32>(0.0); }
         else if (wow_params.fog.x > 2.5 && wow_params.fog.x < 3.5) { fog_rgb = vec3<f32>(1.0); }
         else if (wow_params.fog.x > 3.5) { fog_rgb = RAIN_FOG_GREY; }

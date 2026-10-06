@@ -26,7 +26,7 @@ fn trainer_script() -> UiScript {
     // The reference's own LoadOnDemand addon's files, direct off the chain (what its `LoadAddOn`
     // runs), and the FrameXML templates file its list inherits from (1957).
     load_xml(
-        &s,
+        &mut s,
         "Interface\\AddOns\\Blizzard_TrainerUI\\Blizzard_TrainerUI.xml",
     );
     finish_trainer_load(&mut s);
@@ -75,7 +75,7 @@ fn trainer_script_base() -> UiScript {
         "Interface\\FrameXML\\MerchantFrame.xml",
         "Interface\\FrameXML\\ClassTrainerFrameTemplates.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s
 }
@@ -166,6 +166,7 @@ fn service(
         is_trade_skill: false,
         group_key: skill_line,
         group_name: line_name.into(),
+        skill_line_name: Some(line_name.into()),
     }
 }
 

@@ -11,7 +11,7 @@
 //! place those events fire from. [`bar`], [`doll`], and [`drag`] are split out purely for size —
 //! this file keeps the payload types, the shared transition seam, and `install`.
 
-use mlua::{Lua, Value};
+use benilla_lua::{Value, Vm};
 
 use super::{Model, ScriptValue};
 
@@ -27,142 +27,10 @@ pub(crate) use drag::{
     abandon_drag, arm_drag, maybe_start_drag, take_drag, DragGesture, DragRelease,
 };
 
-/// The sentinel bag id that folds the player's EQUIPPED slots into the ONE payload space
-/// (decision 0216 §1, extended to the paper doll by decision 0208 phase 1b): a
-/// [`CursorItem`]/[`super::container::ContainerMove`] whose `bag` is `EQUIPMENT_BAG` addresses
-/// `slot` as a 1-based live-API inventory slot id — `GetInventorySlotInfo`'s own numbering
-/// (HeadSlot=1 … TabardSlot=19, `char_stats::SLOT_INFO`'s convention), not a bag's contents.
-/// Disjoint from every real bag id — including the ERA's own negative container ids, which are
-/// real API surface (−1 = `BANK_CONTAINER`, decision 0604; −2 = the keyring) — so a `match` on
-/// `bag` can never confuse the spaces (its original value −1 collided with the bank the day the
-/// bank landed; the sentinel is engine-internal and never crosses the Lua boundary as a value,
-/// verified across the XML fleet at the change). Ammo (id 0) stays OUT of this space — a named
-/// deferral ([`doll::pickup_inventory_item`]'s own range guard).
-pub const EQUIPMENT_BAG: i64 = -100;
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// The payload
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// What the cursor carries — the client's payload-mode global [0xb4d900] as a typed enum
-/// (wow-re cursor-dragdrop-payload.md §1: 1 = live item, 3 = spell, **4 = pet action**, **8 =
-/// macro**, **10 = stabled pet**; our Action arm is the client's bar-slot pickup; the money arm
-/// is mode 2 ([`CursorMoney`], 1962/1965) and the preview arm stays unbuilt). One transition seam
-/// for every surface, so sounds, CURSOR_UPDATE, and lock display can't drift apart per window (decision 0216).
-#[derive(Clone, Debug, PartialEq)]
-pub enum CursorPayload {
-    Item(CursorItem),
-    Spell(CursorSpell),
-    Action(CursorAction),
-    Macro(CursorMacro),
-    PetAction(CursorPetAction),
-    /// A vendor row grabbed off the merchant window — **mode 5** (see [`CursorMerchantItem`]).
-    ///
-    /// Deliberately NOT `Item`: the reference's `CursorHasItem 0x4895d0` answers truthy for modes
-    /// **1 and 9 only**, so all thirteen stock `CursorHasItem()` gates (TradeFrame, MailFrame,
-    /// PlayerFrame, TargetFrame, PetFrame, StaticPopup, the keyring…) exclude a vendor cursor.
-    /// Making this an `Item` variant would silently open every one of them.
-    Merchant(CursorMerchantItem),
-    /// A pet picked up from the stable window — **mode 10** (see [`CursorStablePet`]).
-    ///
-    /// Mode 10 was recorded as "class/talent ability (DBC)" until wow-re's stable-master carve
-    /// corrected it (`system/ui/scratch/stable-master-window.md` §9; decision 1677): `0x495020` is
-    /// the stabled-pet grab, `[0xb4d900] = 10` is written at exactly one site image-wide, and it is
-    /// inside it. benilla built the stable's drag frame-locally on the strength of the old note —
-    /// this variant is what puts it back on the shared cursor, so a stable pet dropped on the world
-    /// or another window clears through the same path as every other payload.
-    StablePet(CursorStablePet),
-    /// Coins picked up off a money frame — **mode 2** (see [`CursorMoney`]).
-    Money(CursorMoney),
-}
-
-/// Copper held on the cursor — payload **mode 2**, the client's `[0xb4e2f0]` amount written by
-/// `0x494cc0` from `PickupPlayerMoney 0x48abc0` with `LOOTWINDOWCOINSOUND` (wow-re
-/// `cursor-dragdrop-payload.md` §1's payload table). The purse is never debited by the pickup:
-/// the stock `MoneyTypeInfo["PLAYER"]` shows `GetMoney() - GetCursorMoney() - …`, the subtraction
-/// being how the held coins leave the display while the money stays yours (1962).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CursorMoney {
-    pub copper: u32,
-}
-
-/// A vendor row held on the cursor — payload **mode 5**, set by `PickupMerchantItem 0x4fb760`.
-///
-/// **A buy-on-drop cursor, not an item cursor.** The reference writes three globals and this
-/// mirrors all three: the item entry (`0xb4b41c`), the display id that drives the icon
-/// (`0xb4d8ec` — we carry the resolved texture path, which is the same thing one hop later), and
-/// the **0-based** vendor row (`0xb4b420`). Dropping it on a bag slot sends
-/// `CMSG_BUY_ITEM_IN_SLOT 0x1a3`; dropping it on the world, pressing ESC, or the vendor window
-/// closing is a plain clear with **no packet**.
-///
-/// No Lua predicate reports it. `CursorHasItem`, `CursorHasSpell`, `CursorHasMoney` and
-/// `CursorCanGoInSlot` are all nil for mode 5 — no registered binding exposes it at all.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CursorMerchantItem {
-    /// The row's item template entry — `0xb4b41c`, and what the buy addresses.
-    pub item_id: u32,
-    /// The vendor row this came from, **0-based** (`0xb4b420` = `trunc(arg) - 1`). Kept because
-    /// the reference keeps it: a second `PickupMerchantItem` naming the same row is a toggle-off,
-    /// which is the only thing that reads it back.
-    pub row: u32,
-    /// The icon drawn at the mouse. The reference stores `ItemDisplayInfo`'s id (`0xb4d8ec`) and
-    /// resolves the art from it; we hold the already-resolved path, which is the same value one
-    /// hop later and the shape every other payload here uses.
-    pub texture: Option<String>,
-}
-
-/// A pet held on the cursor from the stable window — payload **mode 10** (`0x495020`, the grab
-/// `0x495010`).
-///
-/// Mode 10 was recorded as "class/talent ability (DBC)" until wow-re's stable-master carve
-/// corrected it (`system/ui/scratch/stable-master-window.md` §9; decision 1677): `[0xb4d900] = 10`
-/// is written at exactly one site image-wide and it is inside the stabled-pet grab, whose id global
-/// `[0xb4e300]` holds a **stable index**, not a spell. benilla first built the stable's drag
-/// frame-locally on the strength of the old note; this puts it on the shared cursor.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CursorStablePet {
-    /// The slot the grab came from, in the Lua index space `PickupStablePet` takes (`0` = the
-    /// summoned pet, `1..=2` a stable slot) — the client's `[0xb4e300]`.
-    pub slot: u8,
-    /// The family icon drawn at the mouse. Not merely decoration: a **non-empty icon path is the
-    /// grab's own gate** (`0x495010` refuses without one), so a payload of this shape always has
-    /// one.
-    pub texture: String,
-}
-
-/// The item currently held on the cursor (`PickupContainerItem`/`SplitContainerItem`/
-/// `PickupInventoryItem` set it). The real client's drag state: it names *where the item was
-/// picked from* (so a second click routes the swap) and carries the icon the app draws at the
-/// mouse. Purely transient — cleared on place/cancel; the server's field updates do the actual
-/// move.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CursorItem {
-    /// Live-API bag id the item was picked up from (0 = backpack, 1..=4 an equipped bag,
-    /// [`EQUIPMENT_BAG`] the player's own equipped slots).
-    pub bag: i64,
-    /// 1-based slot the item was picked up from.
-    pub slot: u32,
-    /// The picked item's template entry (`GetCursorInfo`'s itemID).
-    pub item_id: u32,
-    /// The icon texture path to draw at the mouse (`Interface\Icons\…`); `None` if unresolved.
-    pub texture: Option<String>,
-    /// The item link (`GetCursorInfo`'s itemLink), when known.
-    pub link: Option<String>,
-    /// A split carry (`SplitContainerItem` picked up `n` of the stack); `None` = the whole stack.
-    pub count: Option<u32>,
-    /// The item's quality (0..6) at pickup, carried so `DELETE_ITEM_CONFIRM` (a world drop) can
-    /// report it without a container round-trip.
-    pub quality: Option<u32>,
-    /// The 1-based live-API inventory slot ids this item could be EQUIPPED into (empty = not
-    /// equippable), captured at pickup from the source's own `equip_slots` (the container slot's
-    /// or the doll slot view's — decision 0208 phase 1b's "the fit rule").
-    /// [`doll::pickup_inventory_item`] reads it to decide a place-onto-doll-slot's fit;
-    /// [`doll::cursor_can_go_in_slot`] serves it straight to `CURSOR_UPDATE`'s highlight.
-    pub equip_slots: Vec<u8>,
-    /// Whether this item may be placed on an ACTION-BAR slot, captured at pickup from the
-    /// source's own `bar_placeable` — `PlaceAction`'s only item filter (decision 0666).
-    pub bar_placeable: bool,
-}
+pub use crate::script_data::{
+    CursorAction, CursorItem, CursorMacro, CursorMerchantItem, CursorMoney, CursorPayload,
+    CursorPetAction, CursorSpell, CursorStablePet, EnchantConfirm, WorldPick, EQUIPMENT_BAG,
+};
 
 /// How many items the cursor is actually holding, for a payload picked up from a bag.
 ///
@@ -185,68 +53,6 @@ pub(super) fn held_count(model: &super::Model, item: &CursorItem) -> u32 {
         .and_then(|c| c.slots.get(&item.slot))
         .filter(|s| s.item_id == item.item_id)
         .map_or(1, |s| s.count.max(1))
-}
-
-/// A spell payload ([`super::spellbook`]'s `PickupSpell` produces it): the spellbook slot it was
-/// picked from, its book (`"spell"`/`"pet"`, the Era `GetCursorInfo` shape), and the resolved
-/// spell id.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CursorSpell {
-    pub book_slot: u32,
-    pub book_type: String,
-    pub spell_id: u32,
-    pub texture: Option<String>,
-    /// `Attributes & 0x40` (`SPELL_ATTR_PASSIVE`) — a passive cannot go on the action bar
-    /// (`PlaceAction`'s other filter, `0x4e63ad`; decision 0666).
-    pub passive: bool,
-}
-
-/// An action-slot payload ([`bar`]'s `PickupAction`/`place_action` hop produces it): the source
-/// action slot, the packed action's kind byte (SPELL/MACRO/ITEM — decision 0216's
-/// `CMSG_SET_ACTION_BUTTON` type byte), and the action id itself.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CursorAction {
-    pub src_slot: u32,
-    pub kind: u8,
-    pub action: u32,
-    pub texture: Option<String>,
-}
-
-/// A pet-bar payload ([`pet`]'s `PickupPetAction` produces it) — the client's cursor mode **4**,
-/// whose payload global `[0xb4e2f8]` is the picked slot's **packed word, copied verbatim** (its
-/// sole writer `0x494f0c` is a plain `mov edx,[edi]; mov [0xb4e2f8],edx`; decision 1010).
-///
-/// The word is the payload, and that is the whole design: the drop trampoline `0x4bce00` forwards
-/// this dword into the assign core without reading a field of it, so a slot's contents after any
-/// accepted drop is a word that already existed elsewhere in client state. Nothing is encoded at
-/// drop time and nothing here needs decoding.
-///
-/// This payload is **pet-bar-only**. `PlaceAction` refuses it (wow-re `action-item-slot.md`'s
-/// payload table: pet actions and class abilities are the refused modes, macros are not), and
-/// nothing else produces it — which is also why a pet bar can only ever be *rearranged*, never
-/// populated from the spellbook: its contents are the server's.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CursorPetAction {
-    /// The 1-based pet bar slot it was picked from.
-    pub src_slot: u32,
-    /// The slot's packed word, verbatim.
-    pub packed: u32,
-    /// `Attributes & 0x40` for a spell word — carried because the assign core's one source filter
-    /// tests it at DROP time, not at pickup (`0x4bc9f8`).
-    pub passive: bool,
-    pub texture: Option<String>,
-}
-
-/// A macro payload ([`super::macros`]'s `PickupMacro` produces it) — the client's cursor mode
-/// **8**, whose payload global is the bare macro id (`[0xb4e2fc]`, wow-re `action-item-slot.md`'s
-/// payload table, where mode 8 is the ONE non-item/non-spell payload `PlaceAction` accepts).
-/// Unlike every other arm this one carries no source slot to swap back to: a macro lives in the
-/// macro table, not in the surface it was dragged from, so a refused place just leaves it held.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CursorMacro {
-    /// The 1-based macro index (1..=18 account, 19..=36 character — [`super::macros`]'s space).
-    pub index: u32,
-    pub texture: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -408,17 +214,6 @@ pub(crate) fn take_cursor_item_for_sale(model: &mut Model) -> Option<CursorItem>
 /// `DELETE_ITEM_CONFIRM` popup via `0x5e0320`) and a spell/action payload clears silently
 /// (decision 0843's deliberate divergence — the reference keeps it there); over `Nothing` the
 /// item pops and any other payload silently clears (`0x492d30`).
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum WorldPick {
-    /// No world hit at all (sky / beyond the world) — the reference's state 0.
-    #[default]
-    Nothing,
-    /// The cursor ray hits the world (terrain/WMO/doodad) but no unit or GameObject — state 1.
-    Terrain,
-    /// A unit or GameObject is the pick — state 2.
-    Object,
-}
-
 /// A world drop: a completed left CLICK on the game world while a payload is held — press and
 /// release both on the world (the world frame, or no frame at all where none is loaded — the
 /// caller's `over_world`, decision 2089), no drag (the byte-verified trigger, decision 0218: the
@@ -600,28 +395,11 @@ impl super::UiScript {
     }
 }
 
-/// A Yes on one of the enchant-apply confirms — the two Lua globals `StaticPopup.lua` calls from
-/// `BIND_ENCHANT`'s and `REPLACE_ENCHANT`'s `OnAccept` (decision 0928). Plain intents; the app
-/// holds the item guid they answer for (the reference's `0xb4e3c0/0xb4e3c4`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EnchantConfirm {
-    /// `BindEnchant()` — `0x48d2e0`, which re-invokes the enchant-apply gate `0x495d60` over the
-    /// parked guid with its "already confirmed" parameter set. So this is NOT a send: the gate
-    /// runs again and may raise the *replace* popup next.
-    Bind,
-    /// `ReplaceEnchant()` — `0x48d300`, which re-resolves the parked guid and calls the ordinary
-    /// target binder `0x6e5b40` **directly**, skipping the gate. There is no
-    /// `CMSG_REPLACE_ENCHANT` in 5875: the popup is pure client-side gating over the same cast.
-    Replace,
-}
-
 // The paper-doll globals (`PickupInventoryItem` &c.) install from [`doll`]; the action-bar
 // globals (`PickupAction`/`PlaceAction`) install from [`bar`].
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // BindEnchant() / ReplaceEnchant() — the two enchant-confirm popups' OnAccept (StaticPopup.lua
     // `BIND_ENCHANT` l.1240 and `REPLACE_ENCHANT` l.1252). Both queue an intent the app answers
     // over its parked item guid; neither sends anything from here.
@@ -629,129 +407,103 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("BindEnchant", EnchantConfirm::Bind),
         ("ReplaceEnchant", EnchantConfirm::Replace),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.enchant_confirms.push(answer);
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.enchant_confirms.push(answer);
+            Ok(())
+        })?;
     }
 
     // GetCursorInfo() → per arm: Item ("item", itemID, itemLink); Spell ("spell", book_slot,
     // book_type, spell_id) — the Era shape; Action ("action", src_slot). Empty ⇒ all nils. A
     // fixed 4-return shape (padded with nil past each arm's own fields) so one function signature
     // covers every arm; callers destructuring fewer names simply ignore the tail.
-    g.set(
-        "GetCursorInfo",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let str_or_nil = |lua: &Lua, s: &Option<String>| -> mlua::Result<Value> {
-                match s {
-                    Some(s) => Ok(Value::String(lua.create_string(s)?)),
-                    None => Ok(Value::Nil),
-                }
-            };
-            match &model.cursor {
-                Some(CursorPayload::Item(c)) => Ok((
-                    Value::String(lua.create_string("item")?),
-                    Value::Integer(i64::from(c.item_id)),
-                    str_or_nil(lua, &c.link)?,
-                    Value::Nil,
-                )),
-                Some(CursorPayload::Spell(s)) => Ok((
-                    Value::String(lua.create_string("spell")?),
-                    Value::Integer(i64::from(s.book_slot)),
-                    Value::String(lua.create_string(&s.book_type)?),
-                    Value::Integer(i64::from(s.spell_id)),
-                )),
-                Some(CursorPayload::Action(a)) => Ok((
-                    Value::String(lua.create_string("action")?),
-                    Value::Integer(i64::from(a.src_slot)),
-                    Value::Nil,
-                    Value::Nil,
-                )),
-                // The Era `GetCursorInfo` shape for a macro: the kind word + the macro index.
-                Some(CursorPayload::Macro(m)) => Ok((
-                    Value::String(lua.create_string("macro")?),
-                    Value::Integer(i64::from(m.index)),
-                    Value::Nil,
-                    Value::Nil,
-                )),
-                // The pet arm follows the Action arm's shape — kind word + the slot it came from.
-                // Nothing in the shipped 1.12 UI reads it (the pet bar's own drag never asks what
-                // it is carrying); it is here so the ONE payload space stays fully describable.
-                Some(CursorPayload::PetAction(p)) => Ok((
-                    Value::String(lua.create_string("petaction")?),
-                    Value::Integer(i64::from(p.src_slot)),
-                    Value::Nil,
-                    Value::Nil,
-                )),
-                // Mode 10 — the stabled-pet grab (decision 1677). Reported as nothing: the
-                // reference's `GetCursorInfo` arms are not carved for it, the stable window never
-                // asks, and inventing a type string would put a guess where an addon could read it.
-                Some(CursorPayload::StablePet(_)) => {
-                    Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil))
-                }
-                // Mode 2 — coins (1962). Reported as nothing for the same reason: the money arm
-                // of `GetCursorInfo` is not carved, and `GetCursorMoney` is the reference's own
-                // way of asking. Joins the carve when it lands.
-                Some(CursorPayload::Money(_)) => {
-                    Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil))
-                }
-                // Mode 5 — the vendor grab. Reported as nothing, for the same reason and with a
-                // stronger warrant: **no registered binding in the 5875 image exposes mode 5 to
-                // Lua at all.** `CursorHasItem`, `CursorHasSpell`, `CursorHasMoney` and
-                // `CursorCanGoInSlot` are each nil for it, by census. A vendor cursor is invisible
-                // from Lua and that invisibility is load-bearing — it is what keeps all thirteen
-                // stock `CursorHasItem()` gates closed while one is held.
-                Some(CursorPayload::Merchant(_)) => {
-                    Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil))
-                }
-                None => Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil)),
+    lua.register_function("GetCursorInfo", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        match &model.cursor {
+            Some(CursorPayload::Item(c)) => Ok((
+                Value::from("item"),
+                Value::Integer(i64::from(c.item_id)),
+                c.link.clone().map_or(Value::Nil, Value::from),
+                Value::Nil,
+            )),
+            Some(CursorPayload::Spell(s)) => Ok((
+                Value::from("spell"),
+                Value::Integer(i64::from(s.book_slot)),
+                Value::from(s.book_type.clone()),
+                Value::Integer(i64::from(s.spell_id)),
+            )),
+            Some(CursorPayload::Action(a)) => Ok((
+                Value::from("action"),
+                Value::Integer(i64::from(a.src_slot)),
+                Value::Nil,
+                Value::Nil,
+            )),
+            // The Era `GetCursorInfo` shape for a macro: the kind word + the macro index.
+            Some(CursorPayload::Macro(m)) => Ok((
+                Value::from("macro"),
+                Value::Integer(i64::from(m.index)),
+                Value::Nil,
+                Value::Nil,
+            )),
+            // The pet arm follows the Action arm's shape — kind word + the slot it came from.
+            // Nothing in the shipped 1.12 UI reads it (the pet bar's own drag never asks what
+            // it is carrying); it is here so the ONE payload space stays fully describable.
+            Some(CursorPayload::PetAction(p)) => Ok((
+                Value::from("petaction"),
+                Value::Integer(i64::from(p.src_slot)),
+                Value::Nil,
+                Value::Nil,
+            )),
+            // Mode 10 — the stabled-pet grab (decision 1677). Reported as nothing: the
+            // reference's `GetCursorInfo` arms are not carved for it, the stable window never
+            // asks, and inventing a type string would put a guess where an addon could read it.
+            Some(CursorPayload::StablePet(_)) => {
+                Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil))
             }
-        })?,
-    )?;
+            // Mode 2 — coins (1962). Reported as nothing for the same reason: the money arm
+            // of `GetCursorInfo` is not carved, and `GetCursorMoney` is the reference's own
+            // way of asking. Joins the carve when it lands.
+            Some(CursorPayload::Money(_)) => Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil)),
+            // Mode 5 — the vendor grab. Reported as nothing, for the same reason and with a
+            // stronger warrant: **no registered binding in the 5875 image exposes mode 5 to
+            // Lua at all.** `CursorHasItem`, `CursorHasSpell`, `CursorHasMoney` and
+            // `CursorCanGoInSlot` are each nil for it, by census. A vendor cursor is invisible
+            // from Lua and that invisibility is load-bearing — it is what keeps all thirteen
+            // stock `CursorHasItem()` gates closed while one is held.
+            Some(CursorPayload::Merchant(_)) => {
+                Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil))
+            }
+            None => Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil)),
+        }
+    })?;
 
-    g.set(
-        "CursorHasItem",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(matches!(model.cursor, Some(CursorPayload::Item(_))))
-        })?,
-    )?;
-    g.set(
-        "CursorHasSpell",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(matches!(model.cursor, Some(CursorPayload::Spell(_))))
-        })?,
-    )?;
-    g.set(
-        "ClearCursor",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            clear_cursor(&mut model);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CursorHasItem", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(matches!(model.cursor, Some(CursorPayload::Item(_))))
+    })?;
+    lua.register_function("CursorHasSpell", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(matches!(model.cursor, Some(CursorPayload::Spell(_))))
+    })?;
+    lua.register_function("ClearCursor", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        clear_cursor(&mut model);
+        Ok(())
+    })?;
 
-    g.set(
+    lua.register_function(
         "SplitContainerItem",
-        lua.create_function(|lua, (bag, slot, count): (i64, u32, i64)| {
+        |lua, (bag, slot, count): (i64, u32, i64)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             Ok(split_container_item(&mut model, bag, slot, count))
-        })?,
+        },
     )?;
-    g.set(
-        "DeleteCursorItem",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            delete_cursor_item(&mut model);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("DeleteCursorItem", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        delete_cursor_item(&mut model);
+        Ok(())
+    })?;
 
     doll::install(lua)?;
     bag_verbs::install(lua)?;

@@ -37,6 +37,7 @@ pub struct StreamingSoundData<Error: Send + 'static> {
 }
 
 impl<Error: Send> StreamingSoundData<Error> {
+	pub fn sample_rate(&self) -> u32 { self.decoder.sample_rate() }
 	/// Creates a [`StreamingSoundData`] for a [`Decoder`].
 	#[must_use]
 	pub fn from_decoder(decoder: impl Decoder<Error = Error> + 'static) -> Self {
@@ -386,7 +387,7 @@ impl<Error: Send + 'static> StreamingSoundData<Error> {
 			shared.clone(),
 			frame_consumer,
 			command_readers,
-			&scheduler,
+			scheduler.current_frame(),
 		);
 		let handle = StreamingSoundHandle {
 			shared,

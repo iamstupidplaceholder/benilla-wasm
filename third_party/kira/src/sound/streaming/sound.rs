@@ -20,7 +20,6 @@ use rtrb::Consumer;
 
 use super::{CommandReaders, StreamingSoundSettings};
 
-use self::decode_scheduler::DecodeScheduler;
 
 #[derive(Debug)]
 pub(crate) struct Shared {
@@ -31,6 +30,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+	pub(super) fn finish_decode(&self) { self.reached_end.store(true, Ordering::SeqCst); }
 	#[must_use]
 	pub fn new() -> Self {
 		Self {
@@ -78,7 +78,7 @@ impl Shared {
 pub(crate) struct StreamingSound {
 	command_readers: CommandReaders,
 	sample_rate: u32,
-	frame_consumer: Consumer<TimestampedFrame>,
+	pub(super) frame_consumer: Consumer<TimestampedFrame>,
 	start_time: StartTime,
 	playback_state_manager: PlaybackStateManager,
 	current_frame: usize,
@@ -91,15 +91,14 @@ pub(crate) struct StreamingSound {
 
 impl StreamingSound {
 	#[must_use]
-	pub(super) fn new<Error: Send + 'static>(
+	pub(super) fn new(
 		sample_rate: u32,
 		settings: StreamingSoundSettings,
 		shared: Arc<Shared>,
 		frame_consumer: Consumer<TimestampedFrame>,
 		command_readers: CommandReaders,
-		scheduler: &DecodeScheduler<Error>,
+		current_frame: usize,
 	) -> Self {
-		let current_frame = scheduler.current_frame();
 		let start_position = current_frame as f64 / sample_rate as f64;
 		shared
 			.position
@@ -278,6 +277,6 @@ impl Sound for StreamingSound {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TimestampedFrame {
-	frame: Frame,
-	index: usize,
+    pub(crate) frame: Frame,
+    pub(crate) index: usize,
 }

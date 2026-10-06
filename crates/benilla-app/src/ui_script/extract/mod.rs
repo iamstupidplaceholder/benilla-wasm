@@ -12,21 +12,18 @@ use bevy::window::PrimaryWindow;
 use benilla_ui::script::{QuadContent, TexCoords, UiScript};
 
 use crate::ui_pass::{UiQuad, UiQuads, UvRect};
+use crate::ui_sprites::UiSprites;
+
+#[cfg(feature = "port-gates")]
+#[path = "port_gates.rs"]
+pub(crate) mod port_gates;
 use crate::ui_text::UiFontAtlas;
-use benilla_assets::WorldAssets;
 
 mod colorselect;
 mod text;
 
 /// `WOW_UI_COST=1` — the untraced per-frame cost meter for this system's phases (the premise
-/// instrument for the UI epoch-gate lane, 0730's warm slice): one `[ui-cost]` line per frame with
-/// each phase's wall μs, the quad counts, the layout gate's decision, and whether the diff found
-/// the produced quads changed. Untraced by design — the campaign grades untraced cpu_ms, and
-/// `trace_chrome` inflates exactly the fine-grained spans this measures (0718's calibration).
-pub(crate) fn ui_cost_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("WOW_UI_COST").as_deref() == Ok("1"))
-}
+pub(crate) use crate::ui_cost::ui_cost_enabled;
 
 /// `WOW_UI_GATE=1` — the extract gate's miss reporter ([`report_gate_miss`]). Off by default and
 /// read once, the `[ui-cost]` meter's posture.
@@ -394,7 +391,7 @@ fn verify_splice(
     w: f32,
     h: f32,
     dpi: f32,
-    assets: &mut Option<ResMut<WorldAssets>>,
+    assets: &mut UiSprites,
     images: &mut Assets<Image>,
     font_atlas: &mut Option<ResMut<UiFontAtlas>>,
     booths: &mut crate::portrait::BoothBridge,
@@ -556,6 +553,7 @@ pub(super) fn tick_script(
     mut ui_cost: ResMut<super::UiFrameCost>,
     // What the paint half needs from this one — and whether it may run at all.
     mut pass: ResMut<super::UiPassState>,
+    #[cfg(target_arch = "wasm32")] mut last_font_delivery: Local<u64>,
 ) {
     pass.live = false;
     let Some(mut script) = script else {
@@ -598,6 +596,12 @@ pub(super) fn tick_script(
     // The tile renderer sizes its cells in device pixels off this (decision 2008).
     booths.tiles.dpi = dpi;
     let seam_moved = *last_seam != s || *last_dpi != dpi;
+    #[cfg(target_arch = "wasm32")]
+    if *last_font_delivery != benilla_interface_files::font_revision() {
+        *last_font_delivery = benilla_interface_files::font_revision();
+        // A newly resident dynamic face changes metrics as well as glyph art.
+        script.invalidate_text_measures();
+    }
     if seam_moved {
         if *last_seam != 0.0 {
             script.invalidate_text_measures();
@@ -636,7 +640,7 @@ pub(super) fn tick_script(
     // nothing after startup, and cost one wrong theory before the CSV contradicted it.
     ui_cost.measured = 0;
     ui_cost.measured_texts.clear();
-    let mut t_mark = cost_on.then(std::time::Instant::now);
+    let mut t_mark = cost_on.then(benilla_time::Instant::now);
     // Marks phase boundaries under the meter: returns μs since the previous mark and re-arms.
     // With the meter off it does nothing (a run carries six no-op calls, not six clock reads).
     let mut lap = move || -> u128 {
@@ -644,7 +648,7 @@ pub(super) fn tick_script(
             return 0;
         }
         t_mark
-            .replace(std::time::Instant::now())
+            .replace(benilla_time::Instant::now())
             .map_or(0, |t| t.elapsed().as_micros())
     };
     {
@@ -669,7 +673,9 @@ pub(super) fn tick_script(
     // `Instant::now()` at a conversion site instead re-measures the tick→feed scheduling gap
     // every frame and wobbles the derived start by that jitter (the resource's own doc).
     *ui_clock = super::UiClock {
-        anchor: time.last_update().unwrap_or_else(std::time::Instant::now),
+        anchor: time
+            .last_update()
+            .unwrap_or_else(benilla_time::Instant::now),
         ui_now: script.now(),
     };
     let us_tick = lap();
@@ -778,7 +784,7 @@ pub(super) fn paint_script(
     script: Option<NonSendMut<UiScript>>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut quads: ResMut<UiQuads>,
-    world_assets: Option<ResMut<WorldAssets>>,
+    world_assets: UiSprites,
     mut images: ResMut<Assets<Image>>,
     mut font_atlas: Option<ResMut<UiFontAtlas>>,
     // Both directions of the booth seam: the token -> off-screen-baked-face bridge a
@@ -793,6 +799,7 @@ pub(super) fn paint_script(
     run: (
         Option<Res<crate::run_mode::CaptureMode>>,
         Res<super::UiCostWanted>,
+        Option<ResMut<super::UiArtPending>>,
     ),
     // The append-lane hole this pass parks for its UiQuadAppend producer: the `<Minimap>` widget
     // slot (`minimap::emit_minimap` fills it with tile/arrow quads — decision 0203 phase 1). (The
@@ -827,11 +834,14 @@ pub(super) fn paint_script(
     // Whether the tick half ran this frame, and what it derived.
     pass: Res<super::UiPassState>,
 ) {
-    let (capture, ui_cost_wanted) = run;
+    let (capture, ui_cost_wanted, mut art_pending) = run;
     // The paint half stands down whenever the tick half did — no VM, or no window. Both of those
     // arms already cleared the booth panes, and re-deriving the seam here would be inventing a
     // frame the VM never had.
     if !pass.live {
+        if let Some(pending) = art_pending.as_deref_mut() {
+            pending.0 = false;
+        }
         return;
     }
     let Some(mut script) = script else {
@@ -847,14 +857,14 @@ pub(super) fn paint_script(
     let (solves_before, derives_before) = (Some(pass.solves_before), Some(pass.derives_before));
     let printing = ui_cost_enabled();
     let cost_on = printing || ui_cost_wanted.0;
-    let mut t_mark = cost_on.then(std::time::Instant::now);
+    let mut t_mark = cost_on.then(benilla_time::Instant::now);
     // Marks phase boundaries under the meter: returns μs since the previous mark and re-arms.
     let mut lap = move || -> u128 {
         if !cost_on {
             return 0;
         }
         t_mark
-            .replace(std::time::Instant::now())
+            .replace(benilla_time::Instant::now())
             .map_or(0, |t| t.elapsed().as_micros())
     };
     // ── The SECOND measure + resolve, and the reason this half is its own system ─────────────
@@ -935,6 +945,8 @@ pub(super) fn paint_script(
     let text_ui = script.focused_editbox_text_ui();
     let _ = lap(); // re-arm: the editbox seam above is not the walk's cost
     let extracted = script.extract();
+    #[cfg(target_arch = "wasm32")]
+    let mut extracted = extracted;
     let us_exm = lap();
     let n_extracted = extracted.len();
     // ── The extract gate (decision 0740) ──────────────────────────────────────────────────────
@@ -946,12 +958,19 @@ pub(super) fn paint_script(
     // frame's values too.
     let dims = (w.to_bits(), h.to_bits(), s.to_bits(), dpi.to_bits());
     let settled = capture.is_none()
+        && !art_pending.as_deref().is_some_and(|p| p.0)
+        && !assets.has_pending()
         && prev.dims == Some(dims)
         && prev.generation == generation
         && text_ui == prev.text_ui
         && booths.images.0 == prev.portraits
         && extracted == prev.extracted;
     if settled {
+        #[cfg(target_arch = "wasm32")]
+        script.admit_presentation(&[]);
+        if let Some(pending) = art_pending.as_deref_mut() {
+            pending.0 = false;
+        }
         drop(extract_span);
         let us_cmp = lap();
         if cost_on {
@@ -983,6 +1002,79 @@ pub(super) fn paint_script(
             );
         }
         return;
+    }
+    // Request visible window art through the SAME converter before rasterizing or
+    // publishing a new UI snapshot. No Lua Hide/Show cycle or duplicate file plan.
+    #[cfg(target_arch = "wasm32")]
+    let art_completed;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let revision = script.presentation_art_revision();
+        let old_panes = booths.panes.0.clone();
+        let mut pending_targets = Vec::new();
+        let mut probe_quads = Vec::new();
+        let mut probe_links = Vec::new();
+        let mut probe_minimap = None;
+        for entry in &extracted {
+            if matches!(
+                entry.content,
+                QuadContent::Texture { .. } | QuadContent::Backdrop { .. }
+            ) {
+                assets.begin_paint();
+                convert_entry(
+                    entry.clone(),
+                    s,
+                    w,
+                    h,
+                    dpi,
+                    &mut assets,
+                    &mut images,
+                    &mut font_atlas,
+                    &mut booths,
+                    text_ui.as_ref(),
+                    false,
+                    &mut probe_quads,
+                    &mut probe_links,
+                    &mut probe_minimap,
+                );
+                probe_quads.clear();
+                if assets.has_pending() {
+                    pending_targets.push(entry.target);
+                }
+            }
+        }
+        booths.panes.0 = old_panes;
+        let pending = !pending_targets.is_empty();
+        if let Some(state) = art_pending.as_deref_mut() {
+            if pending && !state.0 {
+                debug!("UI domains waiting for asynchronous window art");
+            }
+            state.0 = pending;
+        }
+        let excluded = script.admit_presentation(&pending_targets);
+        art_completed = revision != script.presentation_art_revision();
+        // Fullscreen panels hide UIParent in original Lua before their asynchronous
+        // artwork can paint. Publish the replacement and that hide atomically:
+        // keep the last real UI snapshot while the new fullscreen domain waits.
+        // Admission still removes hidden/pending frames from mouse input.
+        if script.presentation_replacement_pending() {
+            return;
+        }
+        extracted.retain(|entry| !excluded.contains(&entry.target));
+        // Asset arrivals alone do not repaint an open dialog file-by-file.
+        // Continue probing, then refresh once a domain's whole batch resolves.
+        // Actual UI/text/layout changes still flow through normally.
+        if pending
+            && !art_completed
+            && capture.is_none()
+            && prev.dims == Some(dims)
+            && prev.generation == generation
+            && text_ui == prev.text_ui
+            && booths.images.0 == prev.portraits
+            && extracted == prev.extracted
+        {
+            return;
+        }
     }
     // `WOW_UI_GATE=1` — why the gate MISSED. A skip is worth the whole conversion, so the
     // question "what moved?" is where a per-frame cost always ends, and a `Vec` inequality does
@@ -1024,6 +1116,13 @@ pub(super) fn paint_script(
         }
         if capture.is_some() {
             no_splice!("capture mode");
+        }
+        #[cfg(target_arch = "wasm32")]
+        if art_completed {
+            no_splice!("UI domain asset batch completed");
+        }
+        if assets.has_pending() || art_pending.as_deref().is_some_and(|p| p.0) {
+            no_splice!("sprite byte delivery pending");
         }
         if ui_diff_enabled() {
             no_splice!("WOW_UI_DIFF pins the full path");
@@ -1250,6 +1349,7 @@ pub(super) fn paint_script(
     // the un-skipped path: a settled frame draws exactly what the last one did, so the map it left
     // is still this frame's truth — clearing it above the gate would make every quiet frame put the
     // body panes' cameras to sleep and freeze their animation.
+    assets.begin_paint();
     booths.panes.0.clear();
     let mut spans: Vec<u32> = Vec::with_capacity(prev.extracted.len());
     for eq in extracted {
@@ -1292,7 +1392,7 @@ pub(super) fn paint_script(
                 Some(benilla_ui::script::coin_icon(i64::from(m.copper)).to_string())
             }
         });
-        if let (Some(texture), Some(pos)) = (texture, window.cursor_position()) {
+        if let (Some(texture), Some(pos)) = (texture, crate::cursor::position(window)) {
             if let Some(handle) = assets
                 .as_mut()
                 .and_then(|a| a.sprite_texture(&texture, &mut images))
@@ -1389,7 +1489,7 @@ fn convert_entry(
     // The window's DEVICE scale, for the one arm that resamples its art to physical pixels: the
     // nameplate border's 0188 sharpen, which is a no-op at any other size.
     dpi: f32,
-    assets: &mut Option<ResMut<WorldAssets>>,
+    assets: &mut UiSprites,
     images: &mut Assets<Image>,
     font_atlas: &mut Option<ResMut<UiFontAtlas>>,
     booths: &mut crate::portrait::BoothBridge,
@@ -2115,7 +2215,7 @@ mod clip_plumb_tests {
     /// left at its default (`WorldAssets`/`UiFontAtlas` absent — no BLP/font pipeline needed to prove
     /// the clip carries through a plain colored quad).
     fn app_with_scrolled_marker() -> App {
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 r#"
@@ -2209,7 +2309,7 @@ mod clip_plumb_tests {
 
     #[test]
     fn an_unclipped_texture_quad_carries_no_clip() {
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 r#"
@@ -2432,7 +2532,7 @@ mod extract_gate_tests {
     /// app straight into a mutated app's final state: its first frame is by construction the
     /// full conversion the spliced output must equal.
     fn app_from_script(lua: &str) -> App {
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script.run(lua).unwrap();
         let mut app = App::new();
         app.insert_non_send_resource(script);

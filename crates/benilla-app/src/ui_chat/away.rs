@@ -100,9 +100,9 @@ pub(crate) struct AwayOutcome {
 pub(crate) fn afk_line(
     msg: &str,
     mirror: AfkMirror,
-    strings: &impl Fn(&str) -> Option<String>,
+    strings: &mut impl FnMut(&str) -> Option<String>,
 ) -> AwayOutcome {
-    let text = |key: &str| strings(key).unwrap_or_default();
+    let mut text = |key: &str| strings(key).unwrap_or_default();
     if mirror.is_afk() {
         if msg.is_empty() {
             // The toggle off. `ClearAFK 0x5eb830` prints CLEARED_AFK unformatted and sends an
@@ -151,9 +151,9 @@ pub(crate) fn afk_line(
 pub(crate) fn dnd_line(
     msg: &str,
     is_dnd: bool,
-    strings: &impl Fn(&str) -> Option<String>,
+    strings: &mut impl FnMut(&str) -> Option<String>,
 ) -> AwayOutcome {
-    let text = |key: &str| strings(key).unwrap_or_default();
+    let mut text = |key: &str| strings(key).unwrap_or_default();
     if is_dnd && msg.is_empty() {
         return AwayOutcome {
             line: Some(text("CLEARED_DND")),
@@ -187,7 +187,7 @@ pub(crate) fn dnd_line(
 pub(crate) fn auto_clear_line(
     mirror: AfkMirror,
     auto_clear_afk: bool,
-    strings: &impl Fn(&str) -> Option<String>,
+    strings: &mut impl FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     (auto_clear_afk && mirror.is_afk()).then(|| strings("CLEARED_AFK").unwrap_or_default())
 }
@@ -284,7 +284,7 @@ pub(crate) fn reconcile_afk_mirror(
 pub(crate) fn movement_clears_afk(
     binds: Res<crate::bindings::BindingsState>,
     cvars: Res<crate::cvars::Cvars>,
-    script: Option<NonSendMut<benilla_ui::script::UiScript>>,
+    mut script: Option<NonSendMut<benilla_ui::script::UiScript>>,
     commands: Res<crate::net::NetCommands>,
     mut chat: ResMut<ChatLog>,
     mut mirror: ResMut<AfkMirror>,
@@ -309,7 +309,8 @@ pub(crate) fn movement_clears_afk(
         return;
     }
     let line = script
-        .and_then(|s| super::combat::global_string(&s, "CLEARED_AFK"))
+        .as_deref_mut()
+        .and_then(|s| super::combat::global_string(s, "CLEARED_AFK"))
         .unwrap_or_default();
     push_system(&mut chat, line);
     mirror.0 = 0;
@@ -347,8 +348,8 @@ mod tests {
     /// re-implementer gets wrong by symmetry.
     #[test]
     fn the_truth_table_row_for_row() {
-        let afk = |msg: &str, m: u32| afk_line(msg, AfkMirror(m), &strings);
-        let dnd = |msg: &str, is: bool| dnd_line(msg, is, &strings);
+        let afk = |msg: &str, m: u32| afk_line(msg, AfkMirror(m), &mut strings);
+        let dnd = |msg: &str, is: bool| dnd_line(msg, is, &mut strings);
 
         // `/afk`, not AFK → mark, with the CLIENT's default text substituted before the send.
         assert_eq!(
@@ -439,18 +440,18 @@ mod tests {
         let mut mirror = AfkMirror::default();
         let mut out = Vec::new();
 
-        let first = afk_line("", mirror, &strings);
+        let first = afk_line("", mirror, &mut strings);
         out.push(first.line.clone().unwrap());
         mirror.0 = first.mirror.unwrap();
 
         // `/dnd` takes the generic path first: the clear fires because the mirror is set.
-        let cleared = auto_clear_line(mirror, true, &strings).expect("the implicit clear fires");
+        let cleared = auto_clear_line(mirror, true, &mut strings).expect("the implicit clear fires");
         out.push(cleared);
         mirror.0 = 0;
         // …and only THEN the DND arm, reading a now-clear AFK state — the order the reference
         // runs them in (`0x49f3c7` sits above the type dispatch).
         assert!(!mirror.is_afk(), "the clear really cleared it");
-        out.push(dnd_line("", false, &strings).line.unwrap());
+        out.push(dnd_line("", false, &mut strings).line.unwrap());
 
         assert_eq!(
             out,
@@ -468,19 +469,19 @@ mod tests {
     #[test]
     fn the_auto_clear_is_gated_both_ways() {
         assert!(
-            auto_clear_line(AfkMirror(1), false, &strings).is_none(),
+            auto_clear_line(AfkMirror(1), false, &mut strings).is_none(),
             "cvar off"
         );
         assert!(
-            auto_clear_line(AfkMirror(0), true, &strings).is_none(),
+            auto_clear_line(AfkMirror(0), true, &mut strings).is_none(),
             "not afk"
         );
-        assert!(auto_clear_line(AfkMirror(1), true, &strings).is_some());
+        assert!(auto_clear_line(AfkMirror(1), true, &mut strings).is_some());
         // **The descriptor-driven value is 2, not 1** (§8's encoding hazard): the reconcile stores
         // `PLAYER_FLAGS & 2`. A mirror typed `bool`, or tested `== 1`, would answer "not AFK" here
         // and silently stop clearing after the server's first confirmation.
         assert!(
-            auto_clear_line(AfkMirror(2), true, &strings).is_some(),
+            auto_clear_line(AfkMirror(2), true, &mut strings).is_some(),
             "2 is truthy — every one of the reference's six readers is a non-zero test"
         );
         assert!(AfkMirror(2).is_afk());
@@ -509,8 +510,8 @@ mod tests {
     /// carries the message, so the wire half is unaffected by a missing string table.
     #[test]
     fn a_missing_string_table_does_not_invent_english() {
-        let none = |_: &str| None;
-        let out = afk_line("brb", AfkMirror(0), &none);
+        let mut none = |_: &str| None;
+        let out = afk_line("brb", AfkMirror(0), &mut none);
         assert_eq!(out.line.as_deref(), Some(""));
         assert_eq!(
             out.body, "brb",

@@ -25,10 +25,10 @@
 //! handler runs synchronously inside the clear, before the coins land, so `CursorHasMoney()` is
 //! nil there; ours runs at the next dispatch and sees the coins. Named, not hidden.
 
-use mlua::{Lua, Value};
+use benilla_lua::{Value, Vm};
 
 use super::{queue_cursor_update, CursorMoney, CursorPayload};
-use crate::script::binding_abi::{flag, number_arg};
+use crate::script::binding_abi::{neutral_flag, neutral_number_arg};
 use crate::script::Model;
 
 /// The coin icon for an amount of copper — `GetCoinIcon 0x48d4e0`'s table, SIGNED thresholds
@@ -148,63 +148,44 @@ impl crate::script::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-    g.set(
-        "GetCursorMoney",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(cursor_money(&model)))
-        })?,
-    )?;
-    g.set(
-        "CursorHasMoney",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(matches!(model.cursor, Some(CursorPayload::Money(_)))))
-        })?,
-    )?;
-    g.set(
-        "PickupPlayerMoney",
-        lua.create_function(|lua, amount: Value| {
-            let n = number_arg(lua, amount, "Usage: PickupPlayerMoney(amount)")? as u32;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            pickup_player_money(&mut model, n);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "DropCursorMoney",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            drop_cursor_money(&mut model);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "AddTradeMoney",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            add_trade_money(&mut model);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "PickupTradeMoney",
-        lua.create_function(|lua, amount: Value| {
-            let n = number_arg(lua, amount, "Usage: PickupTradeMoney(amount)")?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            pickup_trade_money(&mut model, n);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "GetCoinIcon",
-        lua.create_function(|lua, amount: Value| {
-            let n = number_arg(lua, amount, "Usage: GetCoinIcon(amount)")?;
-            Ok(coin_icon(i64::from(n)))
-        })?,
-    )?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("GetCursorMoney", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(cursor_money(&model)))
+    })?;
+    lua.register_function("CursorHasMoney", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(matches!(
+            model.cursor,
+            Some(CursorPayload::Money(_))
+        )))
+    })?;
+    lua.register_function("PickupPlayerMoney", |lua, amount: Value| {
+        let n = neutral_number_arg(amount, "Usage: PickupPlayerMoney(amount)")? as u32;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        pickup_player_money(&mut model, n);
+        Ok(())
+    })?;
+    lua.register_function("DropCursorMoney", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        drop_cursor_money(&mut model);
+        Ok(())
+    })?;
+    lua.register_function("AddTradeMoney", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        add_trade_money(&mut model);
+        Ok(())
+    })?;
+    lua.register_function("PickupTradeMoney", |lua, amount: Value| {
+        let n = neutral_number_arg(amount, "Usage: PickupTradeMoney(amount)")?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        pickup_trade_money(&mut model, n);
+        Ok(())
+    })?;
+    lua.register_function("GetCoinIcon", |_, amount: Value| {
+        let n = neutral_number_arg(amount, "Usage: GetCoinIcon(amount)")?;
+        Ok(coin_icon(i64::from(n)))
+    })?;
     Ok(())
 }
 
@@ -221,7 +202,7 @@ mod tests {
         )
         .unwrap();
         s.tick(0.0);
-        s.eval::<Vec<String>>("return EV").unwrap()
+        s.eval_sequence::<String>("return EV").unwrap()
     }
 
     #[test]
@@ -344,7 +325,7 @@ mod tests {
         assert!(s_icon(1_000).ends_with("_04"));
         assert!(s_icon(99_999).ends_with("_01"));
         assert!(s_icon(100_000).ends_with("_02"));
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(s.run("GetCoinIcon(nil)").is_err(), "a non-number raises");
         assert_eq!(
             s.eval::<String>("return GetCoinIcon(12345)").unwrap(),

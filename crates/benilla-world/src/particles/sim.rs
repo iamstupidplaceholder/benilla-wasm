@@ -494,9 +494,9 @@ pub(super) fn simulate_particles(
     tuning: Res<ParticleTuning>,
     // The draw-set gate's scene inputs — the far-clip wall (0678) and the exterior window test
     // (0786); see [`SceneGates`].
-    gates: SceneGates,
+    gates: Option<SceneGates>,
     // The water-plane interleave inputs — see [`WaterInterleave`] and [`far_side_of_water`].
-    interleave: WaterInterleave,
+    interleave: Option<WaterInterleave>,
     mut commands: Commands,
     cam: Query<
         (
@@ -524,7 +524,7 @@ pub(super) fn simulate_particles(
     mut quads: ResMut<EffectQuads>,
     // The ground-snap probe (file 0x2000 births): terrain + WMO/doodad geometry, the walking
     // collision audience.
-    spatial: SpatialQuery,
+    spatial: Option<SpatialQuery>,
     // The two per-MODEL multipliers a cloud carries out of its owner (see [`OwnerMultipliers`]).
     owner_mul: OwnerMultipliers,
     // `Without<WorldCamera>`: the `&mut GlobalTransform` must be provably disjoint from the
@@ -549,10 +549,13 @@ pub(super) fn simulate_particles(
     booth_cams: Query<
         (
             Entity,
-            &GlobalTransform,
+            Ref<GlobalTransform>,
             &RenderLayers,
             &Camera,
             Has<super::ViewThrottled>,
+            &Frustum,
+            Ref<Projection>,
+            Option<Ref<Transform>>,
         ),
         (
             With<Camera3d>,
@@ -569,8 +572,23 @@ pub(super) fn simulate_particles(
     // `$WOW_PARTICLE_DEPTHDUMP` and `$WOW_EMIT_DUMP`. Both inert without their env.
     mut dumps: super::dumps::Dumps,
 ) {
-    let Ok((world_cam, cam_tf, frustum, camera, projection, cam_local)) = cam.single() else {
-        return;
+    // The production simulator serves two scene families. A streamed world has the gameplay
+    // camera and its portal/water/collision services; an off-world booth has its own layered
+    // camera and deliberately owns none of those services. Pick a camera for the frame-global
+    // bookkeeping here, then resolve the actual draw camera per emitter below. This keeps one
+    // integration/emission implementation instead of growing a browser particle simulator.
+    let world_view = cam.single().ok();
+    let has_world_view = world_view.is_some();
+    let (world_cam, cam_tf, frustum, camera, projection, cam_local) = match world_view {
+        Some(view) => view,
+        None => {
+            let Some((entity, tf, _, camera, _, frustum, projection, local)) =
+                booth_cams.iter().next()
+            else {
+                return;
+            };
+            (entity, tf, frustum, camera, projection, local)
+        }
     };
     // Clamp dt so a load hitch doesn't fling every particle out of existence in one step.
     let dt = time.delta_secs().min(0.1);
@@ -583,8 +601,10 @@ pub(super) fn simulate_particles(
     let gate_inputs_still = !cam_tf.is_changed()
         && !projection.is_changed()
         && !cam_local.as_ref().is_some_and(|l| l.is_changed())
-        && !gates.changed()
-        && !interleave.surfaces_changed();
+        && gates.as_ref().is_none_or(|g| !g.changed())
+        && interleave
+            .as_ref()
+            .is_none_or(|water| !water.surfaces_changed());
     let cam_pos = cam_tf.translation();
     let density = tuning.density.clamp(0.25, 1.0);
     let snap_filter = crate::collision::WorldCollision::body_filter();
@@ -597,7 +617,14 @@ pub(super) fn simulate_particles(
     // The far-clip wall, the exterior gate and the camera's own room — built once for the whole
     // emitter walk, the same values the model visibility authority and `exterior_cull` ask
     // (0784/0786: one spelling of the window test).
-    let (farclip, exterior_gate, camera_instance) = gates.scene(Some((&*cam_tf, &*projection)));
+    let (farclip, exterior_gate, camera_instance) = gates.as_ref().map_or(
+        (
+            f32::INFINITY,
+            crate::exterior_cull::ExteriorGate::Open,
+            None,
+        ),
+        |g| g.scene(Some((&*cam_tf, &*projection))),
+    );
     // `$WOW_PARTICLE_DEPTHDUMP` (B16): is this a dump frame? Decided once per run.
     let dump_frame = dumps.depth_frame(time.elapsed_secs());
     // `$WOW_EMIT_DUMP`: is this a dump tick? Decided once per frame, for the whole walk.
@@ -627,7 +654,9 @@ pub(super) fn simulate_particles(
         // this cloud because its scene's camera cannot say so. Same shape either way: pool + age
         // held, no quads, model-instance entities hidden on the edge.
         if scene_frozen(
-            booth.map(|(_, _, _, c, throttled)| (c.is_active, throttled)),
+            booth
+                .as_ref()
+                .map(|(_, _, _, c, throttled, ..)| (c.is_active, *throttled)),
             emitter.frozen,
             emitter.draining,
         ) {
@@ -651,7 +680,10 @@ pub(super) fn simulate_particles(
                 let (_, rot, _) = tf.to_scale_rotation_translation();
                 (cam_entity, tf.translation(), rot * Vec3::X, rot * Vec3::Y)
             }
-            None => (world_cam, cam_pos, cam_right, cam_up),
+            None if has_world_view => (world_cam, cam_pos, cam_right, cam_up),
+            // An off-world composition only owns layered booth emitters. Do not silently aim an
+            // unrelated/default-layer emitter at an arbitrary booth camera if one appears.
+            None => continue,
         };
         // Draw-set gate (byte-verified, decision 0171): the reference ticks an emitter only when
         // its owner doodad is in the frame's scene worklist — admission = the frustum sphere test
@@ -696,7 +728,7 @@ pub(super) fn simulate_particles(
                 // …and the room term (0689/1289): the window above admits a whole BUILDING, which
                 // says nothing about the sealed room the owner prop actually stands in. The mesh
                 // gate has always known this one too, through the prop's own `WmoGroupVis`.
-                gates.room_admits(f),
+                gates.as_ref().is_none_or(|g| g.room_admits(f)),
             );
             if !in_set {
                 // Frozen: the pool writes no quads this frame (the shared stream is cleared
@@ -1160,7 +1192,10 @@ pub(super) fn simulate_particles(
                 // point and the answer comes back into the store (1591 — the identity off a
                 // transport). The drop is along world down, which a yaw-only `A` leaves alone.
                 let world = ride.to_world(pos);
-                if let Some(hit) = spatial.cast_ray(world, Dir3::NEG_Y, 20.0, true, &snap_filter) {
+                if let Some(hit) = spatial
+                    .as_ref()
+                    .and_then(|query| query.cast_ray(world, Dir3::NEG_Y, 20.0, true, &snap_filter))
+                {
                     pos = ride.to_stored(
                         world.with_y(world.y - hit.distance + def.over_life.sample(0.0).size),
                     );
@@ -1303,13 +1338,15 @@ pub(super) fn simulate_particles(
         // at the waterline: the bobbing bone doesn't enter, and the whole cloud only flips when
         // the model's centre is a full radius under.
         let far = !is_booth
-            && model_far_side(
-                &interleave,
-                water_model,
-                water_gt.as_ref(),
-                water_bound,
-                placement.translation,
-            );
+            && interleave.as_ref().is_some_and(|water| {
+                model_far_side(
+                    water,
+                    water_model,
+                    water_gt.as_ref(),
+                    water_bound,
+                    placement.translation,
+                )
+            });
         // The classification's own trace (`WOW_MOVE_TRACE_TAGS=fx`): which clouds dropped under
         // the water pass this frame — the numeric read for "the swimmer's enchant survives the
         // surface", where a pixel can't say which side a draw sorted to.

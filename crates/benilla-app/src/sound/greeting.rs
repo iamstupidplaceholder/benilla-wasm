@@ -39,12 +39,16 @@ use bevy::prelude::*;
 use benilla_formats::NpcGreetingCatalog;
 use benilla_protocol::EntityKind;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::net::{GuidIndex, NetEntity, ObjectStore};
 use crate::ui_gossip::GossipState;
 use crate::ui_merchant::MerchantOpen;
 use crate::ui_quest::QuestGiver;
 use crate::ui_trainer::TrainerOpen;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 use benilla_world::view::WorldCamera;
 
@@ -65,7 +69,7 @@ pub(crate) struct NpcGreetingRequest {
 
 /// The display→greeting catalog (`CreatureDisplayInfo.NPCSoundID` → `NPCSounds`).
 #[derive(Resource)]
-struct NpcGreetings(NpcGreetingCatalog);
+pub(super) struct NpcGreetings(pub(super) NpcGreetingCatalog);
 
 /// System 1's per-NPC variation counter — the client's `[0xc4d970]` (the sequence index) keyed by
 /// `[0xc4d908]` (the tracked NPC; the counter resets when it changes). Advanced only on a play that
@@ -147,11 +151,12 @@ fn window_vocal(prev: Option<u64>, active: Option<u64>) -> WindowVocal {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_npc_greetings(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_npc_greeting_catalog(&mut chain)
+        benilla_formats::load_npc_greeting_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -334,17 +339,17 @@ fn stop_on_despawn(mut removed: RemovedComponents<NetEntity>, mut out: NonSendMu
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
-    app.add_message::<NpcGreetingRequest>()
-        .add_systems(Startup, load_npc_greetings.after(AssetSet::Open))
-        .add_systems(
-            Update,
-            (
-                play_select_greetings,
-                play_window_greetings,
-                stop_on_despawn,
-            )
-                .in_set(WorldStage::Present),
-        );
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_npc_greetings.after(AssetSet::Open));
+    app.add_message::<NpcGreetingRequest>().add_systems(
+        Update,
+        (
+            play_select_greetings,
+            play_window_greetings,
+            stop_on_despawn,
+        )
+            .in_set(WorldStage::Present),
+    );
 }
 
 #[cfg(test)]

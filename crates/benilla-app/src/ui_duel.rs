@@ -162,7 +162,7 @@ impl DuelState {
 
 /// Resolve one owed line against the VM's own string table. `None` = no string, no line — the
 /// reference's data-suppression face.
-fn owed_text(line: &OwedLine, get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+fn owed_text(line: &OwedLine, get: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     use benilla_ui::strings::{fill, Arg};
     let text = match line {
         OwedLine::Countdown(n) => fill(&get("DUEL_COUNTDOWN")?, &[Arg::D(i64::from(*n))]),
@@ -356,10 +356,10 @@ fn feed_duel(
     // the transition the event announces.
     let owed = std::mem::take(&mut duel.owed);
     let lines: Vec<crate::ui_action::Shown> = {
-        let get = |key: &str| script.lua().globals().get::<String>(key).ok();
+        let mut get = |key: &str| script.global_string(key);
         owed.iter()
             .filter_map(|line| {
-                owed_text(line, &get).map(|text| {
+                owed_text(line, &mut get).map(|text| {
                     crate::ui_action::Shown::unkeyed(benilla_ui::messages::MsgKind::Chat, text)
                 })
             })
@@ -649,18 +649,18 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let get = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut get = |key: &str| s.global_string(key);
 
-        let outcome = |fled| {
+        let mut outcome = |fled| {
             owed_text(
                 &OwedLine::Winner {
                     fled,
                     winner: "Onerogue".into(),
                     loser: "Twomage".into(),
                 },
-                &get,
+                &mut get,
             )
         };
         assert_eq!(
@@ -672,7 +672,7 @@ mod tests {
             Some("Twomage has fled from Onerogue in a duel")
         );
         assert_eq!(
-            owed_text(&OwedLine::Countdown(3), &get).as_deref(),
+            owed_text(&OwedLine::Countdown(3), &mut get).as_deref(),
             Some("Duel starting: 3")
         );
     }

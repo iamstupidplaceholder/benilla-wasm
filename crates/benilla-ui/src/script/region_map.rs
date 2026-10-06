@@ -60,9 +60,11 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use mlua::{FromLuaMulti, IntoLuaMulti, Lua, MultiValue, Table, Value};
+use benilla_lua::{
+    CallbackContext, FromLuaMulti, IntoLuaMulti, LuaContext, MultiValue, Table, Value, Vm,
+};
 
-use super::object::decode_id;
+use super::object::decode_id_context;
 use super::{
     Model, REGION_MAP_METHODS, REG_FONTSTRING_METHODS, REG_FRAME_METHODS, REG_REGION_METHODS,
     REG_TEXTURE_METHODS, REG_TITLE_METHODS,
@@ -78,8 +80,8 @@ pub(super) enum Side {
 
 /// `Err` when the table is not a widget wrapper at all (that error names the real problem and is
 /// worth keeping); `Ok(None)` when it *is* one whose widget no longer exists.
-fn side_of(lua: &Lua, this: &Table) -> mlua::Result<Option<Side>> {
-    let id = decode_id(this)?;
+fn side_of(lua: &mut impl LuaContext, this: &Table) -> benilla_lua::Result<Option<Side>> {
+    let id = decode_id_context(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     Ok(if model.id_to_frame.contains_key(&id) {
         Some(Side::Frame)
@@ -93,17 +95,19 @@ fn side_of(lua: &Lua, this: &Table) -> mlua::Result<Option<Side>> {
 /// One side's implementation of one of the 19, type-erased to the variadic ABI.
 ///
 /// **The erasure is the point** (decision 2310). The dispatcher used to hold each side as an
-/// `mlua::Function` and reach it with `Function::call`, which re-enters Lua: every argument and
-/// every return value round-trips through mlua's ref thread twice, and the whole call is wrapped
-/// in a `lua_pcall`. Measured in a release build, a `MultiValue` relay costs **~420 ns** against
+/// a backend function handle and reach it with a VM call, which re-enters Lua: every argument and
+/// every return value round-trips through the backend's reference store twice, and the whole call
+/// is wrapped in a protected call. Measured in a release build, a `MultiValue` relay costs
+/// **~420 ns** against
 /// ~40 ns for a scalar one, and a bridged `GetWidth()` measured **~750 ns against ~99 ns** for an
 /// unbridged frame method — a 7x tax on `SetPoint`, `GetWidth`, `ClearAllPoints`, `GetParent`, the
 /// verbs every UI calls most. An `Rc<dyn Fn>` is one ordinary Rust call.
 ///
-/// The ABI is exactly what `Lua::create_function` builds internally for a typed body — see
-/// [`shared`], which is the only thing that makes one — so nothing about argument conversion,
+/// The ABI is exactly what `Vm::create_function` builds internally for a typed body — see
+/// [`set_shared`], which is the only thing that makes one — so nothing about argument conversion,
 /// arity or coercion changes by going through it.
-pub(super) type Arm = Rc<dyn Fn(&Lua, MultiValue) -> mlua::Result<MultiValue>>;
+pub(super) type Arm =
+    Rc<dyn for<'a> Fn(&mut CallbackContext<'a>, MultiValue) -> benilla_lua::Result<MultiValue>>;
 
 /// The arms the two method-table installers register, collected for [`install`].
 ///
@@ -123,25 +127,22 @@ pub(super) struct Arms(HashMap<(Side, &'static str), Arm>);
 /// shared dispatcher. It exists so the pre-bridge tables are still complete for anything that
 /// reads them in between (the leaf tables are *copied* out of the region table, mid-install).
 pub(super) fn set_shared<A, R, F>(
-    lua: &Lua,
+    vm: &mut Vm,
     m: &Table,
     side: Side,
     name: &'static str,
     f: F,
-) -> mlua::Result<()>
+) -> benilla_lua::Result<()>
 where
     A: FromLuaMulti + 'static,
     R: IntoLuaMulti + 'static,
-    F: Fn(&Lua, A) -> mlua::Result<R> + 'static,
+    F: for<'a> Fn(&mut CallbackContext<'a>, A) -> benilla_lua::Result<R> + 'static,
 {
-    let arm: Arm =
-        Rc::new(move |lua, args| f(lua, A::from_lua_multi(args, lua)?)?.into_lua_multi(lua));
+    let arm: Arm = Rc::new(move |lua, args| f(lua, A::from_lua_multi(args)?)?.into_lua_multi());
     let entry = arm.clone();
-    m.set(
-        name,
-        lua.create_function(move |lua, args: MultiValue| entry(lua, args))?,
-    )?;
-    lua.app_data_mut::<Arms>()
+    let function = vm.create_host_function(name, move |lua, args| entry(lua, args))?;
+    vm.table_set_function(m, name, &function)?;
+    vm.app_data_mut::<Arms>()
         .expect("Region-map arms — installed by `super::object::install`")
         .0
         .insert((side, name), arm);
@@ -150,8 +151,8 @@ where
 
 /// Open the arm collection. Called once, at the top of [`super::object::install`], before either
 /// method table is built; [`install`] closes it.
-pub(super) fn open_arms(lua: &Lua) {
-    lua.set_app_data(Arms::default());
+pub(super) fn open_arms(vm: &mut Vm) {
+    vm.set_app_data(Arms::default());
 }
 
 /// Replace each of the 19 Region-map entries in every table the chain reaches with one shared
@@ -159,19 +160,19 @@ pub(super) fn open_arms(lua: &Lua) {
 ///
 /// Runs **after** `region::install` (which is what builds the region, leaf and title tables) and
 /// after `install_frame_methods`; every table it names is already populated by then.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let frame: Table = lua.named_registry_value(REG_FRAME_METHODS)?;
-    let region: Table = lua.named_registry_value(REG_REGION_METHODS)?;
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let frame: Table = vm.named_registry_value(REG_FRAME_METHODS)?;
+    let region: Table = vm.named_registry_value(REG_REGION_METHODS)?;
     let leaves: Vec<Table> = [
         REG_TEXTURE_METHODS,
         REG_FONTSTRING_METHODS,
         REG_TITLE_METHODS,
     ]
     .into_iter()
-    .map(|k| lua.named_registry_value::<Table>(k))
-    .collect::<mlua::Result<_>>()?;
+    .map(|key| vm.named_registry_value::<Table>(key))
+    .collect::<benilla_lua::Result<_>>()?;
 
-    let arms = lua
+    let arms = vm
         .remove_app_data::<Arms>()
         .expect("Region-map arms — opened by `open_arms`");
 
@@ -180,24 +181,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // function: the reference gives every widget all 19, so a gap on either side is a hole in
         // the surface and says so here rather than at some addon's call site. (`GetNumPoints` was
         // exactly that hole on the frame side until this module went in.)
-        let arm = |side: Side, which: &str| -> mlua::Result<Arm> {
+        let arm = |side: Side, which: &str| -> benilla_lua::Result<Arm> {
             arms.0.get(&(side, name)).cloned().ok_or_else(|| {
-                mlua::Error::runtime(format!(
+                benilla_lua::Error::runtime(format!(
                     "Region map: the {which} side never registered {name} through `set_shared`"
                 ))
             })
         };
         let on_frame = arm(Side::Frame, "FRAME")?;
         let on_region = arm(Side::Region, "REGION")?;
-        let shared = lua.create_function(move |lua, args: MultiValue| {
+        let shared = vm.create_host_function(name, move |lua, args: MultiValue| {
             // The receiver is argument 1 on every one of the 19 — a method call always passes it,
             // and a pulled-off `Api._Height(x)` call passes it as the only argument. Borrowed
-            // rather than cloned: an mlua `Value::Table` clone registers a second reference in the
-            // ref thread, and this is the entry point for the verbs a map-note redraw calls
-            // thousands of times.
+            // rather than cloned: a `Value::Table` clone registers a second rooted reference, and
+            // this is the entry point for the verbs a map-note redraw calls thousands of times.
             let side = {
                 let Some(Value::Table(this)) = args.iter().next() else {
-                    return Err(mlua::Error::runtime(
+                    return Err(benilla_lua::Error::runtime(
                         "expected a frame or region as the first argument",
                     ));
                 };
@@ -210,13 +210,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 // A wrapper whose widget is gone. Deliberately ONE message for both sides — at
                 // this point the receiver's kind is exactly what could not be established, and
                 // each side's own wording claimed it.
-                None => Err(mlua::Error::runtime("stale or invalid widget handle")),
+                None => Err(benilla_lua::Error::runtime(
+                    "stale or invalid widget handle",
+                )),
             }
         })?;
-        frame.set(name, shared.clone())?;
-        region.set(name, shared.clone())?;
+        vm.table_set_function(&frame, name, &shared)?;
+        vm.table_set_function(&region, name, &shared)?;
         for leaf in &leaves {
-            leaf.set(name, shared.clone())?;
+            vm.table_set_function(leaf, name, &shared)?;
         }
     }
     Ok(())

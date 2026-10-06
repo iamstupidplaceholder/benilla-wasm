@@ -102,6 +102,8 @@
 
 mod faces;
 mod gpu;
+mod source;
+use source::FontSource;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -113,10 +115,42 @@ use cosmic_text::{
     Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap,
 };
 
-use benilla_assets::{LockRecover, WorldAssets};
+#[cfg(test)]
+use benilla_assets::LockRecover;
 
 use faces::{hhea_ascent_ratio, register_font, CLIENT_FONTS};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use gpu::FontInit;
 pub(crate) use gpu::UiTextPlugin;
+
+#[cfg(any(target_arch = "wasm32", feature = "port-gates"))]
+pub(crate) fn client_font_files() -> &'static [&'static str] {
+    CLIENT_FONTS
+}
+
+#[cfg(feature = "port-gates")]
+pub fn verify_font_host_boundary() {
+    use bevy::asset::{AssetApp, AssetPlugin};
+    // The real registrar starts with ONLY client faces; host/system fonts are
+    // not a silent fallback when delivery is missing or bytes are invalid.
+    let mut system = client_font_system();
+    assert_eq!(system.db().faces().count(), 0);
+    assert!(register_font(&mut system, vec![0xff, 0, 0x80]).is_err());
+    assert_eq!(system.db().faces().count(), 0);
+    assert_eq!(client_font_files().len(), 4);
+    assert!(FontSource::open(None).is_none());
+
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default(), UiTextPlugin))
+        .init_asset::<Image>();
+    app.world_mut()
+        .spawn((Window::default(), bevy::window::PrimaryWindow));
+    app.update();
+    assert!(
+        !app.world().contains_resource::<UiFontAtlas>(),
+        "no source cannot create a fallback or fabricated glyph atlas"
+    );
+}
 
 use super::outline::outlined_cell;
 use super::pack::{Cell, Sheet};
@@ -213,18 +247,6 @@ struct CacheStats {
 // The engine
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The two stores a font path can come from — the same pair, in the same order, that
-/// [`benilla_assets::WorldAssets`]'s sprite decoder walks (decision 1322, generalised by 2103).
-///
-/// Chain first: no MPQ holds an `Interface\AddOns\` path, so the order is unobservable and every
-/// client path stays on exactly the code it always ran.
-struct FontSource {
-    chain: Arc<Mutex<benilla_formats::Chain>>,
-    /// The ONE AddOns root, from `ui_script::addons::root()` — `None` under `$WOW_CAPTURE`, which
-    /// is what keeps a capture hermetic for free.
-    loose_root: Option<std::path::PathBuf>,
-}
-
 /// The font engine: faces, the two caches, and the texture pages.
 pub(crate) struct TextEngine {
     font_system: FontSystem,
@@ -295,21 +317,20 @@ fn client_font_system() -> FontSystem {
 }
 
 impl TextEngine {
-    /// Read the client TTFs through the app's own patch chain ([`WorldAssets::chain`] — never
-    /// `std::fs`) and register them. `None` if Friz Quadrata (the fallback face) is unreadable, in
+    /// Read the client TTFs through the host byte source and register them.
+    /// `None` if Friz Quadrata (the fallback face) is unreadable, in
     /// which case text simply will not render — the same graceful-absence posture
     /// [`crate::ui_script`]'s extraction takes.
-    fn load(world_assets: &WorldAssets, images: &Assets<Image>, dpi: f32) -> Option<Self> {
+    fn load(source: FontSource, images: &Assets<Image>, dpi: f32) -> Option<Self> {
         let mut font_system = client_font_system();
         let mut faces: Vec<Face> = Vec::new();
         let mut path_to_face = HashMap::new();
         for &path in CLIENT_FONTS {
             let bytes = {
-                let chain = world_assets.chain.lock_recover();
-                match chain.read(path) {
+                match source.read_client(path) {
                     Ok(b) => b,
                     Err(e) => {
-                        warn!("ui_text: failed to read {path} from the patch chain: {e:#}");
+                        warn!("ui_text: failed to read {path} from the font source: {e:#}");
                         continue;
                     }
                 }
@@ -344,10 +365,7 @@ impl TextEngine {
             swash: SwashCache::new(),
             faces,
             path_to_face,
-            source: Some(FontSource {
-                chain: world_assets.chain.clone(),
-                loose_root: crate::ui_script::addons::root(),
-            }),
+            source: Some(source),
             missing_fonts: HashSet::new(),
             default_face,
             dpi,
@@ -385,6 +403,12 @@ impl TextEngine {
             return i;
         }
         if self.missing_fonts.contains(&key) {
+            return self.default_face;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if self.source.as_ref().is_some_and(|source| source.pending(p)) {
+            // Unready bytes are not a missing-font verdict. Delivery is queued
+            // once by the host and retried by the common HTTP adapter.
             return self.default_face;
         }
         match self.load_face(p, &key) {
@@ -830,7 +854,7 @@ impl UiFontAtlas {
 /// with a lowercase `d`, and ships `mailrays.TTF` while its table says `mailrays.ttf`), and a
 /// dot-component is refused before any filesystem call.
 fn read_font_bytes(source: &FontSource, path: &str) -> Option<Vec<u8>> {
-    benilla_assets::read_chain_or_loose(&source.chain, source.loose_root.as_deref(), path)
+    source.read(path)
 }
 
 /// A real-font engine for a test: the client faces, read through the app's own patch chain. `None`

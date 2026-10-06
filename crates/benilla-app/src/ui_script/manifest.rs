@@ -61,7 +61,7 @@ pub(super) fn shipped_manifest_files() -> Vec<String> {
 /// The ref applies `UIPARENT_MANAGED_FRAME_POSITIONS` once at load, then re-fires from the bottom
 /// bars' OnShow/OnHide. Every frame the table names exists by the time this runs, so this is that
 /// load-time application; the stance bar's show/hide handles the rest at runtime.
-fn bootstrap_positions(script: &UiScript) -> Vec<String> {
+fn bootstrap_positions(script: &mut UiScript) -> Vec<String> {
     if let Err(e) = script.run("UIParent_ManageFramePositions()") {
         error!("ui_script: managed-positions bootstrap: {e}");
         return vec![format!("managed-positions bootstrap: {e}")];
@@ -115,7 +115,7 @@ fn bootstrap_positions(script: &UiScript) -> Vec<String> {
 /// Re-stated rather than wrapped (the reference body is two lines), so re-running it after a
 /// `ReloadUI` re-defines the same function instead of stacking. Guarded on the function's
 /// presence: the font-registry-only load has no chat files.
-pub(super) fn install_chat_plate_guard(script: &UiScript) -> Result<(), String> {
+pub(super) fn install_chat_plate_guard(script: &mut UiScript) -> Result<(), String> {
     script.run(CHAT_PLATE_GUARD).map_err(|e| e.to_string())
 }
 
@@ -144,7 +144,7 @@ end
 /// do not, which makes Rust the durable home.
 ///
 /// Guarded, because the font-registry-only load has no buff bar.
-pub(super) fn apply_buff_durations(script: &UiScript) -> Result<(), String> {
+pub(super) fn apply_buff_durations(script: &mut UiScript) -> Result<(), String> {
     script
         .run("if BuffButtons_UpdatePositions then BuffButtons_UpdatePositions() end")
         .map_err(|e| e.to_string())
@@ -171,7 +171,7 @@ pub(super) fn apply_buff_durations(script: &UiScript) -> Result<(), String> {
 /// Idempotent by its own latch, so a `ReloadUI` cannot stack wrappers. The reference's handler
 /// still runs first and unchanged: `this`, `event` and `arg1` are globals the engine has already
 /// set for the dispatch, so calling it through the captured reference is the same call.
-pub(super) fn install_durability_reseat(script: &UiScript) -> Result<(), String> {
+pub(super) fn install_durability_reseat(script: &mut UiScript) -> Result<(), String> {
     script.run(DURABILITY_RESEAT).map_err(|e| e.to_string())
 }
 
@@ -206,7 +206,7 @@ end
 /// phases, so production has no caller for the whole-manifest form — the tests do, and so does
 /// the addon harness ([`crate::addon_harness`]), which needs our entire interface under each
 /// surveyed addon.
-pub(crate) fn load_default_ui(script: &UiScript) -> Vec<String> {
+pub(crate) fn load_default_ui(script: &mut UiScript) -> Vec<String> {
     // **The client's CVar table first, because the interface reads CVars AT LOAD** (decision
     // 2115). The app registers `crate::cvars::REGISTERED` at startup, long before world entry, so
     // in the running client this call finds every name already there and only refreshes its
@@ -230,7 +230,7 @@ pub(crate) fn load_default_ui(script: &UiScript) -> Vec<String> {
     // call `PlaySound("INTERFACESOUND_LOSTTARGETUNIT")`. The engine throws it away. Decision 1033
     // reached the right rule from the director's ear; this is the binary agreeing.
     script.push_sound_suppression();
-    let mut failures = load_manifest(script, &Addon::builtin().toc.files);
+    let mut failures = load_manifest(&mut *script, &Addon::builtin().toc.files);
     failures.extend(bootstrap_positions(script));
     script.pop_sound_suppression();
     // **A handler that raised DURING the walk is a load failure.** The loader's own report holds
@@ -256,7 +256,7 @@ pub(crate) fn load_default_ui(script: &UiScript) -> Vec<String> {
 /// per-entry rather than per-run so the manifest's order is the load order verbatim — the whole
 /// reason the list is a manifest and not two lists.
 ///
-fn load_manifest(script: &UiScript, files: &[String]) -> Vec<String> {
+fn load_manifest(script: &mut UiScript, files: &[String]) -> Vec<String> {
     let builtin = Addon::builtin();
     let reference = reference_ui::addon(
         files
@@ -272,7 +272,7 @@ fn load_manifest(script: &UiScript, files: &[String]) -> Vec<String> {
         } else {
             &builtin
         };
-        failures.extend(from.load_files(script, std::slice::from_ref(file)));
+        failures.extend(from.load_files(&mut *script, std::slice::from_ref(file)));
     }
     failures
 }
@@ -283,9 +283,9 @@ fn load_manifest(script: &UiScript, files: &[String]) -> Vec<String> {
 /// distinct `(font, height, outline)` combinations**. The three font objects defined outside it
 /// (`GameFontNormalMed1` 13, `OptionsFontHighlightMedium` 14, `OptionsFontHighlightHuge` 20) are
 /// un-outlined and their heights are already declared here, so they add nothing to the bake plan.
-pub(crate) fn load_font_registry(script: &UiScript) -> Vec<String> {
+pub(crate) fn load_font_registry(script: &mut UiScript) -> Vec<String> {
     load_manifest(
-        script,
+        &mut *script,
         Addon::builtin().toc.files.get(..1).unwrap_or_default(),
     )
 }
@@ -326,9 +326,22 @@ pub(crate) fn load_ingame_ui(
     // (`lifecycle::load_ingame_ui_on_world_entry`), so the session's steady state runs unhooked.
     script.set_instruction_budget(super::addons::LOAD_INSTRUCTION_BUDGET);
     let mut failures = load_manifest(
-        script,
+        &mut *script,
         Addon::builtin().toc.files.get(1..).unwrap_or_default(),
     );
+    // Closing a browser tab is not a game-menu action. Keep the shared menu and
+    // native Quit path, but remove its browser seat before third-party addons load.
+    #[cfg(target_arch = "wasm32")]
+    if let Err(error) = script.run(
+        r#"
+        GameMenuButtonQuit:Hide()
+        GameMenuButtonContinue:ClearAllPoints()
+        GameMenuButtonContinue:SetPoint("TOPLEFT", GameMenuButtonLogout, "BOTTOMLEFT", 0, -20)
+        GameMenuFrame:SetHeight(246)
+    "#,
+    ) {
+        failures.push(format!("browser game-menu layout: {error}"));
+    }
     failures.extend(bootstrap_positions(script));
     // `&mut` from here down: each addon's `ADDON_LOADED` fires as that addon finishes, which is
     // the reference's own interleaving (`0x51f5ad`, per addon) rather than a batch at the end.

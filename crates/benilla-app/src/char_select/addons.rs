@@ -576,7 +576,7 @@ pub(super) fn drive_addons_panel(
     art: Res<GlueArt>,
     assets: Res<AssetServer>,
     strings: Option<Res<GlueStrings>>,
-    script: Option<NonSendMut<UiScript>>,
+    mut script: Option<NonSendMut<UiScript>>,
     mut cvars: ResMut<crate::cvars::Cvars>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -697,7 +697,7 @@ pub(super) fn drive_addons_panel(
     // statuses this same frame with nothing rescanned. Absent VM or table = the registrar
     // default: check ON.
     let version_check = script
-        .as_deref()
+        .as_deref_mut()
         .and_then(|s| s.cvar("checkAddonVersion"))
         .is_none_or(|v| v != "0");
     if panel.version_check != version_check {
@@ -728,6 +728,23 @@ pub(super) fn drive_addons_panel(
         panel.tip = None;
     }
     if panel.root.is_none() {
+        // Browser delivery is asynchronous. Admit the original panel artwork
+        // together before spawning its interactive tree; an admitted panel is
+        // kept visible rather than being hidden by later resource activity.
+        #[cfg(target_arch = "wasm32")]
+        if art.help_frame.is_none()
+            || art.dialog_header.is_none()
+            || art.close_btn.is_none()
+            || art.dropdown_arrow_up.is_none()
+            || art.dropdown_arrow_down.is_none()
+            || art.checkbox.is_none()
+            || art.check_disabled.is_none()
+            || art.quest_hilight.is_none()
+            || art.tooltip_border.is_none()
+            || art.char_scrollbar.is_none()
+        {
+            return;
+        }
         let empty = GlueStrings::default();
         let strings = strings.as_deref().unwrap_or(&empty);
         panel.root = Some(spawn_panel(

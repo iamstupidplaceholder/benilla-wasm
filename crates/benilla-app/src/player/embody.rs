@@ -43,7 +43,10 @@ use bevy::prelude::*;
 use super::follow::FollowState;
 use super::state::Player;
 use crate::creature_anim::MovementState;
-use crate::net::{ActiveMover, Embodied, GuidIndex, RemoteMotion, SelfGuid, SelfPlayer};
+use crate::net::{
+    ActiveMover, ClientCommand, Embodied, GuidIndex, NetCommands, RemoteMotion, SelfGuid,
+    SelfPlayer,
+};
 
 /// Keep [`Embodied`] on the one body we are attached to — the possessed unit while we hold its
 /// reins, our own otherwise, and nobody at all while neither is streamed — and [`ActiveMover`] on
@@ -60,8 +63,28 @@ pub(super) fn maintain_embodiment(
     attached: Query<Entity, With<Embodied>>,
     steering: Query<Entity, With<ActiveMover>>,
     mut held: Local<Option<u64>>,
+    net: Res<NetCommands>,
+    mut claimed_self: Local<Option<(Entity, u64)>>,
 ) {
     let (self_guid, index) = (&guids.0, &guids.1);
+    // A selected character is not yet a logged-in mover. Wait for its
+    // authoritative self object before claiming it, and do so before the
+    // controller can send movement. Both IO hosts use this same edge.
+    // Control handoffs still own their existing claims in wire_in.
+    let admitted_self = self_body.iter().next().zip(self_guid.0);
+    if admitted_self.is_none() {
+        *claimed_self = None;
+    } else if player.foreign_mover.is_none() && !player.control_lost {
+        if let Some((entity, guid)) = admitted_self {
+            if *claimed_self != Some((entity, guid))
+                && net.0.send(ClientCommand::SetActiveMover { guid }).is_ok()
+            {
+                super::move_trace::mover_claim("SET_ACTIVE_MOVER", guid);
+                info!("movement: admitted self {guid:#x} — active mover claim queued");
+                *claimed_self = Some((entity, guid));
+            }
+        }
+    }
     // Which body we are attached to, and which entity that is. Two answers:
     //
     // - **A claimed foreign mover** answers by itself: either its object is streamed and it is the
@@ -138,10 +161,12 @@ mod tests {
 
     fn harness() -> (App, Entity) {
         let mut app = App::new();
+        let (commands, _) = crossbeam_channel::unbounded();
         app.init_resource::<Player>()
             .init_resource::<FollowState>()
             .init_resource::<SelfGuid>()
             .init_resource::<GuidIndex>()
+            .insert_resource(NetCommands(commands))
             .add_systems(Update, maintain_embodiment);
         let me = app.world_mut().spawn(SelfPlayer).id();
         app.world_mut().resource_mut::<SelfGuid>().0 = Some(0xAA);

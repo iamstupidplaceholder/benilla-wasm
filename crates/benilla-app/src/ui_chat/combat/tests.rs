@@ -79,7 +79,7 @@ fn every_family_matches_the_shipped_template() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let script = benilla_ui::script::UiScript::new().expect("VM");
+    let mut script = benilla_ui::script::UiScript::new().expect("VM");
     script
         .run(&String::from_utf8_lossy(&src))
         .expect("GlobalStrings runs clean");
@@ -88,7 +88,7 @@ fn every_family_matches_the_shipped_template() {
     for &family in ALL_FAMILIES {
         for &variant in variants_of(family) {
             let key = family.key(variant);
-            let Some(template) = global_string(&script, &key) else {
+            let Some(template) = global_string(&mut script, &key) else {
                 continue;
             };
             assert_eq!(
@@ -120,7 +120,7 @@ fn every_family_has_the_three_core_keys() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let script = benilla_ui::script::UiScript::new().expect("VM");
+    let mut script = benilla_ui::script::UiScript::new().expect("VM");
     script
         .run(&String::from_utf8_lossy(&src))
         .expect("GlobalStrings runs clean");
@@ -133,7 +133,7 @@ fn every_family_has_the_three_core_keys() {
         for variant in core {
             let key = family.key(variant);
             assert!(
-                global_string(&script, &key).is_some(),
+                global_string(&mut script, &key).is_some(),
                 "{key} is not a GlobalString — wrong stem?"
             );
         }
@@ -149,7 +149,9 @@ fn the_school_and_power_words_resolve() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let script = benilla_ui::script::UiScript::new().expect("VM");
+    let mut script = benilla_ui::script::UiScript::new().expect("VM");
+    let schools = benilla_formats::load_resistance_catalog(&mut chain).expect("Resistances.dbc");
+    script.set_damage_school_names(&schools.names);
     script
         .run(&String::from_utf8_lossy(&src))
         .expect("GlobalStrings runs clean");
@@ -157,8 +159,8 @@ fn the_school_and_power_words_resolve() {
     // The seven 1.12 schools (`SpellSchools`, 0 physical … 6 arcane).
     for school in 0..=6u8 {
         assert!(
-            school_word(&script, school).is_some(),
-            "SPELL_SCHOOL{school}_CAP missing"
+            school_word(&mut script, school).is_some(),
+            "Resistances.dbc school {school} missing"
         );
     }
     // `0x6278f0`'s table is FIVE entries — `cmp ecx,5; jae` — and happiness is the fifth. This
@@ -166,13 +168,13 @@ fn the_school_and_power_words_resolve() {
     // says otherwise, and reading it here is what settles it.
     for power in 0..=4u32 {
         assert!(
-            power_word(&script, power).is_some(),
+            power_word(&mut script, power).is_some(),
             "power {power} missing"
         );
     }
-    assert_eq!(power_word(&script, 4).as_deref(), Some("Happiness"));
+    assert_eq!(power_word(&mut script, 4).as_deref(), Some("Happiness"));
     // Past the table's five entries the reference returns NULL and the line is dropped.
-    assert!(power_word(&script, 5).is_none());
+    assert!(power_word(&mut script, 5).is_none());
 }
 
 /// The sentences a player actually reads, end to end, on the real strings — the residue
@@ -186,7 +188,9 @@ fn the_reported_sentences_read_correctly() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let script = benilla_ui::script::UiScript::new().expect("VM");
+    let mut script = benilla_ui::script::UiScript::new().expect("VM");
+    let schools = benilla_formats::load_resistance_catalog(&mut chain).expect("Resistances.dbc");
+    script.set_damage_school_names(&schools.names);
     script
         .run(&String::from_utf8_lossy(&src))
         .expect("GlobalStrings runs clean");
@@ -204,7 +208,7 @@ fn the_reported_sentences_read_correctly() {
         named: "Copper Bar".into(),
         trailers: None,
     };
-    let line = |family, variant| compose_line(&script, family, variant, &fills).expect("composes");
+    let mut line = |family, variant| compose_line(&mut script, family, variant, &fills).expect("composes");
 
     // The ledger's own example line, and the one a damage meter parses — both directions.
     assert_eq!(

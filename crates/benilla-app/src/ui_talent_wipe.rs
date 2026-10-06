@@ -168,11 +168,7 @@ fn drain_talent_wipe(
         );
         // The reference's `DisplayError(0x25)` = `ERR_NOT_ENOUGH_MONEY`: the red line AND, since
         // that row's `+0x0c` is `0x28`, the spoken one (decision 1815).
-        let text = script
-            .lua()
-            .globals()
-            .get::<String>("ERR_NOT_ENOUGH_MONEY")
-            .unwrap_or_default();
+        let text = script.global_string("ERR_NOT_ENOUGH_MONEY").unwrap_or_default();
         if !text.is_empty() {
             crate::ui_action::show_messages(
                 &mut script,

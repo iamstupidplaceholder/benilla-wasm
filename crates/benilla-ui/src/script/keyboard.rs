@@ -57,7 +57,7 @@
 //! stored, gated in the table above — and never fired. That is stated rather than hidden, because
 //! its one observable consequence is live: a frame with only an `OnKeyUp` still consumes key-downs.
 
-use mlua::Lua;
+use benilla_lua::{Value, Vm};
 
 use super::{event, Model};
 use crate::widget::{FrameHandle, FrameKind};
@@ -84,7 +84,7 @@ fn walk_order(model: &Model) -> Vec<FrameHandle> {
     let mut candidates: Vec<(FrameHandle, u8, u16, u32)> = model
         .arena
         .iter_frames()
-        .filter(|(_, f)| f.effective_visible && f.keyboard_enabled)
+        .filter(|(h, f)| f.effective_visible && f.keyboard_enabled && model.input_presented(*h))
         .map(|(h, f)| (h, f.strata as u8, f.level, f.insertion_seq))
         .collect();
     // strata DESC, level DESC, insertion ASC — the inserter's own ordering (`0x764aa0`), where a
@@ -98,8 +98,8 @@ fn walk_order(model: &Model) -> Vec<FrameHandle> {
 ///
 /// The existence test the C++ gate performs on `+0x180`/`+0x188`/`+0x190` — asked of the script
 /// registry, which is where this engine keeps those slots.
-fn has_script(lua: &Lua, id: u32, name: &str) -> bool {
-    event::has_widget_handler(lua, id, name)
+fn has_script(lua: &mut Vm, id: u32, name: &str) -> bool {
+    event::has_widget_handler_context(lua, id, name)
 }
 
 /// Is `h` a `CSimpleEditBox`?
@@ -119,7 +119,7 @@ fn has_script(lua: &Lua, id: u32, name: &str) -> bool {
 /// (`SendMailFrame_SendeeAutocomplete`) and is the first-registered keyboard frame in the mail
 /// window, so the send tab's subject, body and three money boxes took no input at all — the whole
 /// window typed dead except the one box the handler is on (decision 2145).
-fn is_editbox(lua: &Lua, h: FrameHandle) -> bool {
+fn is_editbox(lua: &mut Vm, h: FrameHandle) -> bool {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     model
         .arena
@@ -132,7 +132,7 @@ fn is_editbox(lua: &Lua, h: FrameHandle) -> bool {
 /// Returns whether the event was **consumed**, which is what the caller must use to suppress the
 /// keybinding system: consumption is decided by the C++ existence gate alone, never by what the
 /// Lua handler did or returned (§3.1).
-fn walk(lua: &Lua, channel: Channel, arg: &str) -> bool {
+fn walk(lua: &mut Vm, channel: Channel, arg: &str) -> bool {
     let order = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         walk_order(&model)
@@ -146,8 +146,8 @@ fn walk(lua: &Lua, channel: Channel, arg: &str) -> bool {
         };
         if is_focused_box {
             let consumed = match channel {
-                Channel::Char => super::editbox::char_input(lua, arg),
-                Channel::KeyDown => super::editbox::key_input(lua, arg),
+                Channel::Char => super::editbox::char_input(&mut *lua, arg),
+                Channel::KeyDown => super::editbox::key_input(&mut *lua, arg),
             };
             if consumed {
                 return true;
@@ -158,7 +158,7 @@ fn walk(lua: &Lua, channel: Channel, arg: &str) -> bool {
         // override returns 0 and the walk moves on. The base slot is unreachable here — see
         // [`is_editbox`]. A no-focus self-acquire still happens, at [`super::editbox::route`],
         // when the whole walk declines.
-        if is_editbox(lua, h) {
+        if is_editbox(&mut *lua, h) {
             continue;
         }
         let id = {
@@ -168,17 +168,17 @@ fn walk(lua: &Lua, channel: Channel, arg: &str) -> bool {
         match channel {
             // `0x76b760`: gates on the OnChar slot alone.
             Channel::Char => {
-                if has_script(lua, id, "OnChar") {
-                    fire(lua, id, "OnChar", arg);
+                if has_script(&mut *lua, id, "OnChar") {
+                    fire(&mut *lua, id, "OnChar", arg);
                     return true;
                 }
             }
             // `0x76b7d0`: the OR gate — either key slot consumes, only `OnKeyDown` fires.
             Channel::KeyDown => {
-                let down = has_script(lua, id, "OnKeyDown");
-                if down || has_script(lua, id, "OnKeyUp") {
+                let down = has_script(&mut *lua, id, "OnKeyDown");
+                if down || has_script(&mut *lua, id, "OnKeyUp") {
                     if down {
-                        fire(lua, id, "OnKeyDown", arg);
+                        fire(&mut *lua, id, "OnKeyDown", arg);
                     }
                     return true;
                 }
@@ -191,18 +191,9 @@ fn walk(lua: &Lua, channel: Channel, arg: &str) -> bool {
 /// Fire one key handler with its single string argument (`0x7026f0(frame, &slot, "%s", str)` — the
 /// argument is a string on all three channels). Errors land in [`Model::errors`] like every other
 /// widget handler; a raising handler must not eat the key press.
-fn fire(lua: &Lua, id: u32, script: &str, arg: &str) {
-    let val = mlua::Value::String(match lua.create_string(arg) {
-        Ok(s) => s,
-        Err(e) => {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .errors
-                .push(e.to_string());
-            return;
-        }
-    });
-    if let Err(e) = event::fire_widget_handler(lua, id, script, vec![val]) {
+fn fire(lua: &mut Vm, id: u32, script: &str, arg: &str) {
+    let result = event::fire_widget_handler_context(lua, id, script, vec![Value::from(arg)]);
+    if let Err(e) = result {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
             .errors
@@ -212,14 +203,14 @@ fn fire(lua: &Lua, id: u32, script: &str, arg: &str) {
 
 /// The char channel (`0x765df0`) — `arg1` is the literal character, UTF-8 (§4.1: the code is
 /// UTF-8-encoded with no range guard, so a multi-byte codepoint arrives whole).
-pub(super) fn char_input(lua: &Lua, text: &str) -> bool {
+pub(super) fn char_input(lua: &mut Vm, text: &str) -> bool {
     walk(lua, Channel::Char, text)
 }
 
 /// The key-down channel (`0x765f10`) — `arg1` is the key NAME, with no modifier prefix, from the
 /// same table the keybinding chord uses (§4.2). The host speaks those names already
 /// (`crate::script::UiScript::key_input`'s contract), so no decode happens here.
-pub(super) fn key_input(lua: &Lua, key: &str) -> bool {
+pub(super) fn key_input(lua: &mut Vm, key: &str) -> bool {
     walk(lua, Channel::KeyDown, key)
 }
 
@@ -234,7 +225,7 @@ pub(super) fn key_input(lua: &Lua, key: &str) -> bool {
 /// it: a frame above the box in walk order consumes and fires; a box above the frame ends the walk
 /// with `false`, and the caller then dispatches its chord exactly as before. The one thing this
 /// must never do is let a frame *below* the focused box steal the box's editing keys.
-pub(super) fn frame_key_input(lua: &Lua, key: &str) -> bool {
+pub(super) fn frame_key_input(lua: &mut Vm, key: &str) -> bool {
     let order = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         walk_order(&model)
@@ -248,17 +239,17 @@ pub(super) fn frame_key_input(lua: &Lua, key: &str) -> bool {
         }
         // …and an UNfocused box declines instead of gating on `+0x188`/`+0x190` ([`is_editbox`]),
         // so it can never steal a neighbour's BACKSPACE either.
-        if is_editbox(lua, h) {
+        if is_editbox(&mut *lua, h) {
             continue;
         }
         let id = {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.frame_id(h)
         };
-        let down = has_script(lua, id, "OnKeyDown");
-        if down || has_script(lua, id, "OnKeyUp") {
+        let down = has_script(&mut *lua, id, "OnKeyDown");
+        if down || has_script(&mut *lua, id, "OnKeyUp") {
             if down {
-                fire(lua, id, "OnKeyDown", key);
+                fire(&mut *lua, id, "OnKeyDown", key);
             }
             return true;
         }

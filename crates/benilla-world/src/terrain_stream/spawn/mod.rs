@@ -13,8 +13,8 @@ use fx::{
     emitter_fade, spawn_emitters_for, spawn_lights_for, spawn_ribbons_for, spawn_wmo_lights_for,
 };
 
+use benilla_time::Instant;
 use std::sync::Arc;
-use std::time::Instant;
 
 use benilla_assets::coords::{wmo_doodad_local, wow_to_bevy};
 use benilla_assets::{AdtTile, DoodadBase, M2Model, WmoModel};
@@ -25,12 +25,12 @@ use bevy::prelude::*;
 use crate::collision::{camera_layers, walk_layers, GroundDecalSurface, PickOccluder};
 use crate::doodad_anim::wants_rig;
 use crate::interact::WorldObject;
-use crate::lighting::SharedLightBuffer;
 use crate::lighting::{PropProbeSlot, PropProbes};
 use crate::liquid::{spawn_wmo_liquids, LiquidAssets};
 use crate::model_forms::{FormSlices, ModelForms, ModelKey, WANT_SKINNED, WANT_STATIC};
 use crate::model_render::ModelKind;
 use crate::model_render::ShadeSel;
+use crate::model_render::SharedModelLight;
 use crate::wmo_portal::{WmoGroupVis, WmoPortalInstance, WmoRoom};
 use benilla_assets::m2_url;
 use benilla_assets::materials::WowModelMaterial;
@@ -78,7 +78,7 @@ pub(super) fn spawn_loaded_placements(
     wmos: Res<Assets<WmoModel>>,
     materials: ResMut<Assets<WowModelMaterial>>,
     asset_server: Res<AssetServer>,
-    shared_light: Option<Res<SharedLightBuffer>>,
+    shared_light: Option<Res<SharedModelLight>>,
     mut meshes: ResMut<Assets<Mesh>>,
     // The shared per-kind animated liquid materials — WMO groups spawn their embedded water/lava/slime
     // on these, same as MCLQ terrain water. Absent when the client has no data.

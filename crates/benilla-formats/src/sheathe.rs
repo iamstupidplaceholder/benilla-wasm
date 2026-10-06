@@ -72,7 +72,7 @@ fn schema() -> Schema {
 }
 
 /// Read `SheatheSoundLookups.dbc` off the patch chain.
-pub fn load_sheathe_sound_catalog(chain: &mut Chain) -> Result<SheatheSoundCatalog> {
+pub fn load_sheathe_sound_catalog(chain: &mut impl crate::FileSource) -> Result<SheatheSoundCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\SheatheSoundLookups.dbc")
         .context("reading SheatheSoundLookups.dbc")?;

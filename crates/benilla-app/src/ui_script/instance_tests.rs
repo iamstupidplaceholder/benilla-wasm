@@ -111,7 +111,7 @@ fn the_self_menu_row_gates_on_the_binding_and_confirms_before_sending() {
         "Interface\\FrameXML\\PetFrame.xml",
         r"Interface\FrameXML\RaidFrame.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     // The window is a LoadOnDemand addon, reached the way the app reaches it: seated off the
     // chain as a registry row (1957) and loaded by the reference's own `RaidFrame_LoadUI`

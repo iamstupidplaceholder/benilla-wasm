@@ -13,7 +13,7 @@
 //!   session and fires `ITEM_TEXT_CLOSED`), `ItemTextPrevPage()`/`ItemTextNextPage()` (multi-page
 //!   `PageText` books — a named follow-up; single-page letters never show the buttons).
 
-use mlua::{Lua, Value};
+use benilla_lua::{Value, Vm};
 
 use super::Model;
 
@@ -56,99 +56,63 @@ impl super::UiScript {
 }
 
 /// Register the item-text globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("ItemTextGetItem", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .item_text
+            .as_ref()
+            .map(|s| s.item.clone())
+            .unwrap_or_default())
+    })?;
 
-    g.set(
-        "ItemTextGetItem",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .item_text
-                .as_ref()
-                .map(|s| s.item.clone())
-                .unwrap_or_default())
-        })?,
-    )?;
+    lua.register_function("ItemTextGetCreator", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.item_text.as_ref().and_then(|s| s.creator.clone()))
+    })?;
 
-    g.set(
-        "ItemTextGetCreator",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(
-                match model.item_text.as_ref().and_then(|s| s.creator.clone()) {
-                    Some(c) => Value::String(lua.create_string(&c)?),
-                    None => Value::Nil,
-                },
-            )
-        })?,
-    )?;
+    lua.register_function("ItemTextGetText", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .item_text
+            .as_ref()
+            .map(|s| s.text.clone())
+            .unwrap_or_default())
+    })?;
 
-    g.set(
-        "ItemTextGetText",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .item_text
-                .as_ref()
-                .map(|s| s.text.clone())
-                .unwrap_or_default())
-        })?,
-    )?;
+    lua.register_function("ItemTextGetPage", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.item_text.as_ref().map_or(1, |s| i64::from(s.page)))
+    })?;
 
-    g.set(
-        "ItemTextGetPage",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.item_text.as_ref().map_or(1, |s| i64::from(s.page)))
-        })?,
-    )?;
+    lua.register_function("ItemTextHasNextPage", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match model.item_text.as_ref().is_some_and(|s| s.has_next) {
+            true => Value::Integer(1),
+            false => Value::Nil,
+        })
+    })?;
 
-    g.set(
-        "ItemTextHasNextPage",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match model.item_text.as_ref().is_some_and(|s| s.has_next) {
-                true => Value::Integer(1),
-                false => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("ItemTextGetMaterial", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.item_text.as_ref().and_then(|s| s.material.clone()))
+    })?;
 
-    g.set(
-        "ItemTextGetMaterial",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(
-                match model.item_text.as_ref().and_then(|s| s.material.clone()) {
-                    Some(m) => Value::String(lua.create_string(&m)?),
-                    None => Value::Nil,
-                },
-            )
-        })?,
-    )?;
-
-    g.set(
-        "CloseItemText",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .item_text_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseItemText", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .item_text_close = true;
+        Ok(())
+    })?;
 
     for (name, delta) in [("ItemTextPrevPage", -1i32), ("ItemTextNextPage", 1)] {
-        g.set(
-            name,
-            lua.create_function(move |lua, ()| {
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .item_text_page_turns
-                    .push(delta);
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .item_text_page_turns
+                .push(delta);
+            Ok(())
+        })?;
     }
 
     Ok(())

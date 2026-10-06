@@ -22,6 +22,12 @@ mod parts;
 mod refresh;
 mod screen;
 
+/// Native has the synchronous DBC catalog required by this screen.
+/// Browser composition exposes the same capability through its target adapter.
+pub(crate) const fn available() -> bool {
+    true
+}
+
 use benilla_protocol::{CharAction, CharCreateReq};
 use benilla_ui::widget::EditBoxState;
 use bevy::input::keyboard::KeyboardInput;
@@ -67,7 +73,7 @@ impl Plugin for CharCreatePlugin {
             .add_systems(
                 Update,
                 (
-                    screen::rescale_screen,
+                    screen::rescale_screen.after(crate::glue::GlueArtLoad),
                     create_input,
                     debug_auto_create,
                     debug_pick,

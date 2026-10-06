@@ -125,11 +125,11 @@ use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{OrthographicProjection, Projection, RenderTarget, ScalingMode};
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
-use bevy::render::render_resource::Buffer;
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 
+use benilla_assets::gpu_table::GpuTable;
 use benilla_assets::materials::WowModelMaterial;
-use benilla_assets::{m2_url, quantize, M2Model, WorldAssets};
+use benilla_assets::{m2_url, quantize, M2Model};
 use benilla_formats::{SeqLoops, UvAnim};
 use benilla_ui::script::{ModelPaneFrame, UiScript};
 use benilla_ui::widget::{FrameHandle, ModelFileFacts, ModelFog, ModelLight, SequenceFacts};
@@ -318,7 +318,7 @@ impl TileScene {
 /// registered under, and the material twins bound to it.
 struct TileLight {
     scene: TileScene,
-    buffer: Buffer,
+    buffer: GpuTable,
     variants: HashMap<AssetId<WowModelMaterial>, Handle<WowModelMaterial>>,
 }
 
@@ -829,7 +829,7 @@ struct TileAssets<'w> {
     asset_server: Res<'w, AssetServer>,
     m2s: Res<'w, Assets<M2Model>>,
     images: ResMut<'w, Assets<Image>>,
-    world: Option<ResMut<'w, WorldAssets>>,
+    sprites: crate::ui_sprites::UiSprites<'w>,
     forms: ResMut<'w, ModelForms>,
     meshes: ResMut<'w, Assets<Mesh>>,
 }
@@ -864,7 +864,7 @@ struct TileRender<'w> {
 /// on the frame's way IN puts the clear before the publish instead of after it.
 fn forget_dead_vm_tiles(
     mut commands: Commands,
-    script: Option<NonSend<UiScript>>,
+    script: Option<NonSendMut<UiScript>>,
     mut state: NonSendMut<TileState>,
     mut bridge: ResMut<UiModelTiles>,
     mut table: ResMut<MatAnimTable>,
@@ -1092,12 +1092,17 @@ fn sync_tiles(
         tile.last_seen = frame;
         if !tile.built {
             if let Some(model) = assets.m2s.get(&tile.m2) {
-                let icon_tex = req.icon.as_deref().and_then(|p| {
-                    assets
-                        .world
-                        .as_mut()
-                        .and_then(|w| w.sprite_texture(p, &mut assets.images))
-                });
+                let icon_tex = if let Some(path) = req.icon.as_deref() {
+                    let Some(icon) = assets
+                        .sprites
+                        .sprite_texture_ready(path, &mut assets.images)
+                    else {
+                        continue; // Do not build the pane with a permanently missing pending icon.
+                    };
+                    icon
+                } else {
+                    None
+                };
                 if let Some(built) = build_tile(
                     &mut commands,
                     tile.root,

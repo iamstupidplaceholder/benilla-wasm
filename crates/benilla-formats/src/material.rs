@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 /// `Material.dbc` keyed by id.
@@ -97,7 +98,7 @@ fn schema() -> Schema {
 }
 
 /// Read `Material.dbc` off the patch chain.
-pub fn load_material_catalog(chain: &mut Chain) -> Result<MaterialCatalog> {
+pub fn load_material_catalog(chain: &mut impl crate::FileSource) -> Result<MaterialCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\Material.dbc")
         .context("reading Material.dbc")?;

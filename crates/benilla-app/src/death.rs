@@ -241,13 +241,8 @@ fn feed_death(
     });
     // Resolved before the push, because the lookup borrows the VM and `set_death` needs it
     // mutably.
-    let sickness = sickness_duration(store.0.unit_level().unwrap_or(0), &|key: &str| {
-        script
-            .lua()
-            .globals()
-            .get::<String>(key)
-            .ok()
-            .filter(|t| !t.is_empty())
+    let sickness = sickness_duration(store.0.unit_level().unwrap_or(0), &mut |key: &str| {
+        benilla_ui::strings::global_context(script.vm_mut(), key).filter(|t| !t.is_empty())
     });
     script.set_death(DeathUiState {
         release_remaining,
@@ -524,7 +519,7 @@ fn resolve_self_res(
 /// server-side table rather than from `Spell.dbc`'s `Base + PerLevel·level`, because the aura the
 /// server actually applies is what the dialog must warn about. The `≤ 999 ms → nil` gate the
 /// reference gets from that data is our `0..=10 => None` row.
-fn sickness_duration(level: u32, get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+fn sickness_duration(level: u32, get: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     let minutes = match level {
         0..=10 => return None,
         11..=19 => level - 10,
@@ -695,14 +690,16 @@ fn drain_death(
 ///
 /// The guid filter on `mirror` looked like it covered this and does not: it distinguishes a
 /// *different* character, not the *same* one re-entering the world. `DisconnectedMessage` is the
-/// one total edge — a socket death, a kick, and a `/logout` all reach it (the IO thread emits a
-/// `Disconnected` behind `SessionEnd::LoggedOut`) — and it is the very edge `DeathNet` is reset
-/// on, which is what keeps the two scopes in lockstep by construction rather than by memory.
+/// socket-loss edge. Native additionally emits it behind logout; browser retains its
+/// authenticated socket, so the confirmed LoggedOut edge must reset this scope too.
 fn end_session_death_feed(
     mut msgs: MessageReader<crate::net::DisconnectedMessage>,
+    mut logouts: MessageReader<crate::net::LoggedOutMessage>,
     mut feed: ResMut<DeathFeedState>,
 ) {
-    if msgs.read().next().is_some() {
+    let disconnected = msgs.read().count() != 0;
+    let logged_out = logouts.read().count() != 0;
+    if disconnected || logged_out {
         *feed = DeathFeedState::default();
     }
 }
@@ -745,6 +742,7 @@ mod tests {
     fn the_session_edge_clears_the_world_scoped_death_memory_and_nothing_else_does() {
         let mut app = App::new();
         app.add_message::<crate::net::DisconnectedMessage>()
+            .add_message::<crate::net::LoggedOutMessage>()
             .insert_resource(DeathFeedState {
                 mirror: Some((0x1234, true, true)),
                 died_at: Some(12.0),

@@ -13,9 +13,8 @@
 //! | `ClearTutorials()` | zero values; every bit set in both banks and `CMSG_TUTORIAL_CLEAR` |
 //! | `ResetTutorials()` | zero values; every bit cleared in both banks and `CMSG_TUTORIAL_RESET` |
 
-use mlua::{Lua, Value};
+use benilla_lua::{Error, FromLua, Value, Vm};
 
-use super::binding_abi::{flag, number_arg};
 use super::Model;
 
 /// `FlagTutorial`'s clamp: `0 ≤ n − 1 < 0x32` — the fifty ids `GlobalStrings.lua` names.
@@ -44,56 +43,47 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `TutorialsEnabled()` (`0x4b5960`): scans `[0xb711ec] * 4` bytes of bank B for one ≠ 0xFF;
     // `1.0` or nil, one value; an unallocated bank skips the loop and answers nil.
-    g.set(
-        "TutorialsEnabled",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let enabled = model
-                .tutorial_bank
-                .as_ref()
-                .is_some_and(|b| b.iter().any(|&byte| byte != 0xFF));
-            Ok(flag(enabled))
-        })?,
-    )?;
+    lua.register_function("TutorialsEnabled", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let enabled = model
+            .tutorial_bank
+            .as_ref()
+            .is_some_and(|b| b.iter().any(|&byte| byte != 0xFF));
+        Ok(if enabled {
+            Value::Integer(1)
+        } else {
+            Value::Nil
+        })
+    })?;
 
     // `FlagTutorial(n)` (`0x4b59b0`): `lua_isnumber` else the Usage raise; `__ftol`; `dec`; `js`
     // and `cmp 0x32 / jge` bail silently; else the acknowledge-and-send setter with the 0-based id.
-    g.set(
-        "FlagTutorial",
-        lua.create_function(|lua, n: Value| {
-            let n = number_arg(lua, n, "Usage: FlagTutorial(\"tutorial\")")?;
-            let id = n.wrapping_sub(1);
-            if !(0..TUTORIAL_IDS).contains(&id) {
-                return Ok(());
-            }
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.tutorial_flag_requests.push(id as u32);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("FlagTutorial", |lua, n: Value| {
+        let n = f64::from_lua(n).map_err(|_| Error::runtime("Usage: FlagTutorial(\"tutorial\")"))?
+            as i64 as i32;
+        let id = n.wrapping_sub(1);
+        if !(0..TUTORIAL_IDS).contains(&id) {
+            return Ok(());
+        }
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.tutorial_flag_requests.push(id as u32);
+        Ok(())
+    })?;
 
-    g.set(
-        "ClearTutorials",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.tutorial_clears += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ClearTutorials", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.tutorial_clears += 1;
+        Ok(())
+    })?;
 
-    g.set(
-        "ResetTutorials",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.tutorial_resets += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ResetTutorials", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.tutorial_resets += 1;
+        Ok(())
+    })?;
 
     Ok(())
 }

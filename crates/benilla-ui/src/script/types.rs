@@ -1,5 +1,3 @@
-use mlua::{Lua, Value};
-
 use crate::layout::{Anchor, Rect};
 use crate::order::ZTarget;
 
@@ -9,7 +7,8 @@ use crate::order::ZTarget;
 
 /// A simple, engine-free value the host can inject into Lua — the seam the app's net/state→event
 /// bridge (decision 0068 §3) uses to hand `fire_event` its `arg1..argN`. Deliberately not
-/// `mlua::Value` so callers never touch mlua handles (the MAXCSTACK discipline reaches the API too).
+/// a backend value so callers never touch VM handles (the MAXCSTACK discipline reaches the API
+/// too).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScriptValue {
     Nil,
@@ -20,14 +19,14 @@ pub enum ScriptValue {
     Str(String),
 }
 
-impl ScriptValue {
-    pub(crate) fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+impl benilla_lua::IntoLua for ScriptValue {
+    fn into_lua(self) -> benilla_lua::Result<benilla_lua::Value> {
         Ok(match self {
-            ScriptValue::Nil => Value::Nil,
-            ScriptValue::Bool(b) => Value::Boolean(b),
-            ScriptValue::Int(i) => Value::Integer(i),
-            ScriptValue::Number(n) => Value::Number(n),
-            ScriptValue::Str(s) => Value::String(lua.create_string(&s)?),
+            Self::Nil => benilla_lua::Value::Nil,
+            Self::Bool(value) => benilla_lua::Value::Boolean(value),
+            Self::Int(value) => benilla_lua::Value::Integer(value),
+            Self::Number(value) => benilla_lua::Value::Number(value),
+            Self::Str(value) => benilla_lua::Value::from(value),
         })
     }
 }
@@ -270,30 +269,7 @@ pub enum QuadContent {
     },
 }
 
-/// A `FontString`'s horizontal text justification within its resolved rect — the XML `justifyH`
-/// attr (`SetJustifyH`). The FrameXML default is **CENTER** (the client's `JustifyH` field default);
-/// the app's text renderer positions each line's run against the rect per this.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum JustifyH {
-    Left,
-    #[default]
-    Center,
-    Right,
-}
-
-/// A `FontString`'s vertical text justification within its resolved rect — the XML `justifyV`
-/// attr (`SetJustifyV`). The FrameXML default is **MIDDLE** (the client's `JustifyV` field
-/// default) — a sized FontString centers its line block vertically, which is why the real
-/// client's 13px money numbers sit on their coin icons' centerline. The app's text renderer
-/// offsets the line block against the rect per this (no-op for a rect sized to its text, i.e.
-/// every host-measured height-less FontString).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum JustifyV {
-    Top,
-    #[default]
-    Middle,
-    Bottom,
-}
+pub use crate::justify::{JustifyH, JustifyV};
 
 /// A Texture's blend mode — the client's shared `alphaMode` enum, the `{value, name}` table at
 /// `0x811aa8`: `DISABLE=0 · ALPHAKEY=1 · BLEND=2 · ADD=3 · MOD=4` (wow-re

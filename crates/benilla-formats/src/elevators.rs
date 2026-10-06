@@ -26,6 +26,8 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, u32_at};
+use crate::FileSource;
+#[cfg(test)]
 use crate::Chain;
 
 const TRANSPORT_ANIMATION: &str = "DBFilesClient\\TransportAnimation.dbc";
@@ -79,7 +81,7 @@ fn schema() -> Schema {
 /// not drive a cycle (fewer than 2 frames, a zero period, or a first frame not at `t=0`) are
 /// dropped with the same silence the client affords them — a GO whose entry isn't here simply
 /// renders frozen at its spawn point.
-pub fn load_elevator_paths(chain: &mut Chain) -> Result<ElevatorPaths> {
+pub fn load_elevator_paths(chain: &mut impl FileSource) -> Result<ElevatorPaths> {
     let bytes = chain
         .read_file(TRANSPORT_ANIMATION)
         .context("reading TransportAnimation.dbc")?;

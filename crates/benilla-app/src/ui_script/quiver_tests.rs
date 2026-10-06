@@ -86,7 +86,7 @@ fn read_toc(root: &Path, name: &str) -> Toc {
 }
 
 /// One addon's `.toc` files through the same two arms the real loader uses (decision 1186).
-fn load_addon_files(script: &UiScript, root: &Path, name: &str) -> Vec<String> {
+fn load_addon_files(script: &mut UiScript, root: &Path, name: &str) -> Vec<String> {
     let toc = read_toc(root, name);
     let provider = |req: &str| -> Option<Vec<u8>> { std::fs::read(root.join(req)).ok() };
     let mut errors = Vec::new();
@@ -106,7 +106,7 @@ fn load_addon_files(script: &UiScript, root: &Path, name: &str) -> Vec<String> {
         }
         match benilla_ui::framexml::parse(&benilla_ui::source::decode(&bytes)) {
             Ok(doc) => {
-                let report = benilla_ui::loader::load_in(script, &doc, &path, &provider);
+                let report = benilla_ui::loader::load_in(&mut *script, &doc, &path, &provider);
                 errors.extend(report.errors.into_iter().map(|e| format!("{file}: {e}")));
             }
             Err(e) => errors.push(format!("{file}: {e}")),
@@ -201,7 +201,7 @@ fn seat_a_hunter(root: &Path) -> UiScript {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(
         failures.is_empty(),
         "our own FrameXML failed to load: {failures:#?}"
@@ -220,7 +220,7 @@ fn quiver_publishes_its_global_functions_for_a_hunter() {
     let root = quiver_or_skip!();
     let mut s = seat_a_hunter(&root);
 
-    let load_errors = load_addon_files(&s, &root, "Quiver");
+    let load_errors = load_addon_files(&mut s, &root, "Quiver");
     assert!(load_errors.is_empty(), "Quiver's files: {load_errors:#?}");
 
     s.fire_event("ADDON_LOADED", vec![ScriptValue::Str("Quiver".into())]);
@@ -266,7 +266,7 @@ fn quiver_publishes_its_global_functions_for_a_hunter() {
 fn quiver_survives_a_hunter_session_start_without_raising() {
     let root = quiver_or_skip!();
     let mut s = seat_a_hunter(&root);
-    assert!(load_addon_files(&s, &root, "Quiver").is_empty());
+    assert!(load_addon_files(&mut s, &root, "Quiver").is_empty());
 
     s.fire_event("ADDON_LOADED", vec![ScriptValue::Str("Quiver".into())]);
     for e in ["VARIABLES_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD"] {
@@ -340,7 +340,7 @@ fn auto_shot_bar_saturates_when_no_ammo_lock_event_ever_arrives() {
     let root = quiver_or_skip!();
     let mut s = seat_a_hunter(&root);
     seat_a_bow(&mut s);
-    assert!(load_addon_files(&s, &root, "Quiver").is_empty());
+    assert!(load_addon_files(&mut s, &root, "Quiver").is_empty());
     start_session(&mut s);
 
     // The player presses the ranged-attack key, then stands still and shoots for two seconds.
@@ -371,7 +371,7 @@ fn auto_shot_bar_drains_the_moment_an_ammo_lock_event_arrives() {
     let root = quiver_or_skip!();
     let mut s = seat_a_hunter(&root);
     seat_a_bow(&mut s);
-    assert!(load_addon_files(&s, &root, "Quiver").is_empty());
+    assert!(load_addon_files(&mut s, &root, "Quiver").is_empty());
     start_session(&mut s);
 
     s.fire_event("START_AUTOREPEAT_SPELL", Vec::new());
@@ -453,7 +453,7 @@ fn draws(s: &mut UiScript, leaf: &str) -> bool {
 fn aspect_tracker_draws_the_icon_for_an_active_aspect() {
     let root = quiver_or_skip!();
     let mut s = seat_a_hunter(&root);
-    assert!(load_addon_files(&s, &root, "Quiver").is_empty());
+    assert!(load_addon_files(&mut s, &root, "Quiver").is_empty());
     start_session(&mut s);
 
     seat_a_buff(
@@ -494,7 +494,7 @@ fn aspect_tracker_draws_the_icon_for_an_active_aspect() {
 fn the_hawk_reminder_is_suppressed_only_once_frames_are_locked() {
     let root = quiver_or_skip!();
     let mut s = seat_a_hunter(&root);
-    assert!(load_addon_files(&s, &root, "Quiver").is_empty());
+    assert!(load_addon_files(&mut s, &root, "Quiver").is_empty());
     start_session(&mut s);
 
     seat_a_buff(
@@ -538,7 +538,7 @@ fn spending_an_arrow_starts_quivers_reload_through_the_real_item_feed() {
     let root = quiver_or_skip!();
     let mut s = seat_a_hunter(&root);
     seat_a_bow(&mut s);
-    assert!(load_addon_files(&s, &root, "Quiver").is_empty());
+    assert!(load_addon_files(&mut s, &root, "Quiver").is_empty());
     start_session(&mut s);
 
     let quiver = |count: u32| {

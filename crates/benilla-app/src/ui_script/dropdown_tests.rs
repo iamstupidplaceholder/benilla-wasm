@@ -41,7 +41,7 @@ fn load_dropdown_kit(s: &UiScript) {
 /// `DropDownList1:Hide()` on its own.
 #[test]
 fn hiding_the_parent_list_closes_an_open_submenu() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_dropdown_kit(&s);
 
     s.run("DropDownList1:Show(); DropDownList2:Show();")
@@ -70,7 +70,7 @@ fn hiding_the_parent_list_closes_an_open_submenu() {
 /// The divergence from the reference is in this file, so it is fixed and falsified in this file.
 #[test]
 fn hiding_a_list_clears_its_open_menu_registry_entry() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_dropdown_kit(&s);
 
     s.run(
@@ -110,7 +110,7 @@ fn hiding_a_list_clears_its_open_menu_registry_entry() {
 /// equals some number: a literal would pass a number check and still be wrong.
 #[test]
 fn the_default_text_height_is_derived_from_button1_not_a_literal() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_dropdown_kit(&s);
 
     let (height, from_button): (Option<f64>, Option<f64>) = s
@@ -141,7 +141,7 @@ fn the_default_text_height_is_derived_from_button1_not_a_literal() {
 /// `GameFontHighlightSmall` by name because that is what `UIDropDownMenuButtonTemplate` declares.
 #[test]
 fn a_button_label_reports_the_font_object_its_button_set() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_dropdown_kit(&s);
 
     let (object_height, label_height, label_face): (Option<f64>, Option<f64>, Option<String>) = s

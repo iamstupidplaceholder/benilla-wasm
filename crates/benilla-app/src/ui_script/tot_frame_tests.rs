@@ -60,31 +60,31 @@ fn unit(name: &str, guid: u64, health: u32) -> UnitState {
 fn load_tot() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\BuffFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\CombatFeedback.xml");
-    load_xml(&s, "Interface\\FrameXML\\PlayerFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PartyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\TargetFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BuffFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CombatFeedback.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PlayerFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PartyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TargetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PetFrame.xml");
     // The target-of-target pair's home is `OptionsFrame.xml` (the reference keeps them in
     // `UIOptionsFrame.lua`'s uvar defaults block, l.116-119). That file sits at the BOTTOM of our
     // manifest where the reference's sits near the top, so a test that loads the unit kit alone

@@ -12,37 +12,37 @@ use super::test_ui::load_ui as load_xml;
 /// The full ChatFrame stack (fonts first, so the FontString's `inherits="ChatFontNormal"` resolves).
 fn chat_frame() -> UiScript {
     let mut s = UiScript::new().unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // GameTooltip.xml + UIDropDownMenu.xml are real RUNTIME dependencies of the chat tabs since
     // decision 1589: a left click closes any open menu (`CloseDropDownMenus`, the reference's own
     // first move in `FCF_Tab_OnClick`) and a right click opens the window's options menu.
     // `benilla.toc` already orders both ahead of ChatFrame.xml (l.60/64 vs l.399); the harness
     // says so too, rather than a guard that would hide a real ordering fault. (The tooltip file is
     // the dropdown kit's own dependency — its MenuBackdrop reads `TOOLTIP_DEFAULT_COLOR`.)
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml"); // the kit the chat menus build from
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml"); // the kit the chat menus build from
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
     // The UIParent slice (RaiseFrameLevel, MouseIsOver, the fade and flash kits) ahead of the
     // bar and the chat files; `FCF_OnUpdate` — the dock's hover, fade and drag driver — runs
     // from UIParent's OnUpdate, as in the reference.
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     // `FCF_ValidateChatFramePosition` (a tab-drag stop) reads `MainMenuBar:GetHeight()`; the bar's
     // own load-time chain precedes it, as in the action-bar harness.
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
     super::fire_chat_login(&mut s);
     s.set_screen_size(1600.0, 900.0);
     s.resolve();
@@ -276,7 +276,7 @@ fn chat_click_dismisses_a_stuck_spell_but_not_an_item() {
         "Interface\\FrameXML\\ChatFrame.xml",
         "Interface\\FrameXML\\FloatingChatFrame.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
     s.set_spellbook(SpellBookState {
@@ -427,7 +427,7 @@ fn chat_type_info_matches_the_host_color_table() {
         ("BG_SYSTEM_HORDE", K::BgSystemHorde, 85),
     ];
 
-    let s = chat_frame();
+    let mut s = chat_frame();
     for (name, kind, want_id) in PAIRS {
         let (r, g, b, id): (f64, f64, f64, i64) = s
             .eval(&format!(
@@ -453,7 +453,7 @@ fn chat_type_info_matches_the_host_color_table() {
 /// extras. An addon reads `.sticky` and `.id` as often as it reads the color.
 #[test]
 fn chat_type_info_has_the_references_shape() {
-    let s = chat_frame();
+    let mut s = chat_frame();
 
     let count: i64 = s
         .eval("local n = 0 for _ in pairs(ChatTypeInfo) do n = n + 1 end return n")
@@ -520,7 +520,7 @@ fn chat_type_info_has_the_references_shape() {
 fn fired_event_names_are_all_chat_type_info_keys() {
     use crate::ui_chat::{event_name, ChatEventKind as K};
 
-    let s = chat_frame();
+    let mut s = chat_frame();
     for &kind in K::ALL {
         let name = event_name(kind);
         let key = name
@@ -544,7 +544,7 @@ fn fired_event_names_are_all_chat_type_info_keys() {
 /// guard (`LazyPig.lua:1992`), so the constant without the frames is worse than neither.
 #[test]
 fn every_window_num_chat_windows_promises_is_a_real_frame() {
-    let s = chat_frame();
+    let mut s = chat_frame();
     assert_eq!(s.eval::<i64>("return NUM_CHAT_WINDOWS").unwrap(), 7);
     for i in 1..=7 {
         let ok: bool = s
@@ -561,7 +561,7 @@ fn every_window_num_chat_windows_promises_is_a_real_frame() {
 /// `getglobal(...):IsVisible()` that used to die at i=3.
 #[test]
 fn the_lazypig_window_walk_survives_all_seven_indices() {
-    let s = chat_frame();
+    let mut s = chat_frame();
     let visible: i64 = s
         .eval(
             "local n = 0\n\
@@ -587,7 +587,7 @@ fn the_lazypig_window_walk_survives_all_seven_indices() {
 /// tabs (1575), so the Outfitter walk below is still safe.
 #[test]
 fn the_undocked_windows_are_hidden_and_carry_no_is_docked() {
-    let s = chat_frame();
+    let mut s = chat_frame();
     for i in 1..=2 {
         let docked: bool = s
             .eval(&format!("return ChatFrame{i}.isDocked ~= nil"))
@@ -626,7 +626,7 @@ fn the_undocked_windows_are_hidden_and_carry_no_is_docked() {
 /// frame will disagree about the same window. The drift guard between the Rust table and the XML.
 #[test]
 fn get_chat_window_info_shown_matches_the_shipped_frames() {
-    let s = chat_frame();
+    let mut s = chat_frame();
     for i in 1..=7 {
         let agrees: bool = s
             .eval(&format!(
@@ -683,7 +683,7 @@ fn a_line_added_to_chat_frame3_lands_in_chat_frame3_only() {
 /// reaches it, since both pass `DEFAULT_CHAT_FRAME`.
 #[test]
 fn fcf_select_dock_frame_selects_by_frame_and_leaves_an_undocked_one_alone() {
-    let s = chat_frame();
+    let mut s = chat_frame();
     s.run("FCF_SelectDockFrame(ChatFrame2)").unwrap();
     let (one, two): (bool, bool) = (
         s.eval("return ChatFrame1:IsShown()").unwrap(),
@@ -1012,7 +1012,7 @@ fn the_chat_menu_builds_its_rows_on_the_references_kit() {
         "Interface\\FrameXML\\UIPanelTemplates.xml",
         "Interface\\FrameXML\\FloatingChatFrame.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
     let _ = s.errors();
@@ -1111,8 +1111,8 @@ fn a_glass_windows_plate_fades_in_on_every_hover() {
 fn a_glass_windows_plate_fades_in_on_every_hover_under_the_full_manifest() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1600.0, 900.0);
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    let failures = super::load_default_ui(&s);
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "{failures:?}");
     s.resolve();
     s.mouse_move(1500.0, 850.0);
@@ -1274,8 +1274,8 @@ fn a_quick_exit_and_reentry_keeps_the_plates_hover_fade() {
     // The shipped interface, with the guard the manifest load installs.
     let mut shipped = UiScript::new().unwrap();
     shipped.set_screen_size(1600.0, 900.0);
-    super::test_ui::load_ui(&shipped, "Interface\\FrameXML\\GlobalStrings.lua");
-    let failures = super::load_default_ui(&shipped);
+    super::test_ui::load_ui(&mut shipped, "Interface\\FrameXML\\GlobalStrings.lua");
+    let failures = super::load_default_ui(&mut shipped);
     assert!(failures.is_empty(), "{failures:?}");
     shipped.resolve();
     super::fire_chat_login(&mut shipped);

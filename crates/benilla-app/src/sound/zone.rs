@@ -57,8 +57,12 @@ use bevy::prelude::*;
 
 use benilla_formats::AreaSoundCatalog;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::net::{ServerSoundKind, ServerSoundMessage};
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::lighting::GameClock;
 use benilla_world::schedule::WorldStage;
 
@@ -177,7 +181,7 @@ pub(super) struct ZoneAudio {
     /// The `ZoneMusic` row currently scheduled (0 = none).
     zone_music: u32,
     /// The playing music stream (a zone track, an intro, or a server-pushed event track).
-    music: Option<StreamingSoundHandle<kira::sound::FromFileError>>,
+    music: Option<StreamingSoundHandle<mixer::FromFileError>>,
     /// Starvation watch over the music slot (decision 1109) — a streamed track whose decode
     /// thread is outrun zero-fills the mix, which no other meter sees.
     music_watch: mixer::StreamWatch,
@@ -190,7 +194,7 @@ pub(super) struct ZoneAudio {
     /// the zone track's `[0xb06cc4]` (`0x460450` opens it at `0x4604a7`, stores the handle at
     /// `0x4604b8`), driven by the `PlayMusic`/`StopMusic` pair and nothing else. Held rather than
     /// dropped: a dropped kira handle keeps playing, and the loop below has to be able to see it.
-    lua_music: Option<StreamingSoundHandle<kira::sound::FromFileError>>,
+    lua_music: Option<StreamingSoundHandle<mixer::FromFileError>>,
     /// The file on that slot, kept because the stream **loops forever**: the reference opens it
     /// through `0x7a5620`'s `a1 != 1` arm, whose `SetLoopCount(-1)` (`0x7a5592`, one call site
     /// image-wide) makes this and the glue theme the client's only two infinite streams. kira
@@ -280,11 +284,12 @@ impl ZoneAudio {
 }
 
 /// Startup: load the zone→audio catalog.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_area_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_area_sound_catalog(&mut chain)
+        benilla_formats::load_area_sound_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -295,7 +300,7 @@ fn load_area_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     }
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_exploration_sound_catalog(&mut chain)
+        benilla_formats::load_exploration_sound_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -365,6 +370,11 @@ fn zone_audio(
     // ordinary change block below, exactly like walking into the zone.
     if config.world_hold {
         stop_world_soundscape(zone, "loading cover");
+        return;
+    }
+    // A browser device is gesture-gated. Do not consume the first zone edge
+    // before the output adapter can accept its stream.
+    if !out.mixer.as_ref().is_some_and(|m| m.ready()) {
         return;
     }
 
@@ -491,7 +501,7 @@ fn zone_audio(
     // ---- music transport ----
     // Reap a finished track → schedule the next after a fresh silence interval.
     if let Some(h) = &zone.music {
-        if h.state() == kira::sound::PlaybackState::Stopped {
+        if h.state() == mixer::PlaybackState::Stopped {
             zone.music = None;
             let zm = zone.zone_music;
             zone.next_track_at =
@@ -643,8 +653,8 @@ fn next_track_time(
 /// makes the server's every-5-s re-push of an event track a no-op instead of a restart. A handle
 /// the end-of-track reap hasn't collected yet (`Stopped`) does **not** hold the slot: the track is
 /// over, and a push is exactly what should start it again.
-fn slot_holds(music_kit: u32, kit_id: u32, slot: Option<kira::sound::PlaybackState>) -> bool {
-    music_kit == kit_id && slot.is_some_and(|s| s != kira::sound::PlaybackState::Stopped)
+fn slot_holds(music_kit: u32, kit_id: u32, slot: Option<mixer::PlaybackState>) -> bool {
+    music_kit == kit_id && slot.is_some_and(|s| s != mixer::PlaybackState::Stopped)
 }
 
 /// Open a music kit as a stream on the music slot (a zone track, an intro, or a server-pushed
@@ -991,7 +1001,7 @@ fn lua_music(
     if zone
         .lua_music
         .as_ref()
-        .is_some_and(|h| h.state() == kira::sound::PlaybackState::Stopped)
+        .is_some_and(|h| h.state() == mixer::PlaybackState::Stopped)
     {
         zone.lua_music = None;
         if let (Some(path), Some(assets)) = (zone.lua_music_path.clone(), assets.as_deref()) {
@@ -1161,15 +1171,16 @@ fn stop_world_soundscape(zone: &mut ZoneAudio, reason: &str) {
 /// not counted: its handle is released at the swap, so we do not hold it and cannot honestly say
 /// whether it is still ringing.
 fn report_stream_voices(zone: NonSend<ZoneAudio>, mut out: NonSendMut<super::SoundOutput>) {
-    let live = |s: kira::sound::PlaybackState| s != kira::sound::PlaybackState::Stopped;
+    let live = |s: mixer::PlaybackState| s != mixer::PlaybackState::Stopped;
     out.zone_streams = usize::from(zone.music.as_ref().is_some_and(|h| live(h.state())))
         + usize::from(zone.lua_music.as_ref().is_some_and(|h| live(h.state())))
         + usize::from(zone.ambience.as_ref().is_some_and(|h| live(h.state())));
 }
 
 pub(super) fn plugin(app: &mut App) {
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_area_sounds.after(AssetSet::Open));
     app.insert_non_send_resource(ZoneAudio::default())
-        .add_systems(Startup, load_area_sounds.after(AssetSet::Open))
         .add_systems(
             Update,
             (server_sounds, zone_audio)

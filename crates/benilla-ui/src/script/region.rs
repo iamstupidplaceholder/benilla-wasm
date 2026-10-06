@@ -4,12 +4,13 @@
 //! axis — frames grow per-kind method tables ([`super::statusbar`], [`super::button`]), regions
 //! grow paint/coords methods here.
 
-use mlua::{Lua, MultiValue, Table, Value};
-
-use super::object::anchor_args::{parse_set_point, resolve_rel_target, UNNAMED};
-use super::object::{
-    anchor_bits_eq, anchor_retarget_is_structural, decode_id, id_to_lud, NamedTarget,
+use benilla_lua::{
+    CallbackContext, LuaContext, MultiValue as LuaMultiValue, Table as LuaTable, Value as LuaValue,
+    Vm,
 };
+
+use super::object::anchor_args::UNNAMED;
+use super::object::{anchor_bits_eq, anchor_retarget_is_structural, NamedTarget};
 use super::region_map::{set_shared, Side};
 use super::{
     Model, REG_FONTSTRING_META, REG_FONTSTRING_METHODS, REG_REGION_META, REG_REGION_METHODS,
@@ -19,14 +20,24 @@ use crate::layout::Anchor;
 use crate::widget::{RegionHandle, RegionKind};
 
 /// Resolve `self` (a region wrapper) to its live [`RegionHandle`].
-pub(super) fn region_handle_of(lua: &Lua, this: &Table) -> mlua::Result<RegionHandle> {
-    let id = decode_id(this)?;
+pub(crate) fn region_handle_of_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<RegionHandle> {
+    let id = super::object::decode_id_context(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     model
         .id_to_region
         .get(&id)
         .copied()
-        .ok_or_else(|| mlua::Error::runtime("stale or invalid region handle"))
+        .ok_or_else(|| benilla_lua::Error::runtime("stale or invalid region handle"))
+}
+
+pub(crate) fn region_handle_of_callback(
+    lua: &mut CallbackContext<'_>,
+    this: &LuaTable,
+) -> benilla_lua::Result<RegionHandle> {
+    region_handle_of_context(lua, this)
 }
 
 /// Apply the font parts an **XML element** supplies — `font=`, `<FontHeight>`, `outline=` — any
@@ -44,14 +55,14 @@ pub(super) fn region_handle_of(lua: &Lua, this: &Table) -> mlua::Result<RegionHa
 /// Each part supplied is an **explicit** set (`FontExplicit`), so it survives a later mutation of
 /// the font object this region inherits. An empty `font=` is treated as absent — it keeps the
 /// inherited face, rather than being the binding's load-failure edge.
-pub(crate) fn apply_font_parts(
-    lua: &Lua,
-    this: &Table,
+pub(crate) fn apply_font_parts_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     path: Option<String>,
     height: Option<f32>,
     flags: Option<String>,
-) -> mlua::Result<()> {
-    let rh = region_handle_of(lua, this)?;
+) -> benilla_lua::Result<()> {
+    let rh = region_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
     let d = model.region_data.entry(rh).or_default();
     if let Some(p) = path.filter(|p| !p.is_empty()) {
@@ -71,13 +82,22 @@ pub(crate) fn apply_font_parts(
 }
 
 /// Get-or-create the wrapper table for a region id (distinct metatable — the region "tag").
-pub(super) fn region_wrapper(lua: &Lua, id: u32) -> mlua::Result<Table> {
-    let wrappers: Table = lua.named_registry_value(REG_WRAPPERS)?;
-    if let Value::Table(t) = wrappers.get::<Value>(id)? {
-        return Ok(t);
+/// Backend-neutral region wrapper constructor. This keeps the production cache and the exact
+/// Texture/FontString/Title metatable split while removing backend operations from the behavior.
+pub(crate) fn region_wrapper_context(
+    lua: &mut impl LuaContext,
+    id: u32,
+) -> benilla_lua::Result<LuaTable> {
+    let wrappers: LuaTable = lua.get_registry(REG_WRAPPERS)?;
+    if let LuaValue::Table(wrapper) = lua.table_get(&wrappers, id)? {
+        return Ok(wrapper);
     }
-    let t = lua.create_table()?;
-    t.raw_set(0, Value::LightUserData(id_to_lud(id)))?;
+    let wrapper = lua.create_table()?;
+    lua.table_set_raw(
+        &wrapper,
+        0_i64,
+        LuaValue::LightUserData(crate::script_runtime::object_id_bits(id)),
+    )?;
     // **A title region gets a NARROWER metatable, chosen here rather than per lookup.** wow-re Q6
     // carves the object as answering *exactly* the 19 Region methods — no Show/Hide, no textures,
     // no text — and this cache is created once per region, so picking the table at construction
@@ -91,7 +111,7 @@ pub(super) fn region_wrapper(lua: &Lua, id: u32) -> mlua::Result<Table> {
             .and_then(|rh| model.arena.region(*rh))
             .map(|r| r.kind)
     };
-    let meta: Table = lua.named_registry_value(match kind {
+    let meta: LuaTable = lua.get_registry(match kind {
         Some(RegionKind::Texture) => REG_TEXTURE_META,
         Some(RegionKind::FontString) => REG_FONTSTRING_META,
         Some(RegionKind::Title) => REG_TITLE_META,
@@ -100,14 +120,14 @@ pub(super) fn region_wrapper(lua: &Lua, id: u32) -> mlua::Result<Table> {
         // resolves the handle first and raises on a dead one.
         None => REG_REGION_META,
     })?;
-    t.set_metatable(Some(meta))?;
-    wrappers.set(id, t.clone())?;
-    Ok(t)
+    lua.table_set_metatable(&wrapper, Some(&meta))?;
+    lua.table_set(&wrappers, id, wrapper.clone())?;
+    Ok(wrapper)
 }
 
 /// Install the region method table + the shared region metatable.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    install_region_methods(lua)?;
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    install_region_methods(vm)?;
 
     // SetPortraitTexture(textureRegion, unit) — the live API's **global** (ref-UnitFrame.lua:
     // `SetPortraitTexture(this.portrait, this.unit)`), distinct from the region-method
@@ -117,21 +137,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (the bake is square with an opaque backdrop; the frame-ring portraits cut the inscribed
     // circle, exactly what the app's quad shader does with the flag). `texture`/`color` drop —
     // the bake replaces them. A later `SetTexture`/`SetPortraitToTexture` clears the binding.
-    lua.globals().set(
+    let set_portrait_texture = vm.create_function(
         "SetPortraitTexture",
-        lua.create_function(|lua, (region, unit): (Table, Value)| {
+        |lua, (region, unit): (LuaTable, LuaValue)| {
             // `0x519ef0` gates its unit argument at `0x519fb4` with `lua_isstring` and fails into
             // `luaL_error` with this exact string (`0x8513b8`); `luaL_error` does not return, so
             // nil/absent/boolean/table abandon the caller's statement. Stock
             // `Blizzard_InspectUI.lua:49` reaches it on a re-open, which is how it was found.
             // A token that RESOLVES to nothing is a different, quiet case — it blanks the portrait
             // and returns no values. Decision 1834.
-            let unit = crate::script::binding_abi::string_arg(
-                lua,
-                unit,
-                r#"Usage: SetPortraitTexture(texture, "unit")"#,
-            )?;
-            let rh = region_handle_of(lua, &region)?;
+            let unit = string_arg_context(&unit, r#"Usage: SetPortraitTexture(texture, "unit")"#)?;
+            let rh = region_handle_of_context(lua, &region)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let data = model.region_data.entry(rh).or_default();
             // CANONICAL (lowercase) on the way in, like `set_unit`'s map key: the binding
@@ -147,8 +163,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             data.fill = None;
             data.circular = true;
             Ok(())
-        })?,
+        },
     )?;
+    vm.set_global_function("SetPortraitTexture", &set_portrait_texture)?;
 
     // SetPortraitToTexture(textureName, path) — the ENGINE GLOBAL, which is what 1.12 has.
     //
@@ -169,9 +186,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // ring is a thin band whose transparent corners would otherwise show the square texture's
     // edges. Distinct from `SetPortraitTexture(region, unit)`'s live model bake, so it drops any
     // live-unit binding; a later `SetTexture` clears the flag again.
-    lua.globals().set(
+    let set_portrait_to_texture = vm.create_function(
         "SetPortraitToTexture",
-        lua.create_function(|lua, (name, path): (String, String)| {
+        |lua, (name, path): (String, String)| {
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let Some(id) = model.region_names.get(&name).copied() else {
                 return Ok(());
@@ -184,8 +201,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             data.circular = true;
             data.portrait_unit = None;
             Ok(())
-        })?,
+        },
     )?;
+    vm.set_global_function("SetPortraitToTexture", &set_portrait_to_texture)?;
 
     // BenillaSetBoothTexture(textureRegion, slotToken) — the **square** twin of
     // SetPortraitTexture (decision 0208 §5): the same `portrait_unit` booth-image binding
@@ -198,10 +216,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (`portrait::MODEL_PANE_BOOTHS`) and the widget draws itself (decision 1810). Two callers are
     // left — the dressing room and the inspect window, both still our own files — and this goes
     // with the later of them.
-    lua.globals().set(
+    let set_booth_texture = vm.create_function(
         "BenillaSetBoothTexture",
-        lua.create_function(|lua, (region, token): (Table, String)| {
-            let rh = region_handle_of(lua, &region)?;
+        |lua, (region, token): (LuaTable, String)| {
+            let rh = region_handle_of_context(lua, &region)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let data = model.region_data.entry(rh).or_default();
             data.portrait_unit = Some(token);
@@ -209,8 +227,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             data.fill = None;
             data.circular = false;
             Ok(())
-        })?,
+        },
     )?;
+    vm.set_global_function("BenillaSetBoothTexture", &set_booth_texture)?;
 
     // **`__index` is the method TABLE, not a dispatcher function** (decision 2310) — here and at
     // the three leaf metatables below. A Rust `__index` makes every `t.SetTexture` a Lua→Rust→Lua
@@ -218,21 +237,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // table form, paid by every widget method access in the client. Nothing mutates these tables
     // after install (`super::region_map::install` writes into them in place, and runs inside
     // `super::object::install`), so holding the table itself cannot go stale.
-    let region_meta = lua.create_table()?;
-    region_meta.set(
-        "__index",
-        lua.named_registry_value::<Table>(REG_REGION_METHODS)?,
-    )?;
-    lua.set_named_registry_value(REG_REGION_META, region_meta)?;
-    Ok(())
+    let methods: LuaTable = vm.get_registry(REG_REGION_METHODS)?;
+    let region_meta = vm.create_table()?;
+    vm.table_set(&region_meta, "__index", methods)?;
+    vm.put_registry(REG_REGION_META, region_meta)
+}
+
+fn string_arg_context(value: &LuaValue, usage: &'static str) -> benilla_lua::Result<String> {
+    match value {
+        LuaValue::String(value) => Ok(value.to_string_lossy().into_owned()),
+        LuaValue::Number(value) => Ok(value.to_string()),
+        LuaValue::Integer(value) => Ok(value.to_string()),
+        _ => Err(benilla_lua::Error::runtime(usage)),
+    }
 }
 
 mod layout;
 mod paint;
 mod text;
 
-fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+fn install_region_methods(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let methods = vm.create_table()?;
 
     // GetName() → this region's global name, or nil when it was declared anonymously — the pair
     // the frame side already answers. Real FrameXML round-trips a region through its name wherever
@@ -242,14 +267,20 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
     //
     // Resolution is [`region_name_of`], shared with `IsObjectType`'s `Usage:` text so the two can
     // never disagree about what this region is called.
-    set_shared(lua, &m, Side::Region, "GetName", |lua, this: Table| {
-        let id = decode_id(&this)?;
-        let model = lua.app_data_ref::<Model>().expect("model app_data");
-        match region_name_of(&model, id) {
-            Some(n) => Ok(Value::String(lua.create_string(&n)?)),
-            None => Ok(Value::Nil),
-        }
-    })?;
+    set_shared(
+        vm,
+        &methods,
+        Side::Region,
+        "GetName",
+        |lua, this: LuaTable| {
+            let id = super::object::decode_id_context(lua, &this)?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            match region_name_of(&model, id) {
+                Some(name) => Ok(LuaValue::from(name)),
+                None => Ok(LuaValue::Nil),
+            }
+        },
+    )?;
 
     // ── GetObjectType / IsObjectType: the last two of the Region map (1244 §4 closed) ───────────
     //
@@ -262,12 +293,12 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
     // `0x773480` → `"Texture"`, FontString `0x7735d0` → `"FontString"` — pushed with
     // `lua_pushstring`, exactly one value, extra arguments ignored with no arity check.
     set_shared(
-        lua,
-        &m,
+        vm,
+        &methods,
         Side::Region,
         "GetObjectType",
-        |lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
+        |lua, this: LuaTable| {
+            let rh = region_handle_of_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model");
             Ok(region_type_name(&model, rh))
         },
@@ -295,28 +326,35 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
     //    format it and compare for real rather than short-circuiting, though no type name is
     //    numeric so the answer is nil either way.
     set_shared(
-        lua,
-        &m,
+        vm,
+        &methods,
         Side::Region,
         "IsObjectType",
-        |lua, (this, want): (Table, Value)| {
-            let rh = region_handle_of(lua, &this)?;
+        |lua, (this, want): (LuaTable, LuaValue)| {
+            let rh = region_handle_of_context(lua, &this)?;
+            let id = super::object::decode_id_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model");
             let want = match &want {
-                Value::String(s) => s.to_str()?.to_string(),
-                Value::Number(n) => n.to_string(),
-                Value::Integer(i) => i.to_string(),
+                LuaValue::String(value) => value
+                    .as_str()
+                    .map(str::to_owned)
+                    .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?,
+                LuaValue::Number(number) => number.to_string(),
+                LuaValue::Integer(integer) => integer.to_string(),
                 _ => {
-                    let who = region_name_of(&model, decode_id(&this)?)
-                        .unwrap_or_else(|| "<unnamed>".to_string());
-                    return Err(mlua::Error::runtime(format!(
+                    let who = region_name_of(&model, id).unwrap_or_else(|| "<unnamed>".to_string());
+                    return Err(benilla_lua::Error::runtime(format!(
                         "Usage: {who}:IsObjectType(\"TYPE\")"
                     )));
                 }
             };
             let leaf = region_type_name(&model, rh);
             let hit = want.eq_ignore_ascii_case(leaf) || want.eq_ignore_ascii_case("Region");
-            Ok(if hit { Value::Number(1.0) } else { Value::Nil })
+            Ok(if hit {
+                LuaValue::Number(1.0)
+            } else {
+                LuaValue::Nil
+            })
         },
     )?;
 
@@ -345,52 +383,56 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
     // The mechanism half — full re-link, layer and sub-level preserved, `nil` = orphaned but not
     // destroyed — is [`crate::widget::WidgetArena::set_region_owner`]'s doc.
     set_shared(
-        lua,
-        &m,
+        vm,
+        &methods,
         Side::Region,
         "SetParent",
-        |lua, args: mlua::MultiValue| {
+        |lua, args: LuaMultiValue| {
             let mut it = args.into_iter();
-            let Some(Value::Table(this)) = it.next() else {
-                return Err(mlua::Error::runtime("SetParent: expected a region"));
+            let Some(LuaValue::Table(this)) = it.next() else {
+                return Err(benilla_lua::Error::runtime("SetParent: expected a region"));
             };
-            let rh = region_handle_of(lua, &this)?;
+            let rh = region_handle_of_context(lua, &this)?;
             let Some(parent) = it.next() else {
-                return Err(mlua::Error::runtime(
+                return Err(benilla_lua::Error::runtime(
                     "SetParent(): Couldn't find region named '' (no argument)",
                 ));
             };
-            let wrong_type =
-                || mlua::Error::runtime("SetParent(): Wrong parent object type, expected frame");
+            let wrong_type = || {
+                benilla_lua::Error::runtime("SetParent(): Wrong parent object type, expected frame")
+            };
             // `_G[name]` before the guard, and **without** `$parent` expansion — the reparent
             // bindings call `0x76c760` directly (`super::object::NamedTarget`).
             let named = match &parent {
-                Value::String(s) => Some(match s.to_str() {
-                    Ok(n) => super::object::prefetch_named_target(lua, n.as_ref(), None),
+                LuaValue::String(value) => Some(match value.as_str() {
+                    Ok(name) => super::object::prefetch_named_target_context(lua, name, None),
                     Err(_) => NamedTarget::unreadable(),
                 }),
                 _ => None,
             };
+            let parent_table_id = match &parent {
+                LuaValue::Table(table) => super::object::decode_id_context(lua, table).ok(),
+                _ => None,
+            };
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let new_owner = match &parent {
-                Value::Nil => None,
+                LuaValue::Nil => None,
                 // A region/font-object wrapper decodes to an id that is not a frame's (or to no id
                 // at all) — both land on the same "expected frame" the reference raises.
-                Value::Table(t) => Some(
-                    decode_id(t)
-                        .ok()
+                LuaValue::Table(_) => Some(
+                    parent_table_id
                         .and_then(|id| model.id_to_frame.get(&id).copied())
                         .ok_or_else(wrong_type)?,
                 ),
                 // A name resolves through `_G[name]` + the narrow **Frame** tag check
                 // (`[0xcf0c10]`), as every other frame-target argument does — the reference's
                 // `0x76c760`; see `object::NamedTarget`.
-                Value::String(_) => {
+                LuaValue::String(_) => {
                     let nt = named.as_ref().expect("a String argument is prefetched");
                     let hit = super::object::resolve_named_target(&model, nt)
                         .and_then(|id| model.id_to_frame.get(&id).copied());
                     Some(hit.ok_or_else(|| {
-                        mlua::Error::runtime(format!(
+                        benilla_lua::Error::runtime(format!(
                             "SetParent(): Couldn't find region named '{}'",
                             nt.name
                         ))
@@ -412,60 +454,12 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
     // ref kit hides tab slices, cooldown swipes, money coins…). A hidden region draws nothing;
     // IsVisible additionally requires the owner frame's effective visibility, mirroring the
     // frame-side pair.
-    m.set(
-        "Show",
-        lua.create_function(|lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            model.region_data.entry(rh).or_default().hidden = false;
-            Ok(())
-        })?,
-    )?;
-
-    m.set(
-        "Hide",
-        lua.create_function(|lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            model.region_data.entry(rh).or_default().hidden = true;
-            Ok(())
-        })?,
-    )?;
-
-    m.set(
-        "IsShown",
-        lua.create_function(|lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let shown = !model.region_data.get(&rh).is_some_and(|d| d.hidden);
-            Ok(if shown { Value::Integer(1) } else { Value::Nil })
-        })?,
-    )?;
-
-    m.set(
-        "IsVisible",
-        lua.create_function(|lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let shown = !model.region_data.get(&rh).is_some_and(|d| d.hidden);
-            let owner_visible = model
-                .arena
-                .region(rh)
-                .and_then(|r| model.arena.frame(r.owner))
-                .is_some_and(|f| f.effective_visible);
-            Ok(if shown && owner_visible {
-                Value::Integer(1)
-            } else {
-                Value::Nil
-            })
-        })?,
-    )?;
-
     // The three clusters this file was split into (0716's budget). Order is immaterial —
     // every one of them only writes into the same method table.
-    paint::install(lua, &m)?;
-    text::install(lua, &m)?;
-    layout::install(lua, &m)?;
+    layout::install_context(vm, &methods)?;
+    paint::install_context(vm, &methods)?;
+    text::install_context(vm, &methods)?;
+    install_region_visibility(vm, &methods)?;
 
     // ── The title region's own, narrower table ──────────────────────────────────────────────────
     //
@@ -484,75 +478,129 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
     // `SetDrawLayer`/`SetVertexColor`/`SetAlpha`/`SetAlphaGradient`, all of which the font carve
     // says a FontString legitimately has. A wrong split REMOVES verbs addons use, which is worse
     // than the superset it fixes — so that half waits for the membership read (1238's shape).
-    let title = lua.create_table()?;
-    for name in super::REGION_MAP_METHODS {
-        let f: Value = m.get(name)?;
-        title.set(name, f)?;
-    }
-    // ── The two LEAF tables (wow-re `texture-fontstring-method-split.md`) ───────────────────────
-    //
-    // Texture's map is `0x87c128` (22 entries, lookup `0x79c620`), FontString's is `0xcf5400` (32,
-    // lookup `0x79ee20`); both tail-call the Region map and stop there — no third table. Until now
-    // ours was ONE table for both, so a Texture answered `SetText` and a FontString answered
-    // `SetTexture`: a superset in both directions.
-    //
-    // **Partitioned first, then pruned name by name.** The 1244/1245 split only decided which
-    // leaf could SEE each name, because getting a split wrong REMOVES verbs addons use, which is
-    // worse than the superset it fixes. The five that were in NEITHER client map were left in
-    // place as a separate question per name, and all five have since been answered:
-    // `GetStringHeight` (1251), `SetRotation` and `SetPortraitToTexture` (the latter a 1.12
-    // GLOBAL, and it lives there now), and `SetFormattedText` and `SetSize` (2142). Both leaves
-    // are the client's own lists now.
-    //
-    // Copied out of the full table rather than installed twice, so one implementation stands behind
-    // both visibilities — and note the carve's warning that the shared names use the IDENTICAL
-    // `const char*` in the client's two tables, so de-duplicating by name would drop one side.
-    for (key, extra) in [
-        (REG_TEXTURE_METHODS, &super::TEXTURE_ONLY_METHODS[..]),
-        (REG_FONTSTRING_METHODS, &super::FONTSTRING_ONLY_METHODS[..]),
-    ] {
-        let leaf = lua.create_table()?;
-        for name in super::REGION_MAP_METHODS
-            .iter()
-            .chain(super::REGION_LEAF_SHARED.iter())
-            .chain(extra.iter())
-        {
-            let f: Value = m.get(*name)?;
-            leaf.set(*name, f)?;
+    {
+        let context = &mut *vm;
+        let title = context.create_table()?;
+        for name in super::REGION_MAP_METHODS {
+            let function = context.table_get_value(&methods, LuaValue::from(name))?;
+            context.table_set_value(&title, LuaValue::from(name), function)?;
         }
-        lua.set_named_registry_value(key, leaf)?;
-    }
-    for (meta_key, methods_key) in [
-        (REG_TEXTURE_META, REG_TEXTURE_METHODS),
-        (REG_FONTSTRING_META, REG_FONTSTRING_METHODS),
-    ] {
-        let meta = lua.create_table()?;
-        meta.set("__index", lua.named_registry_value::<Table>(methods_key)?)?;
-        lua.set_named_registry_value(meta_key, meta)?;
-    }
+        // ── The two LEAF tables (wow-re `texture-fontstring-method-split.md`) ───────────────────────
+        //
+        // Texture's map is `0x87c128` (22 entries, lookup `0x79c620`), FontString's is `0xcf5400` (32,
+        // lookup `0x79ee20`); both tail-call the Region map and stop there — no third table. Until now
+        // ours was ONE table for both, so a Texture answered `SetText` and a FontString answered
+        // `SetTexture`: a superset in both directions.
+        //
+        // **Partitioned first, then pruned name by name.** The 1244/1245 split only decided which
+        // leaf could SEE each name, because getting a split wrong REMOVES verbs addons use, which is
+        // worse than the superset it fixes. The five that were in NEITHER client map were left in
+        // place as a separate question per name, and all five have since been answered:
+        // `GetStringHeight` (1251), `SetRotation` and `SetPortraitToTexture` (the latter a 1.12
+        // GLOBAL, and it lives there now), and `SetFormattedText` and `SetSize` (2142). Both leaves
+        // are the client's own lists now.
+        //
+        // Copied out of the full table rather than installed twice, so one implementation stands behind
+        // both visibilities — and note the carve's warning that the shared names use the IDENTICAL
+        // `const char*` in the client's two tables, so de-duplicating by name would drop one side.
+        for (key, extra) in [
+            (REG_TEXTURE_METHODS, &super::TEXTURE_ONLY_METHODS[..]),
+            (REG_FONTSTRING_METHODS, &super::FONTSTRING_ONLY_METHODS[..]),
+        ] {
+            let leaf = context.create_table()?;
+            for name in super::REGION_MAP_METHODS
+                .iter()
+                .chain(super::REGION_LEAF_SHARED.iter())
+                .chain(extra.iter())
+            {
+                let function = context.table_get_value(&methods, LuaValue::from(*name))?;
+                context.table_set_value(&leaf, LuaValue::from(*name), function)?;
+            }
+            context.put_registry(key, leaf)?;
+        }
+        for (meta_key, methods_key) in [
+            (REG_TEXTURE_META, REG_TEXTURE_METHODS),
+            (REG_FONTSTRING_META, REG_FONTSTRING_METHODS),
+        ] {
+            let leaf: LuaTable = context.get_registry(methods_key)?;
+            let meta = context.create_table()?;
+            context.table_set(&meta, "__index", leaf)?;
+            context.put_registry(meta_key, meta)?;
+        }
 
-    let title_meta = lua.create_table()?;
-    title_meta.set("__index", title.clone())?;
-    lua.set_named_registry_value(REG_TITLE_METHODS, title)?;
-    lua.set_named_registry_value(REG_TITLE_META, title_meta)?;
+        let title_meta = context.create_table()?;
+        context.table_set(&title_meta, "__index", title.clone())?;
+        context.put_registry(REG_TITLE_METHODS, title)?;
+        context.put_registry(REG_TITLE_META, title_meta)?;
 
-    lua.set_named_registry_value(REG_REGION_METHODS, m)?;
+        context.put_registry(REG_REGION_METHODS, methods)?;
+    }
     Ok(())
+}
+
+fn install_region_visibility(vm: &mut Vm, methods: &LuaTable) -> benilla_lua::Result<()> {
+    let show = vm.create_function("Region:Show", |lua, this: LuaTable| {
+        let rh = region_handle_of_context(lua, &this)?;
+        lua.app_data_mut::<Model>()
+            .expect("model")
+            .region_data
+            .entry(rh)
+            .or_default()
+            .hidden = false;
+        Ok(())
+    })?;
+    vm.table_set_function(methods, "Show", &show)?;
+
+    let hide = vm.create_function("Region:Hide", |lua, this: LuaTable| {
+        let rh = region_handle_of_context(lua, &this)?;
+        lua.app_data_mut::<Model>()
+            .expect("model")
+            .region_data
+            .entry(rh)
+            .or_default()
+            .hidden = true;
+        Ok(())
+    })?;
+    vm.table_set_function(methods, "Hide", &hide)?;
+
+    let is_shown = vm.create_function("Region:IsShown", |lua, this: LuaTable| {
+        let rh = region_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let shown = !model.region_data.get(&rh).is_some_and(|data| data.hidden);
+        Ok(region_flag(shown))
+    })?;
+    vm.table_set_function(methods, "IsShown", &is_shown)?;
+
+    let is_visible = vm.create_function("Region:IsVisible", |lua, this: LuaTable| {
+        let rh = region_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let shown = !model.region_data.get(&rh).is_some_and(|data| data.hidden);
+        let owner_visible = model
+            .arena
+            .region(rh)
+            .and_then(|region| model.arena.frame(region.owner))
+            .is_some_and(|frame| frame.effective_visible);
+        Ok(region_flag(shown && owner_visible))
+    })?;
+    vm.table_set_function(methods, "IsVisible", &is_visible)
+}
+
+fn region_flag(value: bool) -> LuaValue {
+    if value {
+        LuaValue::Integer(1)
+    } else {
+        LuaValue::Nil
+    }
 }
 
 /// The layout [`super::layout::Handle`] a region anchors to by default: its **owner frame**'s id
 /// (minted if needed), or [`SCREEN`] if the region has somehow lost its owner.
 /// This region's global name, or `None` when it was declared anonymously.
 ///
-/// Scans the region-name registry rather than mirroring the name onto the region: that registry is
-/// the single authority (the widget arena deliberately holds none), and a second copy is one more
-/// thing to drift. Linear in NAMED regions, and every caller is human-rate.
+/// The region-name registry remains the authority; its mutation-invalidated
+/// inverse also serves the hot SetPoint path, without a per-call name scan.
 pub(super) fn region_name_of(model: &Model, id: u32) -> Option<String> {
-    model
-        .region_names
-        .iter()
-        .find(|&(_, &v)| v == id)
-        .map(|(k, _)| k.clone())
+    model.region_names.name(id).cloned()
 }
 
 /// Publish a region's global name into the **region-name registry** — the table a sibling's
@@ -565,8 +613,12 @@ pub(super) fn region_name_of(model: &Model, id: u32) -> Option<String> {
 /// `relativeTo="ColorPickerWheel"` on a sibling silently falls back to the parent frame — which is
 /// exactly how the colour picker's value strip first ended up 224 px to the right of where the
 /// reference puts it, anchored to the window instead of to the wheel.
-pub(crate) fn publish_region_name(lua: &Lua, name: &str, region: &Table) {
-    let Ok(id) = super::object::decode_id(region) else {
+pub(crate) fn publish_region_name_context(
+    lua: &mut impl LuaContext,
+    name: &str,
+    region: &LuaTable,
+) {
+    let Ok(id) = super::object::decode_id_context(lua, region) else {
         return;
     };
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
@@ -609,7 +661,7 @@ pub(crate) fn free_region(model: &mut Model, rh: RegionHandle) {
         model.id_to_region.remove(&id);
         // A NAMED region also holds a slot in the name registry — anonymous ones (every SimpleHTML
         // block, most labels) do not, which is why the first caller of this law never needed it.
-        model.region_names.retain(|_, v| *v != id);
+        model.region_names.remove_id(id);
     }
     model.arena.destroy_region(rh);
     // A death is the archetypal STRUCTURAL change — it takes a node out of the layout roster and
@@ -712,9 +764,12 @@ pub(crate) fn anchor_unanchored_at(
 }
 
 /// [`implicit_creation_anchor`] behind a wrapper table — the loader-facing form (the loader holds
-/// region wrappers, not handles), same seam as [`apply_font_parts`].
-pub(crate) fn implicit_creation_anchor_lua(lua: &Lua, wrapper: &Table) -> mlua::Result<()> {
-    let rh = region_handle_of(lua, wrapper)?;
+/// region wrappers, not handles), same seam as [`apply_font_parts_context`].
+pub(crate) fn implicit_creation_anchor_context(
+    lua: &mut impl LuaContext,
+    wrapper: &LuaTable,
+) -> benilla_lua::Result<()> {
+    let rh = region_handle_of_context(lua, wrapper)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     implicit_creation_anchor(&mut model, rh);
     Ok(())
@@ -726,17 +781,22 @@ pub(crate) fn implicit_creation_anchor_lua(lua: &Lua, wrapper: &Table) -> mlua::
 /// name a leading `$parent` expands to.
 ///
 /// A region's `$parent` is its **owner** frame (the region's own `+0x9c`), so the walk starts
-/// there rather than one link higher. Its own name comes back out of `Model::region_names` — the
-/// registry is name→id, and this is the only place that wants the inverse, so it is a scan on the
-/// **error path** rather than a second map kept in step.
-pub(super) fn region_ladder_context(lua: &Lua, rh: RegionHandle) -> (String, String) {
+/// there rather than one link higher. Its own name comes from the registry's
+/// lazy inverse; this helper runs on successful SetPoint calls as well as errors.
+pub(super) fn region_ladder_context_context(
+    lua: &impl LuaContext,
+    rh: RegionHandle,
+) -> (String, String) {
     let mut model = lua.app_data_mut::<Model>().expect("model");
+    region_ladder_context_model(&mut model, rh)
+}
+
+fn region_ladder_context_model(model: &mut Model, rh: RegionHandle) -> (String, String) {
     let id = model.region_id(rh);
     let who = model
         .region_names
-        .iter()
-        .find(|(_, &v)| v == id)
-        .map(|(n, _)| n.clone())
+        .name(id)
+        .cloned()
         .unwrap_or_else(|| UNNAMED.to_string());
     let owner = model.arena.region(rh).map(|r| r.owner);
     let base = super::object::parent_token_base(&model, owner);
@@ -761,16 +821,22 @@ pub(super) fn size_bits_eq(a: Option<(f32, f32)>, b: Option<(f32, f32)>) -> bool
 /// one of its raises come from [`super::object::anchor_args`]; this side supplies only what the
 /// reference reads off a region — the owner as the layout parent, and
 /// [`super::RegionData::anchors`] as the store.
-pub(super) fn region_set_point(lua: &Lua, this: &Table, args: &MultiValue) -> mlua::Result<()> {
-    let rh = region_handle_of(lua, this)?;
-    let (who, base) = region_ladder_context(lua, rh);
+pub(super) fn region_set_point_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    args: &LuaMultiValue,
+) -> benilla_lua::Result<()> {
+    let rh = region_handle_of_context(lua, this)?;
+    let (who, base) = region_ladder_context_context(lua, rh);
     // The `_G` read inside the ladder runs with no model guard alive — see `region_ladder_context`.
-    let p = parse_set_point(lua, args, &who, &base)?;
+    let p = super::object::anchor_args::parse_set_point_context(lua, args, &who, &base)?;
 
     let mut model = lua.app_data_mut::<Model>().expect("model");
     let me = model.region_id(rh);
     let owner = region_owner_id(&mut model, rh);
-    let rel_to_id = resolve_rel_target(&model, &p.target, &who, "SetPoint", me, owner)?;
+    let rel_to_id = super::object::anchor_args::resolve_rel_target_context(
+        &model, &p.target, &who, "SetPoint", me, owner,
+    )?;
     let (point, rel_point, x, y) = (p.point, p.rel_point, p.x, p.y);
 
     let data = model.region_data.entry(rh).or_default();
@@ -835,8 +901,11 @@ pub(super) fn region_set_point(lua: &Lua, this: &Table, args: &MultiValue) -> ml
 ///   cell, `0x7729b0`'s `[fs+0x100]`, which IS the wrapped line count × line height. So a wrapped
 ///   string reports a width wider than its own box and a height taller than one line, and that
 ///   asymmetry is the client's (wow-re `fontstring-overflow.md` "The measurement echo").
-pub(super) fn measured_wh(lua: &Lua, this: &Table) -> mlua::Result<(f32, f32)> {
-    let rh = region_handle_of(lua, this)?;
+pub(super) fn measured_wh_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<(f32, f32)> {
+    let rh = region_handle_of_context(lua, this)?;
     // Same-tick measure when a host font engine is installed — see `region::text`'s `natural_w`.
     // A no-op for a Texture (not a FontString) and for an already-current measure.
     super::measure::ensure_measured(lua, rh);
@@ -844,7 +913,7 @@ pub(super) fn measured_wh(lua: &Lua, this: &Table) -> mlua::Result<(f32, f32)> {
     Ok(virtual_span(&model, rh))
 }
 
-/// [`measured_wh`]'s body, on a borrowed model — the form the engine's own callers want.
+/// [`measured_wh_context`]'s body, on a borrowed model — the form the engine's own callers want.
 pub(super) fn virtual_span(model: &Model, rh: RegionHandle) -> (f32, f32) {
     let Some(d) = model.region_data.get(&rh) else {
         return (0.0, 0.0);

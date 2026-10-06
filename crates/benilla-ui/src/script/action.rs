@@ -16,10 +16,10 @@
 //! active (warrior stances, druid forms), which the FrameXML side computes exactly like
 //! Blizzard's own bar code.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
-use super::binding_abi::flag;
 use super::Model;
+pub use crate::script_data::{ActionSlot, ActionState, ActionUse};
 
 /// Action-kind bytes — bits 24–31 of the wire's packed slot word (VERIFIED vmangos `Player.h`
 /// `ActionButtonType`; decision 0216 §1, `CMSG_SET_ACTION_BUTTON`'s own packing). The natural
@@ -30,85 +30,12 @@ pub(crate) const ACTION_KIND_SPELL: u8 = 0x00;
 pub(crate) const ACTION_KIND_MACRO: u8 = 0x40;
 pub(crate) const ACTION_KIND_ITEM: u8 = 0x80;
 
-/// What one action slot displays. The app resolves icons (Spell.dbc × SpellIcon.dbc for a spell,
-/// the item template chain for an item) before pushing.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ActionSlot {
-    /// The icon texture path (`Interface\Icons\…`); `None` shows the slot's fallback.
-    pub texture: Option<String>,
-    /// The wire's kind byte (bits 24–31 of the packed slot word — SPELL 0x00/MACRO 0x40/ITEM
-    /// 0x80, decision 0216 §1). Opaque to the engine beyond the cursor seam's own pack/unpack
-    /// (`super::cursor::bar`); ids, targets, and the cast are still the app's.
-    pub kind: u8,
-    /// The spell/macro/item id (bits 0–23 of the packed slot word).
-    pub action: u32,
-    /// Bag count for an ITEM-kind slot (`GetActionCount`), `0` for every other kind or an empty
-    /// bag — the app-resolved value the Count fontstring reads (decision 0216 §7).
-    pub count: u32,
-    /// `IsConsumableAction`: the gate the ref's `UpdateCount` puts in front of [`Self::count`]
-    /// (decision 0926 §3). **Identity, not state** — `0x4e5250` reads nothing but the slot's own
-    /// item template, so it changes exactly when the icon does and rides the same push (decision
-    /// 1301; it lived in [`ActionState`] until the login race that split the pair).
-    pub consumable: bool,
-}
-
-/// One action's **dynamic** state — the per-frame half the app's feed pushes beside the slot's
-/// identity ([`ActionSlot`]): what the reference's `ActionButton_Update*` family reads through
-/// `IsUsableAction`/`IsActionInRange`/`IsCurrentAction`/`GetActionCooldown` and kin (decision
-/// 0137 phase 4). Split from the identity map so a state churn (range, cooldown) never disturbs
-/// the identity diff that fires `ACTIONBAR_SLOT_CHANGED`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ActionState {
-    /// `IsUsableAction`'s first return: castable right now (power etc.).
-    pub usable: bool,
-    /// `IsUsableAction`'s second return: unusable **specifically** for insufficient power (the
-    /// 0.5/0.5/1.0 blue tint); other unusability reads `(false, false)` (the 0.4 grey).
-    pub not_enough_mana: bool,
-    /// `IsActionInRange`: `None` = rangeless action or no valid target (Lua `nil`);
-    /// `Some(true/false)` = the 1/0 verdict.
-    pub in_range: Option<bool>,
-    /// `ActionHasRange`: the action's spell has a range row to test at all.
-    pub has_range: bool,
-    /// `IsCurrentAction`: the Attack action while auto-attack is engaged, or the action's spell
-    /// while it is our in-flight cast (the checked ring).
-    pub current: bool,
-    /// `IsAutoRepeatAction`: the action's spell is the live autorepeat key (`0xceac30`).
-    pub auto_repeat: bool,
-    /// `IsAttackAction`: the action is the melee auto-attack.
-    pub is_attack: bool,
-    /// `IsEquippedAction`: an ITEM action currently worn (the green border).
-    pub equipped: bool,
-    /// The action's cooldown as pushed: `(start_ms, duration_ms, enabled)` with `start_ms` the
-    /// cooldown's **absolute start on the `GetTime` clock** (the app converts from its own clock
-    /// at feed time — the app-side `CooldownInfo::ui_triple`'s job). Absolute so the value is
-    /// identity-preserving: one running cooldown reads the same triple every frame (no diff
-    /// churn), while a re-arm always reads a new one (the sweep restarts — the reference's own
-    /// convention, whose `GetCooldownInfo 0x6e13e0` returns the record's start and therefore
-    /// cannot alias two arms the way a `(remaining, duration)` pair did).
-    pub cooldown: Option<(i64, u32, bool)>,
-}
-
 /// [`ActionState`] as stored: the cooldown converted to the `GetTime` clock at push time.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct StoredActionState {
     pub(crate) state: ActionState,
     /// `(start_s, duration_s, enabled)` in `GetTime` seconds; `None` = no cooldown.
     pub(crate) cooldown: Option<(f64, f64, bool)>,
-}
-
-/// One queued `UseAction` press — the action id, and whether it carried the **self-cast
-/// modifier**.
-///
-/// A struct rather than a `(u32, bool)` because a bare bool in a tuple is exactly the argument
-/// that gets swapped silently; the neighbouring `take_action_sets` pairs two `u32`s, where the
-/// positions are self-describing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ActionUse {
-    /// The 1-based Lua action id, as `UseAction` was given it.
-    pub action: u32,
-    /// `UseAction`'s third argument — 1.12's `SELFACTIONBUTTON1`-`12` (`ALT-1`…`ALT-=`) reach the
-    /// bar through `ActionButtonUp(id, 1)`, and every other caller passes nothing.
-    pub on_self: bool,
 }
 
 impl super::UiScript {
@@ -194,31 +121,23 @@ pub(super) fn truthy_nonzero(v: &Value) -> bool {
 }
 
 /// Register the action globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    // HasAction(action) → 1/nil, the reference's predicate shape (`super::binding_abi::neutral_flag`).
+    lua.register_function("HasAction", |lua, action: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(super::binding_abi::neutral_flag(
+            model.actions.contains_key(&action),
+        ))
+    })?;
 
-    // HasAction(action) → 1/nil, the reference's predicate shape (`super::binding_abi::flag`).
-    g.set(
-        "HasAction",
-        lua.create_function(|lua, action: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.actions.contains_key(&action)))
-        })?,
-    )?;
-
-    g.set(
-        "GetActionTexture",
-        lua.create_function(|lua, action: u32| {
-            let tex = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.actions.get(&action).and_then(|s| s.texture.clone())
-            };
-            match tex {
-                Some(t) => Ok(Value::String(lua.create_string(&t)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetActionTexture", |lua, action: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .actions
+            .get(&action)
+            .and_then(|s| s.texture.clone())
+            .map_or(Value::Nil, Value::from))
+    })?;
 
     // GetActionText(slot) → the MACRO's own name, or nil. 1-based (`0x4e7072 dec eax`).
     //
@@ -254,25 +173,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // a 120-dword array and slot 121 reads into the next global. Our slot store is a map, so an
     // out-of-range slot is simply absent and answers nil. Safer than the binary, and recorded as a
     // deviation rather than passed off as a match.
-    g.set(
-        "GetActionText",
-        lua.create_function(|lua, slot: Value| {
-            let slot = super::binding_abi::number_arg(lua, slot, "Usage: GetActionText(slot)")?;
-            let name = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                u32::try_from(slot)
-                    .ok()
-                    .and_then(|s| model.actions.get(&s))
-                    .filter(|s| s.kind & 0xf0 == ACTION_KIND_MACRO)
-                    .and_then(|s| model.macros.get(s.action as usize))
-                    .map(|m| m.name.clone())
-            };
-            match name {
-                Some(n) => Ok(Value::String(lua.create_string(&n)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetActionText", |lua, slot: Value| {
+        let slot = super::binding_abi::neutral_number_arg(slot, "Usage: GetActionText(slot)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let name = u32::try_from(slot)
+            .ok()
+            .and_then(|s| model.actions.get(&s))
+            .filter(|s| s.kind & 0xf0 == ACTION_KIND_MACRO)
+            .and_then(|s| model.macros.get(s.action as usize))
+            .map(|m| m.name.clone());
+        Ok(name.map_or(Value::Nil, Value::from))
+    })?;
 
     // UseAction(action [, checkCursor [, onSelf]]). **`onSelf` is the self-cast modifier** — the
     // third argument stock `ActionButtonUp(id, onSelf)` forwards on its main-bar branch and this
@@ -286,48 +197,39 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // explicitly, and place-on-click is the only reading consistent with that click/keybind
     // split). Any of the three payload arms counts as "held" — Item/Spell/Action are all
     // placeable onto a bar slot.
-    g.set(
-        "UseAction",
-        lua.create_function(|lua, (action, rest): (u32, MultiValue)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let mut rest = rest.iter();
-            let check_cursor = rest.next().is_some_and(truthy_nonzero);
-            // `onSelf` reads with the SAME truthiness as `checkCursor` — numeric-nonzero, the
-            // reference's convention rather than Lua's — because it arrives from the same
-            // callers by the same route. `ActionButtonUp(id, 1)` is the only shipped caller
-            // that passes it.
-            let on_self = rest.next().is_some_and(truthy_nonzero);
-            if check_cursor && model.cursor.is_some() {
-                super::cursor::place_action(&mut model, action);
-            } else {
-                model.action_uses.push(ActionUse { action, on_self });
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("UseAction", |lua, (action, rest): (u32, MultiValue)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let mut rest = rest.iter();
+        let check_cursor = rest.next().is_some_and(truthy_nonzero);
+        // `onSelf` reads with the SAME truthiness as `checkCursor` — numeric-nonzero, the
+        // reference's convention rather than Lua's — because it arrives from the same
+        // callers by the same route. `ActionButtonUp(id, 1)` is the only shipped caller
+        // that passes it.
+        let on_self = rest.next().is_some_and(truthy_nonzero);
+        if check_cursor && model.cursor.is_some() {
+            super::cursor::place_action(&mut model, action);
+        } else {
+            model.action_uses.push(ActionUse { action, on_self });
+        }
+        Ok(())
+    })?;
 
     // Bag count for an ITEM-kind action, 0 for every other kind (the ref's IsConsumableAction
     // gate simplified — 0216 §7's App-section note) — the check lives HERE, not in every XML
     // caller, so a slot fed a stray count on the wrong kind (a bug elsewhere) can't leak through.
-    g.set(
-        "GetActionCount",
-        lua.create_function(|lua, action: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .actions
-                .get(&action)
-                .filter(|s| s.kind == ACTION_KIND_ITEM)
-                .map_or(0, |s| s.count))
-        })?,
-    )?;
+    lua.register_function("GetActionCount", |lua, action: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .actions
+            .get(&action)
+            .filter(|s| s.kind == ACTION_KIND_ITEM)
+            .map_or(0, |s| s.count))
+    })?;
 
-    g.set(
-        "GetBonusBarOffset",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.bonus_bar_offset))
-        })?,
-    )?;
+    lua.register_function("GetBonusBarOffset", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.bonus_bar_offset))
+    })?;
 
     // `ChangeActionBarPage()` — four instructions in the reference (`0x4e7650`: `mov ecx,0xd4;
     // call FrameScript_SignalEvent; xor eax,eax; ret` — wow-re `action-bar-toggles.md` §6, `ui.md`):
@@ -336,13 +238,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // calling this), the buttons repaint from `ActionButton_OnEvent`, and the up-arrow's OnEvent
     // restamps the numeral. Synchronous, like the reference's `SignalEvent` (1938; the pattern is
     // `UpdateSpells` → `SPELLS_CHANGED`, 1924). Zero return values on every path.
-    g.set(
-        "ChangeActionBarPage",
-        lua.create_function(|lua, ()| {
-            super::tick::fire_event_into(lua, "ACTIONBAR_PAGE_CHANGED", Vec::new());
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ChangeActionBarPage", |lua, ()| {
+        super::tick::fire_event_into_context(lua, "ACTIONBAR_PAGE_CHANGED", Vec::new());
+        Ok(())
+    })?;
 
     // ── The dynamic-state read API (decision 0137 phase 4): the reference ActionButton.lua's
     // whole input surface, answered from the app-pushed per-action state. Return conventions are
@@ -350,7 +249,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Lua tests them with plain `if`, so nil-vs-0 matters exactly where the ref makes it matter.
 
     // A 1/nil boolean read over the state map. An absent action answers nil.
-    fn state_flag(lua: &Lua, action: u32, pick: impl Fn(&ActionState) -> bool) -> Value {
+    fn state_flag(
+        lua: &impl LuaContext,
+        action: u32,
+        pick: impl Fn(&ActionState) -> bool,
+    ) -> Value {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         match model.action_states.get(&action) {
             Some(s) if pick(&s.state) => Value::Integer(1),
@@ -359,89 +262,72 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     }
 
     // IsUsableAction(action) → isUsable (1/nil), notEnoughMana (1/nil).
-    g.set(
-        "IsUsableAction",
-        lua.create_function(|lua, action: u32| {
-            Ok((
-                state_flag(lua, action, |s| s.usable),
-                state_flag(lua, action, |s| s.not_enough_mana),
-            ))
-        })?,
-    )?;
+    lua.register_function("IsUsableAction", |lua, action: u32| {
+        Ok((
+            state_flag(lua, action, |s| s.usable),
+            state_flag(lua, action, |s| s.not_enough_mana),
+        ))
+    })?;
 
     // IsActionInRange(action) → nil (no range / no target) | 0 | 1.
-    g.set(
-        "IsActionInRange",
-        lua.create_function(|lua, action: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(
-                match model
-                    .action_states
-                    .get(&action)
-                    .and_then(|s| s.state.in_range)
-                {
-                    Some(true) => Value::Integer(1),
-                    Some(false) => Value::Integer(0),
-                    None => Value::Nil,
-                },
-            )
-        })?,
-    )?;
+    lua.register_function("IsActionInRange", |lua, action: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(
+            match model
+                .action_states
+                .get(&action)
+                .and_then(|s| s.state.in_range)
+            {
+                Some(true) => Value::Integer(1),
+                Some(false) => Value::Integer(0),
+                None => Value::Nil,
+            },
+        )
+    })?;
 
-    g.set(
-        "ActionHasRange",
-        lua.create_function(|lua, action: u32| Ok(state_flag(lua, action, |s| s.has_range)))?,
-    )?;
-    g.set(
-        "IsCurrentAction",
-        lua.create_function(|lua, action: u32| Ok(state_flag(lua, action, |s| s.current)))?,
-    )?;
-    g.set(
-        "IsAutoRepeatAction",
-        lua.create_function(|lua, action: u32| Ok(state_flag(lua, action, |s| s.auto_repeat)))?,
-    )?;
-    g.set(
-        "IsAttackAction",
-        lua.create_function(|lua, action: u32| Ok(state_flag(lua, action, |s| s.is_attack)))?,
-    )?;
+    lua.register_function("ActionHasRange", |lua, action: u32| {
+        Ok(state_flag(lua, action, |s| s.has_range))
+    })?;
+    lua.register_function("IsCurrentAction", |lua, action: u32| {
+        Ok(state_flag(lua, action, |s| s.current))
+    })?;
+    lua.register_function("IsAutoRepeatAction", |lua, action: u32| {
+        Ok(state_flag(lua, action, |s| s.auto_repeat))
+    })?;
+    lua.register_function("IsAttackAction", |lua, action: u32| {
+        Ok(state_flag(lua, action, |s| s.is_attack))
+    })?;
     // The Count gate reads the SLOT, not the state map: `IsConsumableAction 0x4e5250` is a pure
     // query over the item template the icon already came from, so it has to arrive on the same
     // push the icon does. Split across the two feeds it answered `nil` for the whole session on a
     // freshly logged-in character (decision 1301).
-    g.set(
-        "IsConsumableAction",
-        lua.create_function(|lua, action: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            match model.actions.get(&action) {
-                Some(s) if s.consumable => Ok(Value::Integer(1)),
-                _ => Ok(Value::Nil),
-            }
-        })?,
-    )?;
-    g.set(
-        "IsEquippedAction",
-        lua.create_function(|lua, action: u32| Ok(state_flag(lua, action, |s| s.equipped)))?,
-    )?;
+    lua.register_function("IsConsumableAction", |lua, action: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        match model.actions.get(&action) {
+            Some(s) if s.consumable => Ok(Value::Integer(1)),
+            _ => Ok(Value::Nil),
+        }
+    })?;
+    lua.register_function("IsEquippedAction", |lua, action: u32| {
+        Ok(state_flag(lua, action, |s| s.equipped))
+    })?;
 
     // GetActionCooldown(action) → start, duration, enable — the reference's `(GetTime-clock
     // seconds, seconds, 0/1)` triple. An elapsed (or absent) cooldown answers `(0, 0, 1)`: the
     // read must go cold once `start + duration` passes, or a later event-driven
     // `CooldownFrame_SetTimer` re-feed would re-show the sweep and replay the finish flash.
-    g.set(
-        "GetActionCooldown",
-        lua.create_function(|lua, action: u32| {
-            let now: f64 = lua.globals().get("__benilla_now").unwrap_or(0.0);
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(
-                match model.action_states.get(&action).and_then(|s| s.cooldown) {
-                    Some((start, duration, enabled)) if start + duration > now || !enabled => {
-                        (start, duration, i32::from(enabled))
-                    }
-                    _ => (0.0, 0.0, 1),
-                },
-            )
-        })?,
-    )?;
+    lua.register_function("GetActionCooldown", |lua, action: u32| {
+        let now: f64 = lua.get_global("__benilla_now").unwrap_or(0.0);
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(
+            match model.action_states.get(&action).and_then(|s| s.cooldown) {
+                Some((start, duration, enabled)) if start + duration > now || !enabled => {
+                    (start, duration, i32::from(enabled))
+                }
+                _ => (0.0, 0.0, 1),
+            },
+        )
+    })?;
 
     Ok(())
 }
@@ -484,7 +370,7 @@ mod tests {
 
     #[test]
     fn change_action_bar_page_fires_the_event_and_nothing_else() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             "CURRENT_ACTIONBAR_PAGE = 3 \
              local f = CreateFrame('Frame') f:RegisterEvent('ACTIONBAR_PAGE_CHANGED') \
@@ -503,9 +389,9 @@ mod tests {
     #[test]
     fn action_snapshot_reads_and_use_queues() {
         let mut s = UiScript::new().unwrap();
-        assert!(!s.eval::<bool>("return HasAction(73)").unwrap());
+        assert!(!s.eval_truthy("return HasAction(73)").unwrap());
         assert!(s
-            .eval::<bool>("return GetActionTexture(73) == nil")
+            .eval_truthy("return GetActionTexture(73) == nil")
             .unwrap());
         assert_eq!(s.eval::<i64>("return GetBonusBarOffset()").unwrap(), 0);
 
@@ -520,7 +406,7 @@ mod tests {
             }),
         );
         s.set_bonus_bar_offset(1);
-        assert!(s.eval::<bool>("return HasAction(73)").unwrap());
+        assert!(s.eval_truthy("return HasAction(73)").unwrap());
         assert_eq!(
             s.eval::<String>("return GetActionTexture(73)").unwrap(),
             "Interface\\Icons\\Ability_Rogue_Ambush"
@@ -533,7 +419,7 @@ mod tests {
         assert!(s.take_action_uses().is_empty());
 
         s.set_action(73, None);
-        assert!(!s.eval::<bool>("return HasAction(73)").unwrap());
+        assert!(!s.eval_truthy("return HasAction(73)").unwrap());
     }
 
     #[test]
@@ -648,11 +534,9 @@ mod tests {
     /// A missing or non-number slot **raises** (`0x4e70be` → `0x6f4940`, which never returns).
     #[test]
     fn get_action_text_raises_on_a_bad_slot() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         for call in ["GetActionText()", "GetActionText({})"] {
-            let err = s
-                .eval::<mlua::Value>(&format!("return {call}"))
-                .unwrap_err();
+            let err = s.eval::<bool>(&format!("return {call}")).unwrap_err();
             assert!(
                 format!("{err}").contains("Usage: GetActionText(slot)"),
                 "{call} must raise, got {err}"

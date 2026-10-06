@@ -183,22 +183,22 @@ pub(super) fn service_group(
     spells: &SpellCatalog,
     skill_lines: Option<&SkillLineCatalog>,
     // The VM's own `GlobalStrings.lua` — the two label-table entries and the known-talents header.
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> (u32, String) {
     if trainer_type == TRAINER_TYPE_TRADESKILL {
         let step = spells
             .get(wire_spell)
             .is_some_and(|d| d.effects.contains(&SPELL_EFFECT_SKILL_STEP));
         return if step {
-            (1, get("TRADESKILL_SERVICE_STEP").unwrap_or_default())
+            (1, (&mut *get)("TRADESKILL_SERVICE_STEP").unwrap_or_default())
         } else {
-            (2, get("TRADESKILL_SERVICE_LEARN").unwrap_or_default())
+            (2, (&mut *get)("TRADESKILL_SERVICE_LEARN").unwrap_or_default())
         };
     }
     if trainer_type == TRAINER_TYPE_MOUNT && category == TrainerServiceCategory::Used {
         return (
             TRAINER_GROUP_KNOWN,
-            get("KNOWN_TALENTS_HEADER").unwrap_or_default(),
+            (&mut *get)("KNOWN_TALENTS_HEADER").unwrap_or_default(),
         );
     }
     let line = skill_lines

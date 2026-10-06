@@ -22,6 +22,7 @@ use super::{class_name, Roster};
 pub(super) fn refresh_list(
     roster: Res<Roster>,
     areas: Option<Res<AreaTableRes>>,
+    classes: Option<Res<crate::chr_classes::ChrClassTable>>,
     strings: Option<Res<GlueStrings>>,
     status: Res<NetStatus>,
     mut rows: Query<(&SelectAction, &mut Visibility), (With<Button>, Without<Hilight>)>,
@@ -65,10 +66,17 @@ pub(super) fn refresh_list(
                     } else {
                         ("CHARACTER_SELECT_INFO", "Level %d %s")
                     };
-                    strings
-                        .text(key.0, key.1)
-                        .replacen("%d", &c.level.to_string(), 1)
-                        .replacen("%s", class_name(c.class), 1)
+                    let class = classes
+                        .as_ref()
+                        .and_then(|table| table.0.name(c.class.into()))
+                        .unwrap_or_else(|| class_name(c.class));
+                    benilla_ui::strings::fill(
+                        strings.text(key.0, key.1),
+                        &[
+                            benilla_ui::strings::Arg::D(c.level.into()),
+                            benilla_ui::strings::Arg::S(class),
+                        ],
+                    )
                 }
                 _ => areas
                     .as_deref()
@@ -184,7 +192,8 @@ pub(super) fn refresh_banner_and_buttons(
     }
     // Create New Character shows while the realm answered and a slot is free (the ref hides it
     // disconnected or at MAX_CHARACTERS_PER_REALM = 10).
-    let show_create = roster.realm.is_some() && roster.chars.len() < MAX_ROWS;
+    let show_create =
+        crate::char_create::available() && roster.realm.is_some() && roster.chars.len() < MAX_ROWS;
     for (action, mut vis) in &mut create_vis {
         if matches!(action, SelectAction::CreateChar) {
             *vis = if show_create {

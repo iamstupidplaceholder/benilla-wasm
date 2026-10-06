@@ -15,7 +15,7 @@
 //! they stay a handful while `frames=`/`anchored=` grow without bound. A solve whose scope tracks
 //! the graph again is precisely the regression this file exists to catch.
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use benilla_ui::script::UiScript;
 
@@ -62,7 +62,7 @@ fn settled_default_ui() -> UiScript {
             ..Default::default()
         }),
     );
-    super::load_default_ui(&s);
+    super::load_default_ui(&mut s);
     s.set_screen_size(1600.0, 900.0);
     for _ in 0..12 {
         s.resolve();
@@ -94,7 +94,7 @@ fn app_frame_ticked(s: &mut UiScript, dt: f32) {
 
 /// A tooltip whose lines change width every call — the hover sweep across a bag grid, where each
 /// slot holds a different item.
-fn install_changing_tooltip(s: &UiScript, owner: &str, func: &str) {
+fn install_changing_tooltip(s: &mut UiScript, owner: &str, func: &str) {
     s.run(&format!(
         r#"
         local a = CreateFrame("Button", "{owner}"); a:SetPoint("CENTER", 0, 0); a:SetWidth(10); a:SetHeight(10)
@@ -131,7 +131,7 @@ fn tooltip_change_costs_a_whole_ui_solve() {
         s.layout_rounds() - r0
     );
 
-    install_changing_tooltip(&s, "BenchOwner", "change");
+    install_changing_tooltip(&mut s, "BenchOwner", "change");
     let (r1, s1) = (s.layout_rounds(), s.layout_solves());
     let n = 50u32;
     let t = Instant::now();
@@ -157,7 +157,7 @@ fn tooltip_change_costs_a_whole_ui_solve() {
 #[test]
 fn a_tooltip_content_change_costs_exactly_one_layout_solve() {
     let mut s = settled_default_ui();
-    install_changing_tooltip(&s, "GateOwner", "gate_change");
+    install_changing_tooltip(&mut s, "GateOwner", "gate_change");
 
     // Settle the newly-created owner + the tooltip's first content.
     for _ in 0..4 {
@@ -425,7 +425,7 @@ fn a_region_moving_every_frame_costs_no_graph_derivation_on_the_shipped_ui() {
 #[test]
 fn a_tooltip_content_change_solves_a_tooltip_sized_scope() {
     let mut s = settled_default_ui();
-    install_changing_tooltip(&s, "ScopeSizeOwner", "scope_size_change");
+    install_changing_tooltip(&mut s, "ScopeSizeOwner", "scope_size_change");
 
     // Settle the newly-created owner and the tooltip's first content — a birth is legitimately a
     // wide solve (a new node has no cached rect to trust).
@@ -458,7 +458,7 @@ fn a_tooltip_content_change_solves_a_tooltip_sized_scope() {
 #[test]
 fn a_scoped_resolve_reproduces_the_whole_graph_solve() {
     let mut s = settled_default_ui();
-    install_changing_tooltip(&s, "ScopeOwner", "scope_change");
+    install_changing_tooltip(&mut s, "ScopeOwner", "scope_change");
 
     for step in 0..12 {
         // A content change, resolved the way the app resolves it — scoped.

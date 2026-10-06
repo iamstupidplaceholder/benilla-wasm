@@ -17,8 +17,12 @@ use bevy::prelude::*;
 
 use benilla_formats::EmoteSoundCatalog;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::net::{EmoteKind, EmoteMessage, ObjectStore};
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::kit::{play_kit, KitRef, SoundCategory, SoundKits};
@@ -77,11 +81,12 @@ impl EmoteSounds {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_emote_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_emote_sound_catalog(&mut chain)
+        benilla_formats::load_emote_sound_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -152,6 +157,7 @@ fn emote_sounds(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, load_emote_sounds.after(AssetSet::Open))
-        .add_systems(Update, emote_sounds.in_set(WorldStage::Present));
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_emote_sounds.after(AssetSet::Open));
+    app.add_systems(Update, emote_sounds.in_set(WorldStage::Present));
 }

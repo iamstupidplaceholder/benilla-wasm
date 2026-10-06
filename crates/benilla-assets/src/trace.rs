@@ -26,10 +26,10 @@
 //! 0.96 yd, against a physics integration that was exact. A trace whose clock cannot be trusted for
 //! per-frame timing is half an instrument; filtering to the tags the question needs gives it back.
 
+use benilla_time::{Instant, SystemTime, UNIX_EPOCH};
 use std::fs::File;
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 struct Sink {
     out: File,
@@ -48,8 +48,8 @@ fn sink() -> Option<&'static Mutex<Sink>> {
         // — a sender's `snd` lines beside an observer's `rly`/`run` lines from a different process
         // (decision 0619). `t=` alone is per-process seconds and says nothing across clients; with
         // this header, wall time is `t0 + t`.
-        let t0_wall = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let t0_wall = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
         let _ = writeln!(out, "# t0={t0_wall:.3} (unix epoch seconds at t=0)");
         Some(Mutex::new(Sink {

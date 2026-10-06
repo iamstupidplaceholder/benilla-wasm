@@ -219,7 +219,7 @@ pub(super) fn load_chat_channels(
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_chat_channels_catalog(&mut chain)
+        benilla_formats::load_chat_channels_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {

@@ -14,21 +14,21 @@ fn action_ids(s: &mut UiScript) -> Vec<u32> {
 fn shipped_action_bar_drives_end_to_end() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Cooldown.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Cooldown.xml");
     // `load_ui` returns the same `report.frames` the disk reader asserted on, so this
     // count is the one that always stood here — moved, not re-derived.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIParent.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    let frames = super::test_ui::load_ui(&s, "Interface\\FrameXML\\MainMenuBar.xml")
-        + super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionBarFrame.xml")
-        + super::test_ui::load_ui(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIParent.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    let frames = super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\MainMenuBar.xml")
+        + super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml")
+        + super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
     assert_eq!(
         frames, 80,
         "what the three stock files declare (1938): MainMenuBar.xml's 8 — the bar, the XP StatusBar, \
@@ -46,11 +46,11 @@ fn shipped_action_bar_drives_end_to_end() {
     // or the tick raises on its first event.
     // In manifest order: the fonts its check-box labels colour from, the panel templates those
     // boxes inherit through, then the pane.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\ReputationFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\ReputationFrame.xml");
 
     // A warrior in battle stance: offset 1 ⇒ the bar shows actions 73..84.
     s.set_bonus_bar_offset(1);
@@ -619,13 +619,13 @@ fn a_cooldown_count_draws_over_the_bonus_bars_sweep() {
     load_action_bar(&s);
     s.run(COOLDOWN_COUNT_HOOK)
         .expect("the addon's hook installs");
-    let level = |s: &UiScript, frame: &str| {
+    let level = |s: &mut UiScript, frame: &str| {
         s.eval::<i64>(&format!("return {frame}:GetFrameLevel()"))
             .unwrap()
     };
     assert_eq!(
-        level(&s, "BonusActionButton1Cooldown"),
-        level(&s, "BonusActionButton1") + 1,
+        level(&mut s, "BonusActionButton1Cooldown"),
+        level(&mut s, "BonusActionButton1") + 1,
         "the template's two hand raises leave the sweep ONE level over its button"
     );
 
@@ -989,22 +989,22 @@ fn count_fontstring_follows_is_consumable_action_not_the_bag_count() {
 
     // Read the fontstrings by name, not by scanning painted text: a single-character count
     // ("0") is indistinguishable from a neighbouring button's static HotKey label by content.
-    let count_of = |s: &UiScript, n: u32| {
+    let count_of = |s: &mut UiScript, n: u32| {
         s.eval::<String>(&format!("return ActionButton{n}Count:GetText() or \"\""))
             .unwrap()
     };
     assert_eq!(
-        count_of(&s, 1),
+        count_of(&mut s, 1),
         "",
         "SPELL kind never shows a count, however GetActionCount answers"
     );
     assert_eq!(
-        count_of(&s, 2),
+        count_of(&mut s, 2),
         "15",
         "a consumable ITEM shows its bag count"
     );
     assert_eq!(
-        count_of(&s, 3),
+        count_of(&mut s, 3),
         "",
         "B201: a NON-consumable ITEM (a mount) shows no stack number, whatever the count says"
     );
@@ -1032,7 +1032,7 @@ fn count_fontstring_follows_is_consumable_action_not_the_bag_count() {
     s.fire_event("ACTIONBAR_SLOT_CHANGED", vec![ScriptValue::Int(2)]);
     s.resolve();
     assert_eq!(
-        count_of(&s, 2),
+        count_of(&mut s, 2),
         "0",
         "a spent consumable reads 0, it does not go blank"
     );
@@ -1084,16 +1084,16 @@ fn macro_name_line_follows_get_action_text_through_the_xml() {
     s.resolve();
 
     // Read the fontstrings by name (the count test's reason: painted text is ambiguous).
-    let name_of = |s: &UiScript, n: u32| {
+    let name_of = |s: &mut UiScript, n: u32| {
         s.eval::<String>(&format!("return ActionButton{n}Name:GetText() or \"\""))
             .unwrap()
     };
     assert_eq!(
-        name_of(&s, 1),
+        name_of(&mut s, 1),
         "spawn",
         "a MACRO slot wears its macro's name"
     );
-    assert_eq!(name_of(&s, 2), "", "a SPELL slot has no name line");
+    assert_eq!(name_of(&mut s, 2), "", "a SPELL slot has no name line");
     assert!(
         s.extract()
             .iter()
@@ -1105,7 +1105,7 @@ fn macro_name_line_follows_get_action_text_through_the_xml() {
     s.set_action(1, None);
     s.fire_event("ACTIONBAR_SLOT_CHANGED", vec![ScriptValue::Int(1)]);
     s.resolve();
-    assert_eq!(name_of(&s, 1), "", "an emptied slot loses the name");
+    assert_eq!(name_of(&mut s, 1), "", "an emptied slot loses the name");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -1144,26 +1144,26 @@ fn shipped_bag_frame_drives_end_to_end() {
     //     dependency is the reference's, not ours.
     let mut bar_frames = 0;
     for file in BAG_UI {
-        let frames = load_ui(&s, file);
+        let frames = load_ui(&mut s, file);
         if *file == "Interface\\FrameXML\\Cooldown.xml" {
-            load_ui(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-            load_ui(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-            load_ui(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-            load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-            load_ui(&s, r"Interface\FrameXML\UIParent.xml");
-            load_ui(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-            load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-            load_ui(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-            load_ui(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-            load_ui(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
+            load_ui(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+            load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+            load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+            load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+            load_ui(&mut s, r"Interface\FrameXML\UIParent.xml");
+            load_ui(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+            load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+            load_ui(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+            load_ui(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+            load_ui(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
         }
         if *file == "Interface\\FrameXML\\MainMenuBarBagButtons.xml" {
             bar_frames = frames;
         }
     }
-    load_ui(&s, "Interface\\FrameXML\\StackSplitFrame.xml");
-    load_ui(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_ui(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_ui(&mut s, "Interface\\FrameXML\\StackSplitFrame.xml");
+    load_ui(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_ui(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
 
     assert_eq!(
         bar_frames, 16,
@@ -1245,7 +1245,7 @@ fn shipped_bag_frame_drives_end_to_end() {
     // button rather than pinned to numbers this tree no longer owns — and asked by GetID, since
     // the reference numbers its buttons backwards (`…Item1` is the bag's LAST slot). The property
     // is what it always was: the fed stack paints in the well that says it is game slot 1.
-    let button = bag_slot_button(&s, 0, 1);
+    let button = bag_slot_button(&mut s, 0, 1);
     let (bx, by) = centre_of(&mut s, &button);
     assert!(
         icon.left <= bx && bx <= icon.right && icon.bottom <= by && by <= icon.top,
@@ -1523,7 +1523,7 @@ fn the_bonus_action_bar_exists_hidden_and_takes_layout_calls() {
 /// forever, where nil fails loudly. Pinned so a later "completeness" pass cannot quietly add it.
 #[test]
 fn the_reference_action_bar_constants_are_defined() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_action_bar(&s);
 
     for (name, want) in [
@@ -1578,7 +1578,7 @@ fn the_reference_action_bar_constants_are_defined() {
 /// full thing, or 48 `inherits=` sites across four files silently lose their handlers.
 #[test]
 fn both_reference_action_button_templates_are_inheritable() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_action_bar(&s);
 
     // zBar's exact shape: inherit the bar template, supply your own OnLoad.
@@ -1593,7 +1593,7 @@ fn both_reference_action_button_templates_are_inheritable() {
         </Ui>"#,
     )
     .unwrap();
-    let report = benilla_ui::loader::load(&s, &doc, &|_| None);
+    let report = benilla_ui::loader::load(&mut s, &doc, &|_| None);
     assert!(
         report.errors.is_empty(),
         "loader errors: {:?}",
@@ -1706,7 +1706,7 @@ fn the_main_bar_pages_and_a_bonus_page_still_outranks_it() {
     ] {
         // `test_ui::load_ui`, not a disk read: this list names chain entries now (the reputation
         // pane and the templates it inherits through), and `assets/ui` cannot answer for those.
-        super::test_ui::load_ui(&s, file);
+        super::test_ui::load_ui(&mut s, file);
     }
 
     assert_eq!(s.eval::<i64>("return CURRENT_ACTIONBAR_PAGE").unwrap(), 1);
@@ -1729,11 +1729,11 @@ fn the_main_bar_pages_and_a_bonus_page_still_outranks_it() {
     // it went unwritten for as long as paging existed: the arrows worked, the twelve buttons
     // repainted, and the "1" beside them was a declared literal nothing ever touched — so clicking
     // them read as doing nothing at all (director, 2026-08-22). It seeds at the page's own value.
-    let page_text = |s: &UiScript| {
+    let page_text = |s: &mut UiScript| {
         s.eval::<String>("return MainMenuBarPageNumber:GetText()")
             .unwrap()
     };
-    assert_eq!(page_text(&s), "1", "the load seed is the current page");
+    assert_eq!(page_text(&mut s), "1", "the load seed is the current page");
 
     // Raise the two bottom bars the way the client does, which is what takes pages 6 and 5 out of
     // the cycle from here on.
@@ -1743,7 +1743,7 @@ fn the_main_bar_pages_and_a_bonus_page_still_outranks_it() {
     // Page up walks to 2, so button 1 shows action 13.
     s.run("ActionBar_PageUp()").unwrap();
     assert_eq!(s.eval::<i64>("return CURRENT_ACTIONBAR_PAGE").unwrap(), 2);
-    assert_eq!(page_text(&s), "2", "the numeral follows the page up");
+    assert_eq!(page_text(&mut s), "2", "the numeral follows the page up");
     assert_eq!(
         s.eval::<i64>("return ActionButton_GetPagedID(ActionButton1)")
             .unwrap(),
@@ -1771,7 +1771,7 @@ fn the_main_bar_pages_and_a_bonus_page_still_outranks_it() {
         37
     );
     assert_eq!(
-        page_text(&s),
+        page_text(&mut s),
         "4",
         "the numeral follows a wrap, not just a step"
     );
@@ -1839,19 +1839,19 @@ fn the_main_bar_pages_and_a_bonus_page_still_outranks_it() {
 fn bonus_bar_slides_up_with_sound_and_down_without() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Cooldown.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIParent.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIParent.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
 
     // `ExhaustionTick_Update` indexes `ReputationWatchBar` UNGUARDED — the reference's own code,
     // safe there because `ReputationFrame.xml` is always loaded and always declares the bar. Since
@@ -1859,11 +1859,11 @@ fn bonus_bar_slides_up_with_sound_and_down_without() {
     // or the tick raises on its first event.
     // In manifest order: the fonts its check-box labels colour from, the panel templates those
     // boxes inherit through, then the pane.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\ReputationFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\ReputationFrame.xml");
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
     s.tick(10.0); // a nonzero clock epoch
     let _ = s.take_sounds();
@@ -2061,19 +2061,19 @@ fn bonus_bar_slides_up_with_sound_and_down_without() {
 fn bonus_bar_turnaround_continues_from_position() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Cooldown.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIParent.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIParent.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
 
     // `ExhaustionTick_Update` indexes `ReputationWatchBar` UNGUARDED — the reference's own code,
     // safe there because `ReputationFrame.xml` is always loaded and always declares the bar. Since
@@ -2081,11 +2081,11 @@ fn bonus_bar_turnaround_continues_from_position() {
     // or the tick raises on its first event.
     // In manifest order: the fonts its check-box labels colour from, the panel templates those
     // boxes inherit through, then the pane.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\ReputationFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\ReputationFrame.xml");
     s.tick(10.0);
     let _ = s.take_sounds();
 
@@ -2143,19 +2143,19 @@ fn bonus_bar_turnaround_continues_from_position() {
 fn the_page_arrows_do_not_steal_each_other_s_clicks() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Cooldown.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIParent.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIParent.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml");
 
     // `ExhaustionTick_Update` indexes `ReputationWatchBar` UNGUARDED — the reference's own code,
     // safe there because `ReputationFrame.xml` is always loaded and always declares the bar. Since
@@ -2163,11 +2163,11 @@ fn the_page_arrows_do_not_steal_each_other_s_clicks() {
     // or the tick raises on its first event.
     // In manifest order: the fonts its check-box labels colour from, the panel templates those
     // boxes inherit through, then the pane.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
-    super::test_ui::load_ui(&s, r"Interface\FrameXML\ReputationFrame.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\OptionsFrameTemplates.xml");
+    super::test_ui::load_ui(&mut s, r"Interface\FrameXML\ReputationFrame.xml");
     // The post-login state, which is what a player clicks into. Without it `ExhaustionTick_Update`
     // never runs, and the rested marker — DIALOG strata, declared CENTER on the XP strip, which is
     // exactly where the arrows are — sits unhidden over both and eats every click. That is the
@@ -2176,7 +2176,7 @@ fn the_page_arrows_do_not_steal_each_other_s_clicks() {
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
     s.resolve();
 
-    let centre = |s: &UiScript, name: &str| {
+    let centre = |s: &mut UiScript, name: &str| {
         s.eval::<(f64, f64)>(&format!(
             "return ({name}:GetLeft() + {name}:GetRight()) / 2, \
                     ({name}:GetBottom() + {name}:GetTop()) / 2"
@@ -2184,7 +2184,7 @@ fn the_page_arrows_do_not_steal_each_other_s_clicks() {
         .unwrap()
     };
     for name in ["ActionBarUpButton", "ActionBarDownButton"] {
-        let (x, y) = centre(&s, name);
+        let (x, y) = centre(&mut s, name);
         assert_eq!(
             s.hit_test_name(x as f32, y as f32).as_deref(),
             Some(name),

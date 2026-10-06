@@ -25,162 +25,47 @@ use crate::entities::Creatures;
 use benilla_assets::m2_url;
 use benilla_assets::materials::WowModelMaterial;
 
+use crate::glue_scene_host::{GlueSceneCamera, GlueSceneHost};
+
+#[cfg(not(target_arch = "wasm32"))]
 use super::framing::{
     attachment_point, diag_to_vert, glue_box_aspect, glue_box_physical, glue_scene_framing,
-    ArtExtent, GLUE_AUTHORED_ASPECT, PORTRAIT_ASPECT,
+    glue_zoom_floor, ArtExtent, GLUE_AUTHORED_ASPECT, GLUE_BOX_ASPECT, PORTRAIT_ASPECT,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use super::{
     aim, body_frame, new_target_image, spawn_booth_effects, spawn_booth_model, Booth,
     BoothBillboardSpec, BoothCam, BoothEffects, BoothInstance, BoothLight, BoothMotion, BoothPart,
-    BoothRider, BoothTwins, Booths, PortraitImages, PortraitSource, VariantLane, GLUE_LAYER,
+    BoothRider, BoothTwins, Booths, CreateLook, GlueLook, GluePreview, GlueScene, GlueScenePair,
+    PetLook, PortraitImages, PortraitSource, SelectLook, VariantLane, GLUE_LAYER, GLUE_SLOT,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use super::{clear_booth_rig as clear_stage_rig, spawn_booth_own_emitters as spawn_stage_emitters};
+
+#[cfg(target_arch = "wasm32")]
+use super::light::{material_variant, VariantLane};
+#[cfg(target_arch = "wasm32")]
+use super::booth::{
+    clear_booth_rig as clear_stage_rig, spawn_booth_effects, spawn_booth_model,
+    spawn_booth_own_emitters as spawn_stage_emitters, BoothBillboardSpec, BoothEffects,
+    BoothInstance, BoothMotion, BoothPart, BoothRider, BoothTwins,
+};
+#[cfg(target_arch = "wasm32")]
+use super::framing::{
+    attachment_point, glue_box_aspect, glue_box_physical, glue_scene_framing, glue_zoom_floor,
+    ArtExtent, GLUE_AUTHORED_ASPECT, GLUE_BOX_ASPECT,
+};
+#[cfg(target_arch = "wasm32")]
+use super::{
+    new_target_image, Booth, BoothCam, Booths, CreateLook, GlueLook, GluePreview, GlueScene,
+    GlueScenePair, PortraitImages, PortraitSource, GLUE_LAYER, GLUE_SLOT,
 };
 
-/// The glue booth slot token (its key in [`super::PortraitImages`] / [`Booths`]).
-pub(crate) const GLUE_SLOT: &str = "glue";
 // `GLUE_LAYER` is defined with the rest of the booth ladder in [`super`] — defining it here, from
 // the same `PAPERDOLL_LAYER + 1` the inspect booth used, is exactly how the two collided.
 /// The scene-less fallback target resolution — with a scene up the target resizes to the window
 /// (the glue screens are fullscreen renders).
 const GLUE_SIZE: u32 = 1024;
-
-/// The character appearance the CREATE screen shows — race/sex/**class** + the five appearance
-/// dials (decisions 0423 + 0527): the create body dressed in the (race, class, sex) level-1 starting
-/// outfit (CharStartOutfit), the ref's create preview. Class is load-bearing here — a different
-/// class wears different starting gear, and the ref re-applies equipment on class change
-/// (`SelectClass` → `cc_apply_sections`, wow-re `wave-preview.md`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct CreateLook {
-    pub(crate) race: u8,
-    pub(crate) sex: u8,
-    pub(crate) class: u8,
-    pub(crate) skin: u8,
-    pub(crate) face: u8,
-    pub(crate) hair_style: u8,
-    pub(crate) hair_color: u8,
-    pub(crate) facial_hair: u8,
-}
-
-/// The character the SELECT screen shows — the roster entry's full appearance + its visible
-/// equipment display pairs, verbatim off `SMSG_CHAR_ENUM` (decision 0465).
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) struct SelectLook {
-    pub(crate) race: u8,
-    pub(crate) sex: u8,
-    pub(crate) skin: u8,
-    pub(crate) face: u8,
-    pub(crate) hair_style: u8,
-    pub(crate) hair_color: u8,
-    pub(crate) facial_hair: u8,
-    /// `CHARACTER_FLAG_*` bits (hide-helm / hide-cloak honored by the builder).
-    pub(crate) flags: u32,
-    pub(crate) equipment: [benilla_protocol::CharEnumItem; 19],
-    /// The roster row's **pet** triple — the hunter/warlock companion that stands beside the
-    /// selected character. It rides the look, not a `GluePreview` field of its own, because it is
-    /// part of the enum record and wants the same change detection every other select field gets:
-    /// swapping rows re-bakes the pet with the body.
-    ///
-    /// All three words matter. The display names the model; the **level and family are its size**
-    /// (`CreatureFamily`'s ramp — decision 1538), so a freshly tamed wolf stands visibly smaller
-    /// than a level-60 one.
-    pub(crate) pet_display_id: u32,
-    pub(crate) pet_level: u32,
-    pub(crate) pet_family: u32,
-}
-
-/// The select pet, as the booth needs it: which creature, and the two words that size it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct PetLook {
-    /// `CreatureDisplayInfo` id — never `0` here ([`GlueLook::pet`] is what filters that out).
-    pub(crate) display_id: u32,
-    pub(crate) level: u32,
-    pub(crate) family: u32,
-}
-
-impl From<&benilla_protocol::Character> for SelectLook {
-    fn from(c: &benilla_protocol::Character) -> Self {
-        Self {
-            race: c.race,
-            sex: c.gender.min(1),
-            skin: c.skin,
-            face: c.face,
-            hair_style: c.hair_style,
-            hair_color: c.hair_color,
-            facial_hair: c.facial_hair,
-            flags: c.flags,
-            equipment: c.equipment,
-            pet_display_id: c.pet_display_id,
-            pet_level: c.pet_level,
-            pet_family: c.pet_family,
-        }
-    }
-}
-
-/// What stands on the glue stage: the create screen's dial tuple, or a select roster entry.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum GlueLook {
-    Create(CreateLook),
-    Select(SelectLook),
-}
-
-impl GlueLook {
-    /// The (race, sex) whose body model carries the look.
-    pub(crate) fn body(&self) -> (u8, u8) {
-        match self {
-            GlueLook::Create(l) => (l.race, l.sex),
-            GlueLook::Select(l) => (l.race, l.sex),
-        }
-    }
-
-    /// The **pet** standing beside the character, or `None`. Only a select look can carry one: the
-    /// create screen builds a character that has no pet yet, and the wire field it would come from
-    /// doesn't exist until the character does.
-    pub(crate) fn pet(&self) -> Option<PetLook> {
-        match self {
-            GlueLook::Create(_) => None,
-            GlueLook::Select(l) => (l.pet_display_id != 0).then_some(PetLook {
-                display_id: l.pet_display_id,
-                level: l.pet_level,
-                family: l.pet_family,
-            }),
-        }
-    }
-}
-
-/// Which glue background scene shows (decision 0539 §5): the login screen's main-menu gate, or a
-/// race's `UI_<Race>` stage. An enum, not a fake race value — the login scene isn't a race, and
-/// the fog law forks on the kind (MainMenu is always fogged with its authored XML fog; Race keeps
-/// the 0429 create/select split).
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GlueScene {
-    /// `UI_MainMenu` — the login screen's burning gate (`AccountLogin.xml`'s ModelFFX).
-    MainMenu,
-    /// A race's `UI_<Race>` stage (create/select; Gnome→Dwarf, Troll→Orc per the ref's mapping).
-    Race(u8),
-}
-
-/// The glue screens' live input to the booth (decisions 0423 + 0465 + 0539): which scene shows
-/// (`None` = no scene, booth torn down — each screen drives it: login the main menu, create the
-/// picked race, select the SELECTED character's race, Orc before a list arrives), the character
-/// standing in it (`None` = empty stage — the login screen and an empty account), and the bake
-/// **yaw** in radians (drag / rotate buttons write it; the create screen resets it to the ref's
-/// −15° on entry, the select screen to 0). The look feeds the part builder; the yaw spins the
-/// baked root (cheap — no re-bake).
-#[derive(Resource)]
-pub(crate) struct GluePreview {
-    pub(crate) scene: Option<GlueScene>,
-    pub(crate) look: Option<GlueLook>,
-    pub(crate) yaw: f32,
-}
-
-impl Default for GluePreview {
-    fn default() -> Self {
-        Self {
-            scene: None,
-            look: None,
-            yaw: 0.0,
-        }
-    }
-}
 
 /// The per-race glue **background scene** (the ref's fullscreen `ModelFFX` — `SetBackgroundModel`
 /// loads `Interface\Glues\Models\UI_<Race>\UI_<Race>.mdx`, plays sequence 0, and shows camera 0):
@@ -190,7 +75,6 @@ impl Default for GluePreview {
 /// Gnome shares Dwarf's scene and Troll shares Orc's (the ref's `SetBackgroundModel` mapping).
 #[derive(Resource)]
 pub(crate) struct CreateScene {
-    root: Entity,
     token: Option<&'static str>,
     handle: Option<Handle<M2Model>>,
     spawned: bool,
@@ -227,7 +111,6 @@ pub(crate) struct CreateScene {
     /// yards off the stage. Every `UI_*` scene authors exactly these two attachments and no more,
     /// and both their bones are parentless roots — so the seat is that bone's own frame, with
     /// nothing above it to compose, which is why the pet is placed the same way the body is.
-    pet_root: Entity,
     pet_spot: Vec3,
     /// The pet's share of the stage's frame — attachment **1**'s bone, read the same way
     /// [`Self::char_facing`] is. 1536 placed the pet with a pure translation on the reading that
@@ -255,7 +138,7 @@ pub(crate) struct CreateScene {
     /// scene renders unfogged (wow-re `glue-select-model.md` TU-C, byte-verified `0x472110`) —
     /// rewritten on each scene swap. The character re-lights onto it too — the ref's create character is scene-lit (the
     /// NightElf/Scourge characters are lit almost entirely by stage-local point lights).
-    light: Option<bevy::render::render_resource::Buffer>,
+    light: Option<benilla_assets::gpu_table::GpuTable>,
     /// Booth twins of the character's materials against the scene buffer (the same dedup law as
     /// `BoothLight::variants`; one rewritten buffer per race keeps entries valid across swaps).
     variants: std::collections::HashMap<AssetId<WowModelMaterial>, Handle<WowModelMaterial>>,
@@ -265,6 +148,32 @@ pub(crate) struct CreateScene {
     /// **The stage the selection has asked for but has not been given yet** — see
     /// [`PendingSwap`]. `None` = the standing scene IS the requested one.
     pending: Option<PendingSwap>,
+}
+
+impl Default for CreateScene {
+    fn default() -> Self {
+        Self {
+            token: None,
+            handle: None,
+            spawned: false,
+            cam: None,
+            art: None,
+            viewport_aspect: None,
+            char_spot: Vec3::ZERO,
+            char_facing: Quat::IDENTITY,
+            char_scale: 1.0,
+            pet_spot: Vec3::ZERO,
+            pet_facing: Quat::IDENTITY,
+            pet_stage_scale: 1.0,
+            pet_baked: None,
+            fog: true,
+            ghost: false,
+            light: None,
+            variants: default(),
+            rev: 0,
+            pending: None,
+        }
+    }
 }
 
 /// A requested stage swap, waiting for its half of the pair.
@@ -311,17 +220,7 @@ const GLUE_SWAP_HOLD_SECS: f32 = 2.0;
 /// mapping is the ref's (`GlueParent.lua`'s `SetBackgroundModel` HACK block); the main menu is
 /// `AccountLogin.xml`'s own model.
 fn scene_token(scene: GlueScene) -> &'static str {
-    match scene {
-        GlueScene::MainMenu => "MainMenu",
-        GlueScene::Race(race) => match race {
-            2 | 8 => "Orc",   // Troll shares Orc's scene
-            3 | 7 => "Dwarf", // Gnome shares Dwarf's
-            4 => "NightElf",
-            5 => "Scourge",
-            6 => "Tauren",
-            _ => "Human",
-        },
-    }
+    scene.token()
 }
 
 /// **May the stage swap to the requested scene this frame?** — [`PendingSwap`]'s whole law, as one
@@ -729,13 +628,14 @@ pub(super) fn spawn_glue_booth(
         }),
         layer.clone(),
         BoothCam(GLUE_SLOT.to_string()),
+        GlueSceneCamera,
     ));
     booths.0.insert(
         GLUE_SLOT.to_string(),
         Booth {
             layer: layer.clone(),
             root,
-            target: image,
+            target: image.clone(),
             baked: None,
             baked_guid: None,
             snap: None,
@@ -766,31 +666,16 @@ pub(super) fn spawn_glue_booth(
     // never yaws — the reference's facing call touches only the character component's model
     // (`0x4730e0` → `cc+0x38`), so dragging the character spins the character alone.
     let pet_root = commands
-        .spawn((Transform::IDENTITY, Visibility::Visible, layer))
+        .spawn((Transform::IDENTITY, Visibility::Visible, layer.clone()))
         .id();
-    commands.insert_resource(CreateScene {
-        root: scene_root,
-        token: None,
-        handle: None,
-        spawned: false,
-        cam: None,
-        art: None,
-        viewport_aspect: None,
-        char_spot: Vec3::ZERO,
-        char_facing: Quat::IDENTITY,
-        char_scale: 1.0,
+    commands.insert_resource(GlueSceneHost {
+        target: image.clone(),
+        layer,
+        character_root: root,
+        scene_root,
         pet_root,
-        pet_spot: Vec3::ZERO,
-        pet_facing: Quat::IDENTITY,
-        pet_stage_scale: 1.0,
-        pet_baked: None,
-        fog: true,
-        ghost: false,
-        light: None,
-        variants: default(),
-        rev: 0,
-        pending: None,
     });
+    commands.insert_resource(CreateScene::default());
 }
 
 /// Drive the glue screens' **FFX state** ([`benilla_world::ffx_glow::GlueFfx`]) off the live look —
@@ -838,18 +723,16 @@ pub(super) fn sync_glue_ffx(
 /// — every frame, so the per-bake body framing from [`sync_glue_booth`] never wins while a scene
 /// shows. Leaving the screen (`look: None`) tears the scene down and restores the square target.
 #[allow(clippy::type_complexity)]
-pub(super) fn sync_glue_scene(
+pub(crate) fn sync_glue_scene(
     mut commands: Commands,
     preview: Res<GluePreview>,
     mut scene: ResMut<CreateScene>,
-    booths: Res<Booths>,
+    host: Res<GlueSceneHost>,
     asset_server: Res<AssetServer>,
     m2s: Res<Assets<M2Model>>,
-    booth_light: Res<BoothLight>,
     mut mats: benilla_world::model_render::M2BatchMaterials,
     mut images: ResMut<Assets<Image>>,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
-    mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
+    mut cams: Query<(&mut Transform, &mut Projection), With<GlueSceneCamera>>,
     window: Query<&Window, With<PrimaryWindow>>,
     device: Res<bevy::render::renderer::RenderDevice>,
     queue: Res<bevy::render::renderer::RenderQueue>,
@@ -873,7 +756,7 @@ pub(super) fn sync_glue_scene(
     // The swap gate's two inputs ([`PendingSwap`]) — the character assembly this stage must land
     // beside, and the real clock its bound is measured on. One tuple param: the 16-SystemParam
     // ceiling, same reason as `particle_assets` above.
-    swap: (Res<GluePreviewBake>, Res<Time<bevy::time::Real>>),
+    swap: (Res<GlueScenePair>, Res<Time<bevy::time::Real>>),
 ) {
     let (
         mut palettes,
@@ -886,17 +769,16 @@ pub(super) fn sync_glue_scene(
         mut anim_table,
         mut anim_mirrors,
     ) = particle_assets;
-    let (bake, real) = swap;
-    let Some(booth) = booths.0.get(GLUE_SLOT) else {
-        return;
-    };
+    let (pair, real) = swap;
     let Some(which) = preview.scene else {
         // Off the glue screens: tear the scene down, free the model, square target back.
         if scene.token.is_some() {
-            commands.entity(scene.root).despawn_related::<Children>();
+            commands
+                .entity(host.scene_root)
+                .despawn_related::<Children>();
             // The whole rig-state strip (pose buffer, player, palette slot — `clear_booth_rig`):
             // the scene root outlives its bakes.
-            super::clear_booth_rig(&mut commands, scene.root);
+            clear_stage_rig(&mut commands, host.scene_root);
             scene.token = None;
             scene.handle = None;
             scene.spawned = false;
@@ -906,8 +788,8 @@ pub(super) fn sync_glue_scene(
             scene.char_spot = Vec3::ZERO;
             scene.char_facing = Quat::IDENTITY;
             scene.char_scale = 1.0;
-            clear_pet(&mut commands, &mut scene);
-            resize_target(&mut images, &booth.target, GLUE_SIZE, GLUE_SIZE);
+            clear_pet(&mut commands, &mut scene, host.pet_root);
+            resize_target(&mut images, &host.target, GLUE_SIZE, GLUE_SIZE);
         }
         return;
     };
@@ -925,7 +807,7 @@ pub(super) fn sync_glue_scene(
     if let Ok(w) = window.single() {
         resize_target(
             &mut images,
-            &booth.target,
+            &host.target,
             w.physical_width().max(1),
             w.physical_height().max(1),
         );
@@ -977,10 +859,10 @@ pub(super) fn sync_glue_scene(
         // that asked for it (`build_glue_preview` publishes the look it actually built, so this
         // compares "what stands" against "what was clicked" without re-deriving either).
         let art_ready = m2s.get(&pending.handle).is_some();
-        let body_ready = bake.look == preview.look;
+        let body_ready = pair.look == preview.look;
         // An empty stage has no pair to break — the login → select hop, an empty account, a
         // capture booting onto a glue screen.
-        let standing = bake.look.is_some() && !bake.parts.is_empty();
+        let standing = pair.look.is_some() && pair.has_parts;
         let waited = now - pending.since;
         if !may_swap(standing, art_ready, body_ready, waited) {
             scene.pending = Some(pending);
@@ -1001,15 +883,19 @@ pub(super) fn sync_glue_scene(
         // stage's (2187), and clearing it here is what made the chrome jump out to the full
         // window for the frames between two stages.
         scene.char_spot = Vec3::ZERO;
-        clear_pet(&mut commands, &mut scene);
-        commands.entity(scene.root).despawn_related::<Children>();
+        clear_pet(&mut commands, &mut scene, host.pet_root);
+        commands
+            .entity(host.scene_root)
+            .despawn_related::<Children>();
         // The model may still be loading — strip the old rig state off the outliving root now,
         // not only at the next spawn (which may be many frames away).
-        super::clear_booth_rig(&mut commands, scene.root);
+        clear_stage_rig(&mut commands, host.scene_root);
     } else if scene.spawned && scene.fog != fog {
         // Same scene, other screen: rebuild in place (the handle is cached — same-frame respawn).
         scene.spawned = false;
-        commands.entity(scene.root).despawn_related::<Children>();
+        commands
+            .entity(host.scene_root)
+            .despawn_related::<Children>();
     } else if scene.spawned && scene.ghost != ghost {
         // Same scene, same screen, the selection crossed the ghost bit: **re-light, don't rebuild**.
         // The reference's fork is a per-frame fill callback on models that are already standing
@@ -1042,9 +928,6 @@ pub(super) fn sync_glue_scene(
         let Some(model) = scene.handle.as_ref().and_then(|h| m2s.get(h)) else {
             return; // still loading (the flat page shows in the meantime)
         };
-        if booth_light.studio.buffer.is_none() {
-            return; // headless — no booth pipeline, no scene
-        }
         // The scene's light: its **authored M2 rig** (ambient + the strongest key toward the
         // stage) plus the ref's per-race fog (`CharModelFogInfo`) — its own buffer, so the
         // portraits' shared studio light stays untouched. Rewritten in place on every scene swap
@@ -1069,6 +952,12 @@ pub(super) fn sync_glue_scene(
             .light
             .get_or_insert_with(|| blob.create(&device, "wow_create_scene_light"))
             .clone();
+        // The browser's glue-only composition has no world-light owner. Publish this scene's
+        // actual authored table through the ordinary entity-material seam so the unchanged
+        // character/pet `build_parts` path can build its source variants; the booth below still
+        // re-lights those parts onto this same scene table.
+        #[cfg(target_arch = "wasm32")]
+        benilla_world::model_render::publish_off_world_model_light(&mut commands, light.clone());
         // The scene's rigs skin from THIS buffer's palette region (decision 0720): register it
         // as a mirror (re-registration replaces — a rebuilt scene's old buffer drops).
         mirrors.0.insert("glue_scene", light.clone());
@@ -1192,8 +1081,8 @@ pub(super) fn sync_glue_scene(
         let mut scene_rig = spawn_booth_model(
             &mut commands,
             &mut palettes,
-            scene.root,
-            booth.layer.clone(),
+            host.scene_root,
+            host.layer.clone(),
             &scene_parts,
             &[],
             Some((
@@ -1201,7 +1090,6 @@ pub(super) fn sync_glue_scene(
                 &model.inverse_bindposes,
                 model.animations.as_ref(),
             )),
-            anim_data.as_deref().map(|a| &a.0),
             BoothMotion::Loop, // sequence 0 loops — flags wave, clouds drift
             [false, false],    // the backdrop scene has no hands to grip
             &[],               // …nor a character's eye-glow
@@ -1212,11 +1100,11 @@ pub(super) fn sync_glue_scene(
         // light buffer: the ModelFFX fog covers the whole model, emitters included, carried by
         // `EffectLightOverride` into the shared lane's per-draw bind group. The seating, the
         // billboard arm and the teardown parenting are the shared recipe's (1539).
-        let (emitters, fx_frames) = super::spawn_booth_own_emitters(
+        let (emitters, fx_frames) = spawn_stage_emitters(
             &mut commands,
             &mut scene_rig,
-            scene.root,
-            &booth.layer,
+            host.scene_root,
+            &host.layer,
             Some(&light),
             &model.emitters,
         );
@@ -1238,7 +1126,7 @@ pub(super) fn sync_glue_scene(
             // from the seven shipped scenes, so on the shipped chain this reads "inside" for six
             // of them and a hair past the night elves' 4:3 sky card. A patched or replaced scene
             // that paints narrower would say so here.
-            let frame = super::framing::GLUE_BOX_ASPECT * super::framing::glue_zoom_floor(cam.fov);
+            let frame = GLUE_BOX_ASPECT * glue_zoom_floor(cam.fov);
             info!(
                 "create scene: UI_{token} art extent — half_w {:.4} (widens to {:.2}:1), half_h {:.4} \
                  (opens to 1:{:.2}); the frame ends at {frame:.4} — {}",
@@ -1285,7 +1173,7 @@ pub(super) fn sync_glue_scene(
         // runs when the yaw *changes*).
         apply_yaw(
             &mut commands,
-            booth.root,
+            host.character_root,
             scene.char_spot,
             scene.char_facing,
             scene.char_scale,
@@ -1316,7 +1204,10 @@ pub(super) fn sync_glue_scene(
                 ..default()
             }),
         );
-        aim(&mut cams, GLUE_SLOT, &rig);
+        if let Ok((mut transform, mut projection)) = cams.single_mut() {
+            *transform = rig.0;
+            *projection = rig.1;
+        }
     }
 }
 
@@ -1326,10 +1217,10 @@ pub(super) fn sync_glue_scene(
 /// clear (see [`spawn_glue_booth`]) — a frame. Inside the box nothing changes: the scene's own
 /// unpainted pixels stay transparent over the page, as they always were. Writes only on change —
 /// a `Camera` write re-runs the camera system.
-pub(super) fn pillarbox_glue_scene(
+pub(crate) fn pillarbox_glue_scene(
     scene: Res<CreateScene>,
     window: Query<&Window, With<PrimaryWindow>>,
-    mut cams: Query<(&BoothCam, &mut Camera)>,
+    mut cams: Query<&mut Camera, With<GlueSceneCamera>>,
 ) {
     let Ok(w) = window.single() else {
         return;
@@ -1346,10 +1237,7 @@ pub(super) fn pillarbox_glue_scene(
                 ..default()
             }
         });
-    for (booth, mut cam) in cams.iter_mut() {
-        if booth.0 != GLUE_SLOT {
-            continue;
-        }
+    for mut cam in cams.iter_mut() {
         let same = match (&cam.viewport, &viewport) {
             (None, None) => true,
             (Some(a), Some(b)) => {
@@ -1396,6 +1284,7 @@ fn resize_target(images: &mut Assets<Image>, target: &Handle<Image>, w: u32, h: 
 /// the select screen's hardcoded weather-sun is the in-flight §5's to settle, decision 0465 §5),
 /// the studio buffer otherwise — pose a fresh Stand-**looping** instance with the riders on its
 /// joints, and frame it full-body.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn sync_glue_booth(
     mut commands: Commands,
     preview: Res<GluePreview>,
@@ -1405,7 +1294,6 @@ pub(super) fn sync_glue_booth(
     mut booth_light: ResMut<BoothLight>,
     mut materials: ResMut<Assets<WowModelMaterial>>,
     creatures: Option<Res<Creatures>>,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
     mut palettes: ResMut<benilla_world::rig_palette::RigPalettes>,
     // The per-instance modulate colour (decision 0812): a ghost selection paints the whole bake
@@ -1578,7 +1466,11 @@ pub(super) fn sync_glue_booth(
                 bake.parts.len(),
                 bake.riders.len(),
                 bake.revision,
-                if last_rev != bake.revision { "look" } else { "scene" },
+                if last_rev != bake.revision {
+                    "look"
+                } else {
+                    "scene"
+                },
             );
         }
         commands.entity(booth.root).despawn_related::<Children>();
@@ -1592,7 +1484,6 @@ pub(super) fn sync_glue_booth(
             rig.inverse_bindposes
                 .as_ref()
                 .map(|ibp| (rig.skeleton, ibp, rig.animations)),
-            anim_data.as_deref().map(|a| &a.0),
             BoothMotion::Loop, // the glue preview is a live scene, not a still
             bake.grip,         // close each hand that draws a weapon (the ref's paperdoll rule)
             &booth_billboards,
@@ -1703,6 +1594,180 @@ pub(super) fn sync_glue_booth(
     ));
 }
 
+/// Browser host for the same assembled glue bake. The platform-specific part is only ownership of
+/// the three stable roots; model parts, rigging, animation, riders, cards, particles and scene
+/// lighting all use the production booth primitives above/below this seam.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn sync_glue_booth_web(
+    mut commands: Commands,
+    preview: Res<GluePreview>,
+    bake: Res<GluePreviewBake>,
+    host: Res<GlueSceneHost>,
+    mut scene: ResMut<CreateScene>,
+    mut materials: ResMut<Assets<WowModelMaterial>>,
+    creatures: Option<Res<Creatures>>,
+    mut palettes: ResMut<benilla_world::rig_palette::RigPalettes>,
+    mut tints: ResMut<benilla_world::instance_tint::InstanceTints>,
+    mut last: Local<Option<(u64, f32, u64)>>,
+) {
+    let staged = scene.token == preview.scene.map(scene_token);
+    let (last_rev, last_yaw, last_scene) = last.unwrap_or((u64::MAX, f32::NAN, u64::MAX));
+    let rebake = staged && (last_rev != bake.revision || last_scene != scene.rev);
+    let reyaw = last_yaw != preview.yaw;
+    if !rebake && !reyaw {
+        return;
+    }
+
+    if rebake {
+        if bake.parts.is_empty() {
+            commands
+                .entity(host.character_root)
+                .despawn_related::<Children>();
+            clear_stage_rig(&mut commands, host.character_root);
+        } else {
+            let Some(creatures) = creatures.as_deref() else {
+                return;
+            };
+            let Some(rig) = creatures.display_rig(bake.display_id) else {
+                return;
+            };
+            let Some(light) = scene.light.clone() else {
+                return;
+            };
+            let unready = std::cell::Cell::new(false);
+            let mut relight = |material: &Handle<WowModelMaterial>| match material_variant(
+                &mut scene.variants,
+                &light,
+                material,
+                &mut materials,
+                VariantLane::RigUnfogged,
+            ) {
+                Some(variant) => variant,
+                None => {
+                    unready.set(true);
+                    material.clone()
+                }
+            };
+            let instance = BoothInstance {
+                alpha: bake.ghost.map_or(1.0, |ghost| ghost.alpha),
+            };
+            let parts: Vec<BoothPart> = bake
+                .parts
+                .iter()
+                .map(|part| BoothPart {
+                    skinned: part.skinned_mesh.clone(),
+                    static_mesh: part.static_mesh.clone(),
+                    material: relight(&part.material),
+                    twins: BoothTwins::default(),
+                    alpha_anim: part.alpha_anim.clone(),
+                    mat_anim: false,
+                })
+                .collect();
+            let riders: Vec<BoothRider> = bake
+                .riders
+                .iter()
+                .map(|rider| BoothRider {
+                    mesh: rider.mesh.clone(),
+                    material: relight(&rider.material),
+                    bone: rider.bone,
+                    offset: rider.offset,
+                    twins: BoothTwins::default(),
+                })
+                .collect();
+            let cards: Vec<BoothBillboardSpec> = bake
+                .billboards
+                .iter()
+                .map(|card| BoothBillboardSpec {
+                    mesh: card.mesh.clone(),
+                    material: relight(&card.material),
+                    bone: card.bone,
+                    offset: card.offset,
+                    kind: card.kind,
+                    twins: BoothTwins::default(),
+                })
+                .collect();
+            if unready.get() {
+                return;
+            }
+
+            commands
+                .entity(host.character_root)
+                .despawn_related::<Children>();
+            clear_stage_rig(&mut commands, host.character_root);
+            let mut booth_rig = spawn_booth_model(
+                &mut commands,
+                &mut palettes,
+                host.character_root,
+                host.layer.clone(),
+                &parts,
+                &riders,
+                rig.inverse_bindposes
+                    .as_ref()
+                    .map(|ibp| (rig.skeleton, ibp, rig.animations)),
+                BoothMotion::Loop,
+                bake.grip,
+                &cards,
+                instance,
+            );
+            tints.set(
+                booth_rig.slot(),
+                bake.ghost
+                    .map_or(benilla_world::instance_tint::IDENTITY, |ghost| {
+                        benilla_world::instance_tint::pack(ghost.tint)
+                    }),
+            );
+            spawn_booth_effects(
+                &mut commands,
+                &mut booth_rig,
+                &host.layer,
+                Some(&light),
+                &bake
+                    .effects
+                    .iter()
+                    .map(|effect| BoothEffects {
+                        bone: effect.bone,
+                        offset: effect.offset,
+                        emitters: effect.emitters.clone(),
+                    })
+                    .collect::<Vec<_>>(),
+                instance,
+            );
+            booth_rig.finish(&mut commands);
+            info!(
+                "browser glue character: display {} up — {} part(s), {} rider(s)",
+                bake.display_id,
+                parts.len(),
+                riders.len(),
+            );
+        }
+    }
+
+    commands.entity(host.character_root).insert(
+        Transform::from_translation(if scene.spawned {
+            scene.char_spot
+        } else {
+            Vec3::ZERO
+        })
+        .with_rotation(
+            (if scene.spawned {
+                scene.char_facing
+            } else {
+                Quat::IDENTITY
+            }) * Quat::from_rotation_y(preview.yaw),
+        )
+        .with_scale(Vec3::splat(if scene.spawned {
+            scene.char_scale
+        } else {
+            1.0
+        })),
+    );
+    *last = Some((
+        if rebake { bake.revision } else { last_rev },
+        preview.yaw,
+        if rebake { scene.rev } else { last_scene },
+    ));
+}
+
 /// Stand the select screen's **pet** on scene attachment 1 — the hunter/warlock companion beside
 /// the selected character (the reference's secondary model `record+0x114`, wow-re
 /// `glue-select-model.md` §A4/§B1).
@@ -1721,26 +1786,23 @@ pub(super) fn sync_glue_booth(
 /// **Not yaw-driven.** Dragging the character spins the character: the reference's facing call
 /// (`0x4730e0`) writes the character component's model transform and nothing else, and both scene
 /// attachments are parentless unkeyed pivots, so the pet keeps the seat's own orientation.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn sync_glue_pet(
     mut commands: Commands,
     pet: Res<GluePetBake>,
-    booths: Res<Booths>,
+    host: Res<GlueSceneHost>,
     mut scene: Option<ResMut<CreateScene>>,
     mut materials: ResMut<Assets<WowModelMaterial>>,
     creatures: Option<Res<Creatures>>,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
     mut palettes: ResMut<benilla_world::rig_palette::RigPalettes>,
 ) {
     let Some(scene) = scene.as_deref_mut() else {
         return;
     };
-    let Some(booth) = booths.0.get(GLUE_SLOT) else {
-        return;
-    };
     // No pet on this character (every class but a living hunter/warlock) — clear once and stop.
     if pet.display_id == 0 || pet.parts.is_empty() {
         if scene.pet_baked.is_some() {
-            clear_pet(&mut commands, scene);
+            clear_pet(&mut commands, scene, host.pet_root);
         }
         return;
     }
@@ -1796,21 +1858,18 @@ pub(super) fn sync_glue_pet(
             twins: BoothTwins::default(),
         })
         .collect();
-    commands
-        .entity(scene.pet_root)
-        .despawn_related::<Children>();
-    super::clear_booth_rig(&mut commands, scene.pet_root);
+    commands.entity(host.pet_root).despawn_related::<Children>();
+    super::clear_booth_rig(&mut commands, host.pet_root);
     let mut pet_rig = spawn_booth_model(
         &mut commands,
         &mut palettes,
-        scene.pet_root,
-        booth.layer.clone(),
+        host.pet_root,
+        host.layer.clone(),
         &booth_parts,
         &[], // a pet wears nothing
         rig.inverse_bindposes
             .as_ref()
             .map(|ibp| (rig.skeleton, ibp, rig.animations)),
-        anim_data.as_deref().map(|a| &a.0),
         BoothMotion::Loop, // Stand, looping — the same live scene the character is
         [false, false],    // …and no hands to grip with
         &booth_billboards,
@@ -1828,8 +1887,8 @@ pub(super) fn sync_glue_pet(
     let (emitters, fx_frames) = super::spawn_booth_own_emitters(
         &mut commands,
         &mut pet_rig,
-        scene.pet_root,
-        &booth.layer,
+        host.pet_root,
+        &host.layer,
         Some(&light),
         &pet.emitters,
     );
@@ -1838,7 +1897,7 @@ pub(super) fn sync_glue_pet(
     // The seat: attachment 1's whole frame — its translation, the constant yaw its bone carries on
     // the Human scene and the constant scale it carries on Human and Tauren (1533) — times the DBC
     // scale product the wire never carries here (see [`GluePetBake::scale`]).
-    commands.entity(scene.pet_root).insert(
+    commands.entity(host.pet_root).insert(
         Transform::from_translation(scene.pet_spot)
             .with_rotation(scene.pet_facing)
             .with_scale(Vec3::splat(pet.scale.max(0.01) * scene.pet_stage_scale)),
@@ -1857,13 +1916,116 @@ pub(super) fn sync_glue_pet(
     );
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn sync_glue_pet_web(
+    mut commands: Commands,
+    pet: Res<GluePetBake>,
+    host: Res<GlueSceneHost>,
+    mut scene: ResMut<CreateScene>,
+    mut materials: ResMut<Assets<WowModelMaterial>>,
+    creatures: Option<Res<Creatures>>,
+    mut palettes: ResMut<benilla_world::rig_palette::RigPalettes>,
+) {
+    if pet.display_id == 0 || pet.parts.is_empty() {
+        if scene.pet_baked.is_some() {
+            clear_pet(&mut commands, &mut scene, host.pet_root);
+        }
+        return;
+    }
+    if !scene.spawned || scene.pet_baked == Some(pet.revision) {
+        return;
+    }
+    let (Some(creatures), Some(light)) = (creatures.as_deref(), scene.light.clone()) else {
+        return;
+    };
+    let Some(rig) = creatures.display_rig(pet.display_id) else {
+        return;
+    };
+    let unready = std::cell::Cell::new(false);
+    let mut relight = |material: &Handle<WowModelMaterial>| match material_variant(
+        &mut scene.variants,
+        &light,
+        material,
+        &mut materials,
+        VariantLane::RigUnfogged,
+    ) {
+        Some(variant) => variant,
+        None => {
+            unready.set(true);
+            material.clone()
+        }
+    };
+    let parts: Vec<BoothPart> = pet
+        .parts
+        .iter()
+        .map(|part| BoothPart {
+            skinned: part.skinned_mesh.clone(),
+            static_mesh: part.static_mesh.clone(),
+            material: relight(&part.material),
+            alpha_anim: part.alpha_anim.clone(),
+            twins: BoothTwins::default(),
+            mat_anim: false,
+        })
+        .collect();
+    let cards: Vec<BoothBillboardSpec> = pet
+        .billboards
+        .iter()
+        .map(|card| BoothBillboardSpec {
+            mesh: card.mesh.clone(),
+            material: relight(&card.material),
+            bone: card.bone,
+            offset: card.offset,
+            kind: card.kind,
+            twins: BoothTwins::default(),
+        })
+        .collect();
+    if unready.get() {
+        return;
+    }
+    commands.entity(host.pet_root).despawn_related::<Children>();
+    clear_stage_rig(&mut commands, host.pet_root);
+    let mut pet_rig = spawn_booth_model(
+        &mut commands,
+        &mut palettes,
+        host.pet_root,
+        host.layer.clone(),
+        &parts,
+        &[],
+        rig.inverse_bindposes
+            .as_ref()
+            .map(|ibp| (rig.skeleton, ibp, rig.animations)),
+        BoothMotion::Loop,
+        [false, false],
+        &cards,
+        BoothInstance::default(),
+    );
+    spawn_stage_emitters(
+        &mut commands,
+        &mut pet_rig,
+        host.pet_root,
+        &host.layer,
+        Some(&light),
+        &pet.emitters,
+    );
+    pet_rig.finish(&mut commands);
+    commands.entity(host.pet_root).insert(
+        Transform::from_translation(scene.pet_spot)
+            .with_rotation(scene.pet_facing)
+            .with_scale(Vec3::splat(pet.scale.max(0.01) * scene.pet_stage_scale)),
+    );
+    scene.pet_baked = Some(pet.revision);
+    info!(
+        "browser glue pet: display {} up — {} part(s)",
+        pet.display_id,
+        parts.len(),
+    );
+}
+
 /// Tear the standing pet down (no pet on this character, or the stage went away).
-fn clear_pet(commands: &mut Commands, scene: &mut CreateScene) {
-    commands
-        .entity(scene.pet_root)
-        .despawn_related::<Children>();
+fn clear_pet(commands: &mut Commands, scene: &mut CreateScene, pet_root: Entity) {
+    commands.entity(pet_root).despawn_related::<Children>();
     // The rig state lives on the root, which outlives its bakes — the despawn doesn't reach it.
-    super::clear_booth_rig(commands, scene.pet_root);
+    clear_stage_rig(commands, pet_root);
     scene.pet_baked = None;
 }
 

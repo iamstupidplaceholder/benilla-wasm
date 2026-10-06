@@ -2,7 +2,7 @@
 //! ([`play_clip`], [`play`]), checking whether a one-shot has finished ([`oneshot_finished`]), and
 //! leaving a Special state ([`leave_special`]) — split out of [`super`] as its own concern.
 
-use std::time::Duration;
+use benilla_time::Duration;
 
 use benilla_assets::{AnimClip, ModelAnimations};
 use benilla_formats::AnimDataCatalog;

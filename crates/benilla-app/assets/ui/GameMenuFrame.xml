@@ -85,8 +85,9 @@
           (`GameMenuButton_Pending`): the template's own `-Disabled` art + grey label, exactly
           how the era menu greys a dead entry (SetEnabled(false) → DisabledFont). Each goes live
           by deleting one `GameMenuButton_Pending` call and writing its OnClick.
-        - The Options label stays a literal "Options": 1.12 GlobalStrings has no era
-          GAMEMENU_OPTIONS (checked; its OPTIONS_MENU is "Options Menu", a different string).
+        - Options/Edit Mode/Support are project-owned era-shaped labels: 1.12 has no
+          corresponding era globals. Localize them through the existing OptionsText
+          catalog, rather than pretending their English defaults are original strings.
         - The ref frame is `toplevel="true" movable="true" parent="UIParent"`. `parent="UIParent"` is
           ours too, and it attaches for real: the loader does read a cross-file `parent=`, resolving
           the name by global lookup at load (decision 1734), and the frame below declares it. Only
@@ -102,8 +103,6 @@
         -- The reference GlobalStrings (patch-2.MPQ Interface\FrameXML\GlobalStrings.lua), quoted
         -- verbatim. `X = X or "..."` so a later real strings table wins, the retired MicroMenu.xml's idiom.
         MAIN_MENU = MAIN_MENU or "Main Menu"
-        HUD_EDIT_MODE_MENU = HUD_EDIT_MODE_MENU or "Edit Mode"
-        GAMEMENU_SUPPORT = GAMEMENU_SUPPORT or "Support"
         MACROS = MACROS or "Macros"
         LOGOUT = LOGOUT or "Logout"
         EXIT_GAME = EXIT_GAME or "Exit Game"
@@ -116,6 +115,13 @@
         function GameMenuButton_Pending(button, text)
             button:SetText(text)
             button:Disable()
+        end
+
+        -- Original keys above retain original GlobalStrings. These three labels
+        -- belong to benilla's era-shaped menu, like the options window's labels.
+        -- The guard supports partial loads without the options window.
+        function GameMenuText(label)
+            return OptionsText and OptionsText(label) or label
         end
 
         -- ══ THE THREE STOCK CONSUMERS THAT ASK "IS AN OPTIONS WINDOW OPEN?" (decision 2177) ══
@@ -275,11 +281,12 @@
                  the center-replacement rule for the swap (ShowUIPanel l.697-702: native-center
                  frames replace each other); hiding the menu explicitly says the same thing
                  without relying on the eviction path. -->
-            <Button name="GameMenuButtonOptions" inherits="GameMenuButtonTemplate" text="Options">
+            <Button name="GameMenuButtonOptions" inherits="GameMenuButtonTemplate">
                 <Anchors>
                     <Anchor point="TOPLEFT"><Offset><AbsDimension x="28" y="-32"/></Offset></Anchor>
                 </Anchors>
                 <Scripts>
+                    <OnLoad>self:SetText(GameMenuText("Options"))</OnLoad>
                     <OnClick>
                         PlaySound("igMainMenuOption")
                         HideUIPanel(GameMenuFrame)
@@ -292,13 +299,13 @@
                 <Anchors>
                     <Anchor point="TOPLEFT" relativeTo="GameMenuButtonOptions" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-20"/></Offset></Anchor>
                 </Anchors>
-                <Scripts><OnLoad>GameMenuButton_Pending(self, HUD_EDIT_MODE_MENU)</OnLoad></Scripts>
+                <Scripts><OnLoad>GameMenuButton_Pending(self, GameMenuText("Edit Mode"))</OnLoad></Scripts>
             </Button>
             <Button name="GameMenuButtonSupport" inherits="GameMenuButtonTemplate">
                 <Anchors>
                     <Anchor point="TOPLEFT" relativeTo="GameMenuButtonEditMode" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="0"/></Offset></Anchor>
                 </Anchors>
-                <Scripts><OnLoad>GameMenuButton_Pending(self, GAMEMENU_SUPPORT)</OnLoad></Scripts>
+                <Scripts><OnLoad>GameMenuButton_Pending(self, GameMenuText("Support"))</OnLoad></Scripts>
             </Button>
             <Button name="GameMenuButtonMacros" inherits="GameMenuButtonTemplate" text="MACROS">
                 <Anchors>

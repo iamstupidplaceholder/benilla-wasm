@@ -241,17 +241,17 @@ pub(super) fn pose_corpses(
         let catalog = anim_data.as_deref().map(|a| &a.0);
         let resolved = catalog.map_or(want, |cat| anims.resolve(want, cat).id);
         let Some(clip) = anims.find(resolved) else {
+            if anim_data.is_none() {
+                // The original Dead/Drowned fallback catalog is a prerequisite,
+                // not a terminal verdict that this character has no death pose.
+                continue;
+            }
             // No clip to hold: mark it posed anyway so this doesn't re-run every frame for a body
             // whose model authors nothing (a bone pile — static, and correct as it stands).
             commands.entity(entity).insert(CorpsePosed);
             continue;
         };
         arm_settled(&mut player, &mut transitions, clip);
-        debug!(
-            "corpse pose: {entity} arms {} ({want} -> {resolved}) held at {:.3}s",
-            if submerged { "Drowned" } else { "Dead" },
-            clip.duration
-        );
         commands.entity(entity).insert(CorpsePosed);
     }
 }
@@ -262,7 +262,7 @@ fn arm_settled(
     transitions: &mut bevy::animation::transition::AnimationTransitions,
     clip: &AnimClip,
 ) {
-    let active = transitions.play(player, clip.node, std::time::Duration::ZERO);
+    let active = transitions.play(player, clip.node, benilla_time::Duration::ZERO);
     if clip.looping {
         active.repeat();
     } else {

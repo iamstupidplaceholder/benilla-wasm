@@ -237,10 +237,14 @@ fn spawn_dialog(
         "CONFIRM_CHAR_DELETE",
         "Do you want to delete\n|cffffffff%s   Level %d   %s|r?",
     );
-    let filled = raw
-        .replacen("%s", &name, 1)
-        .replacen("%d", &level.to_string(), 1)
-        .replacen("%s", class, 1);
+    let filled = benilla_ui::strings::fill(
+        raw,
+        &[
+            benilla_ui::strings::Arg::S(&name),
+            benilla_ui::strings::Arg::D(level.into()),
+            benilla_ui::strings::Arg::S(strings.text(class, class)),
+        ],
+    );
     let (lead, identity) = match filled.split_once("|cffffffff") {
         Some((a, b)) => (a.trim_end_matches('\n').to_string(), b.replace("|r", "")),
         None => (filled.clone(), String::new()),

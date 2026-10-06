@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 /// Half-minutes in a game day (band time axis); `1440` = noon.
 pub(super) const DAY: u32 = 2880;
@@ -96,11 +96,11 @@ pub(super) fn sample_color(b: &Band<u32>, t: u32) -> Option<[f32; 3]> {
 }
 
 pub(super) fn load_bands(
-    chain: &mut Chain,
+    source: &mut impl FileSource,
     path: &str,
     schema: Schema,
 ) -> Result<HashMap<u32, Band<u32>>> {
-    let bytes = chain
+    let bytes = source
         .read_file(path)
         .with_context(|| format!("reading {path}"))?;
     let rs = parse(&bytes, schema, path)?;
@@ -118,11 +118,11 @@ pub(super) fn load_bands(
 }
 
 pub(super) fn load_float_bands(
-    chain: &mut Chain,
+    source: &mut impl FileSource,
     path: &str,
     schema: Schema,
 ) -> Result<HashMap<u32, Band<f32>>> {
-    let bytes = chain
+    let bytes = source
         .read_file(path)
         .with_context(|| format!("reading {path}"))?;
     let rs = parse(&bytes, schema, path)?;

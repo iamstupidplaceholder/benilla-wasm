@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
@@ -136,7 +137,9 @@ fn cmd_schema() -> Schema {
 }
 
 /// Read both tables off the patch chain into the joined catalog.
-pub fn load_creature_voice_catalog(chain: &mut Chain) -> Result<CreatureVoiceCatalog> {
+pub fn load_creature_voice_catalog(
+    chain: &mut impl crate::FileSource,
+) -> Result<CreatureVoiceCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\CreatureSoundData.dbc")
         .context("reading CreatureSoundData.dbc")?;

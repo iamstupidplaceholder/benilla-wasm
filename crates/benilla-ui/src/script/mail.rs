@@ -28,9 +28,9 @@
 //! `TakeInboxMoney`, `DeleteInboxItem`, `ReturnInboxItem`, `CloseMail` are 1-based row indices /
 //! flags the app maps to the wire.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
-use super::binding_abi::flag;
+use super::binding_abi::{neutral_flag, neutral_number_arg};
 use super::cursor::{self, CursorPayload};
 use super::Model;
 
@@ -319,64 +319,54 @@ fn row_at(model: &Model, index: usize) -> Option<MailInboxRow> {
 }
 
 /// Register the mail globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetInboxNumItems() → the number of inbox rows (0 when no mailbox is open).
-    g.set(
-        "GetInboxNumItems",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.mail.as_ref().map_or(0, |m| m.inbox.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("GetInboxNumItems", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.mail.as_ref().map_or(0, |m| m.inbox.len()) as i64)
+    })?;
 
     // GetInboxHeaderInfo(index) → the 13-tuple (see the module doc). An out-of-range index answers
     // nil (the reference callers only read within GetInboxNumItems, but the null shape is faithful).
-    g.set(
-        "GetInboxHeaderInfo",
-        lua.create_function(|lua, index: usize| {
-            let row = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                row_at(&model, index)
-            };
-            let Some(r) = row else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let opt_str = |s: &Option<String>| -> mlua::Result<Value> {
-                Ok(match s {
-                    Some(v) => Value::String(lua.create_string(v)?),
-                    None => Value::Nil,
-                })
-            };
-            // packageIcon shows only for a non-GM mail that carries an item (MailFrame.lua l.108).
-            let package_icon = if r.item_id != 0 && !r.is_gm {
-                opt_str(&r.package_icon)?
+    lua.register_function("GetInboxHeaderInfo", |lua, index: usize| {
+        let row = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            row_at(&model, index)
+        };
+        let Some(r) = row else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let opt_str = |s: &Option<String>| match s {
+            Some(v) => Value::from(v.clone()),
+            None => Value::Nil,
+        };
+        // packageIcon shows only for a non-GM mail that carries an item (MailFrame.lua l.108).
+        let package_icon = if r.item_id != 0 && !r.is_gm {
+            opt_str(&r.package_icon)
+        } else {
+            Value::Nil
+        };
+        Ok(MultiValue::from(vec![
+            package_icon,
+            opt_str(&r.stationery_icon),
+            opt_str(&r.sender),
+            Value::from(r.subject),
+            Value::Integer(i64::from(r.money)),
+            Value::Integer(i64::from(r.cod)),
+            Value::Number(f64::from(r.days_left)),
+            // hasItem: the stack count, or nil when there's no item.
+            if r.item_count > 0 {
+                Value::Integer(i64::from(r.item_count))
             } else {
                 Value::Nil
-            };
-            Ok(MultiValue::from_vec(vec![
-                package_icon,
-                opt_str(&r.stationery_icon)?,
-                opt_str(&r.sender)?,
-                Value::String(lua.create_string(&r.subject)?),
-                Value::Integer(i64::from(r.money)),
-                Value::Integer(i64::from(r.cod)),
-                Value::Number(f64::from(r.days_left)),
-                // hasItem: the stack count, or nil when there's no item.
-                if r.item_count > 0 {
-                    Value::Integer(i64::from(r.item_count))
-                } else {
-                    Value::Nil
-                },
-                flag(r.was_read),
-                flag(r.was_returned),
-                flag(r.text_created),
-                flag(r.can_reply),
-                flag(r.is_gm),
-            ]))
-        })?,
-    )?;
+            },
+            neutral_flag(r.was_read),
+            neutral_flag(r.was_returned),
+            neutral_flag(r.text_created),
+            neutral_flag(r.can_reply),
+            neutral_flag(r.is_gm),
+        ]))
+    })?;
 
     // GetInboxText(index) → body, stationeryTexture, isTakeable, isInvoice (MailFrame.lua l.292).
     // Opening a mail is the ask-once trigger: queue the open intent (the app marks it read + fetches
@@ -384,43 +374,40 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // arrives. isTakeable = the mail carries a fetchable body (`item_text_id != 0`) — with
     // `not textCreated` it gates the letter button (the "permanent copy" verb, ref l.366; vmangos
     // `HandleMailCreateTextItem` requires the same pair: an `itemTextId` and no COPIED bit).
-    g.set(
-        "GetInboxText",
-        lua.create_function(|lua, index: usize| {
-            let row = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let row = row_at(&model, index);
-                if row.is_some() {
-                    // Ask-once dedup: don't re-queue an already-pending open this drain window.
-                    let i = index as u32;
-                    if !model.mail_opens.contains(&i) {
-                        model.mail_opens.push(i);
-                    }
+    lua.register_function("GetInboxText", |lua, index: usize| {
+        let row = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let row = row_at(&model, index);
+            if row.is_some() {
+                // Ask-once dedup: don't re-queue an already-pending open this drain window.
+                let i = index as u32;
+                if !model.mail_opens.contains(&i) {
+                    model.mail_opens.push(i);
                 }
-                row
-            };
-            let Some(r) = row else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                // **An invoice's body is `nil`, and that is an explicit carve-out in the reference,
-                // not an accident** (`0x4af1cf cmp [esi+0x4],2` / `je` → `lua_pushnil`, decision
-                // 1527). The auction house's raw `<guid>:<n>:<n>:…` bookkeeping really does sit in
-                // the shared text cache — `GetInboxInvoiceInfo` `sscanf`s exactly that string — but
-                // this binding refuses to hand it back. Two bindings, one cache, opposite purposes.
-                // It is what lets MailFrame lay the invoice pane over the letter page without the
-                // bookkeeping showing through above it.
-                if r.is_invoice {
-                    Value::Nil
-                } else {
-                    Value::String(lua.create_string(r.body.as_deref().unwrap_or(""))?)
-                },
-                Value::String(lua.create_string(&r.stationery_texture)?),
-                flag(r.has_body),
-                flag(r.is_invoice),
-            ]))
-        })?,
-    )?;
+            }
+            row
+        };
+        let Some(r) = row else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            // **An invoice's body is `nil`, and that is an explicit carve-out in the reference,
+            // not an accident** (`0x4af1cf cmp [esi+0x4],2` / `je` → `lua_pushnil`, decision
+            // 1527). The auction house's raw `<guid>:<n>:<n>:…` bookkeeping really does sit in
+            // the shared text cache — `GetInboxInvoiceInfo` `sscanf`s exactly that string — but
+            // this binding refuses to hand it back. Two bindings, one cache, opposite purposes.
+            // It is what lets MailFrame lay the invoice pane over the letter page without the
+            // bookkeeping showing through above it.
+            if r.is_invoice {
+                Value::Nil
+            } else {
+                Value::from(r.body.unwrap_or_default())
+            },
+            Value::from(r.stationery_texture),
+            neutral_flag(r.has_body),
+            neutral_flag(r.is_invoice),
+        ]))
+    })?;
 
     // GetInboxInvoiceInfo(index) → invoiceType, itemName, playerName, bid, buyout, deposit,
     // consignment (MailFrame.lua l.302). **SEVEN values, always** — the reference's own
@@ -429,117 +416,104 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (`if playerName then`), so the shape of the miss is what keeps the invoice pane hidden —
     // returning one bare nil instead would leave the four numeric destructures nil and the pane's
     // arithmetic would run on them.
-    g.set(
-        "GetInboxInvoiceInfo",
-        lua.create_function(|lua, index: usize| {
-            let row = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                row_at(&model, index)
-            };
-            let miss = || {
-                MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Integer(0),
-                    Value::Integer(0),
-                    Value::Integer(0),
-                ])
-            };
-            let Some(inv) = row.and_then(|r| r.invoice) else {
-                return Ok(miss());
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(if inv.seller { "seller" } else { "buyer" })?),
-                Value::String(lua.create_string(&inv.item_name)?),
-                Value::String(lua.create_string(&inv.player_name)?),
-                Value::Integer(i64::from(inv.bid)),
-                Value::Integer(i64::from(inv.buyout)),
-                Value::Integer(i64::from(inv.deposit)),
-                Value::Integer(i64::from(inv.consignment)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetInboxInvoiceInfo", |lua, index: usize| {
+        let row = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            row_at(&model, index)
+        };
+        let miss = || {
+            MultiValue::from(vec![
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+            ])
+        };
+        let Some(inv) = row.and_then(|r| r.invoice) else {
+            return Ok(miss());
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(if inv.seller { "seller" } else { "buyer" }),
+            Value::from(inv.item_name),
+            Value::from(inv.player_name),
+            Value::Integer(i64::from(inv.bid)),
+            Value::Integer(i64::from(inv.buyout)),
+            Value::Integer(i64::from(inv.deposit)),
+            Value::Integer(i64::from(inv.consignment)),
+        ]))
+    })?;
 
     // GetInboxItem(index) → name, texture, count, quality, canUse (MailFrame.lua l.379). name/quality
     // are nil while the item-template answer is in flight; a mail with no item answers all-nil name.
     // canUse is the shared item-usable gate over the enclosed item's template (merchant's isUsable
     // path) — usable while the template is still in flight (the null-record skip).
-    g.set(
-        "GetInboxItem",
-        lua.create_function(|lua, index: usize| {
-            let (row, usable) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let row = row_at(&model, index);
-                let usable = row
-                    .as_ref()
-                    .is_none_or(|r| super::item_stats::item_usable_by_id(&model, r.item_id));
-                (row, usable)
-            };
-            // **Five values on every path**, and the empty leg is `(nil, nil, 0, 0, nil)` —
-            // `GetInboxItem 0x4af5d0`, the sibling of the `GetSendMailItem` block above (wow-re
-            // `mail-interaction.md` §5.1; decision 2129). This answered ONE value, which a caller
-            // destructuring five reads as four nils — and the reference's own row
-            // (`(nil,nil,number,number,nil) | …`) has no one-value alternative at all.
-            let Some(r) = row.filter(|r| r.item_id != 0) else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Integer(0),
-                    Value::Nil,
-                ]));
-            };
-            let name = match &r.item_name {
-                Some(n) => Value::String(lua.create_string(n)?),
-                None => Value::Nil,
-            };
-            let texture = match &r.item_texture {
-                Some(t) => Value::String(lua.create_string(t)?),
-                None => Value::Nil,
-            };
-            // A number on every path, like the send tab's.
-            let quality = Value::Integer(i64::from(r.item_quality.unwrap_or(0)));
-            Ok(MultiValue::from_vec(vec![
-                name,
-                texture,
-                Value::Integer(i64::from(r.item_count.max(1))),
-                quality,
-                flag(usable),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetInboxItem", |lua, index: usize| {
+        let (row, usable) = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let row = row_at(&model, index);
+            let usable = row
+                .as_ref()
+                .is_none_or(|r| super::item_stats::item_usable_by_id(&model, r.item_id));
+            (row, usable)
+        };
+        // **Five values on every path**, and the empty leg is `(nil, nil, 0, 0, nil)` —
+        // `GetInboxItem 0x4af5d0`, the sibling of the `GetSendMailItem` block above (wow-re
+        // `mail-interaction.md` §5.1; decision 2129). This answered ONE value, which a caller
+        // destructuring five reads as four nils — and the reference's own row
+        // (`(nil,nil,number,number,nil) | …`) has no one-value alternative at all.
+        let Some(r) = row.filter(|r| r.item_id != 0) else {
+            return Ok(MultiValue::from(vec![
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Nil,
+            ]));
+        };
+        let name = match &r.item_name {
+            Some(n) => Value::from(n.clone()),
+            None => Value::Nil,
+        };
+        let texture = match &r.item_texture {
+            Some(t) => Value::from(t.clone()),
+            None => Value::Nil,
+        };
+        // A number on every path, like the send tab's.
+        let quality = Value::Integer(i64::from(r.item_quality.unwrap_or(0)));
+        Ok(MultiValue::from(vec![
+            name,
+            texture,
+            Value::Integer(i64::from(r.item_count.max(1))),
+            quality,
+            neutral_flag(usable),
+        ]))
+    })?;
 
     // InboxItemCanDelete(index) → 1/nil (MailFrame.lua l.417/450): the delete-vs-return law.
-    g.set(
-        "InboxItemCanDelete",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(row_at(&model, index).is_some_and(|r| r.can_delete)))
-        })?,
-    )?;
+    lua.register_function("InboxItemCanDelete", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(
+            row_at(&model, index).is_some_and(|r| r.can_delete),
+        ))
+    })?;
 
     // HasNewMail() → 1/nil off the app's login-scoped countdown flag (decision 0544 P3; see
     // `UiScript::set_has_new_mail`'s doc for the wire behind it).
-    g.set(
-        "HasNewMail",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.has_new_mail))
-        })?,
-    )?;
+    lua.register_function("HasNewMail", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(model.has_new_mail))
+    })?;
 
     // CheckInbox() — flag the inbox-refresh intent (the app sends CMSG_GET_MAIL_LIST).
-    g.set(
-        "CheckInbox",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .mail_check_inbox = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CheckInbox", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .mail_check_inbox = true;
+        Ok(())
+    })?;
 
     // The five 1-based row-pick intents (take item / take money / delete / return / copy letter).
     for (name, field) in [
@@ -549,37 +523,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("ReturnInboxItem", 3),
         ("TakeInboxTextItem", 4),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, index: u32| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                match field {
-                    0 => model.mail_take_items.push(index),
-                    1 => model.mail_take_money.push(index),
-                    2 => model.mail_deletes.push(index),
-                    3 => model.mail_returns.push(index),
-                    _ => model.mail_take_texts.push(index),
-                }
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, index: u32| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            match field {
+                0 => model.mail_take_items.push(index),
+                1 => model.mail_take_money.push(index),
+                2 => model.mail_deletes.push(index),
+                3 => model.mail_returns.push(index),
+                _ => model.mail_take_texts.push(index),
+            }
+            Ok(())
+        })?;
     }
 
     // CloseMail() — client-side close (no packet): flag it so the app clears its mail session.
-    g.set(
-        "CloseMail",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .mail_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseMail", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .mail_close = true;
+        Ok(())
+    })?;
 
     // SendMail(target, subject, body) — queue the send; the app folds in money/COD + the attachment.
-    g.set(
+    lua.register_function(
         "SendMail",
-        lua.create_function(|lua, (target, subject, body): (String, String, String)| {
+        |lua, (target, subject, body): (String, String, String)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             // `SendMail 0x4ae800` (decision 1965): money and COD are exclusive AT SEND TIME — both
             // set is a silent abort, no packet — and a COD with no attached item aborts the same
@@ -598,7 +566,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             model.mail_send = Some((target, subject, body));
             Ok(())
-        })?,
+        },
     )?;
 
     // SetSendMailMoney(copper) → 1 (the SEND_MONEY popup's OnAccept gates SendMail on the truthy
@@ -606,74 +574,54 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // SetSendMailMoney(copper) — `0x4ae0f0` → `0x4adbe0` (decision 1965): a non-number RAISES;
     // more than the purse (unsigned) shows ERR_NOT_ENOUGH_MONEY and answers nil; else the store,
     // SEND_MAIL_MONEY_CHANGED, and the number 1 — StaticPopup.lua l.257 branches on that value.
-    g.set(
-        "SetSendMailMoney",
-        lua.create_function(|lua, copper: Value| {
-            let n = crate::script::binding_abi::number_arg(
-                lua,
-                copper,
-                "Usage: SetSendMailMoney(amount)",
-            )? as u32;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if u64::from(n) > model.money {
-                model.ui_errors.push("ERR_NOT_ENOUGH_MONEY");
-                return Ok(Value::Nil);
-            }
-            model.mail_send_money = n;
-            model
-                .pending_events
-                .push(("SEND_MAIL_MONEY_CHANGED".to_string(), Vec::new()));
-            Ok(Value::Integer(1))
-        })?,
-    )?;
+    lua.register_function("SetSendMailMoney", |lua, copper: Value| {
+        let n = neutral_number_arg(copper, "Usage: SetSendMailMoney(amount)")? as u32;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if u64::from(n) > model.money {
+            model.ui_errors.push("ERR_NOT_ENOUGH_MONEY");
+            return Ok(Value::Nil);
+        }
+        model.mail_send_money = n;
+        model
+            .pending_events
+            .push(("SEND_MAIL_MONEY_CHANGED".to_string(), Vec::new()));
+        Ok(Value::Integer(1))
+    })?;
 
     // GetSendMailMoney() / GetSendMailCOD() → the two amounts as stored (`0x4ae150` / `0x4ae1c0`,
     // one number each — `reference/1.12-shapes.tsv`): what the stock money kit's SEND_MAIL and
     // SEND_MAIL_COD types display (1962).
-    g.set(
-        "GetSendMailMoney",
-        lua.create_function(|lua, ()| {
-            Ok(i64::from(
-                lua.app_data_ref::<Model>()
-                    .expect("model app_data")
-                    .mail_send_money,
-            ))
-        })?,
-    )?;
-    g.set(
-        "GetSendMailCOD",
-        lua.create_function(|lua, ()| {
-            Ok(i64::from(
-                lua.app_data_ref::<Model>()
-                    .expect("model app_data")
-                    .mail_send_cod,
-            ))
-        })?,
-    )?;
+    lua.register_function("GetSendMailMoney", |lua, ()| {
+        Ok(i64::from(
+            lua.app_data_ref::<Model>()
+                .expect("model app_data")
+                .mail_send_money,
+        ))
+    })?;
+    lua.register_function("GetSendMailCOD", |lua, ()| {
+        Ok(i64::from(
+            lua.app_data_ref::<Model>()
+                .expect("model app_data")
+                .mail_send_cod,
+        ))
+    })?;
 
     // SetSendMailCOD(copper) — store the COD amount the app reads at send time (MailFrame.lua l.497).
     // SetSendMailCOD(copper) — `0x4ae180` → `0x4adc70` (decision 1965): a non-number RAISES;
     // without an attached item nothing happens at all — no store, no event, no message — and
     // there is no affordability or sign check; 0 returns on every path.
-    g.set(
-        "SetSendMailCOD",
-        lua.create_function(|lua, copper: Value| {
-            let n = crate::script::binding_abi::number_arg(
-                lua,
-                copper,
-                "Usage: SetSendMailCOD(amount)",
-            )? as u32;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if model.mail_send_item.is_none() {
-                return Ok(());
-            }
-            model.mail_send_cod = n;
-            model
-                .pending_events
-                .push(("SEND_MAIL_COD_CHANGED".to_string(), Vec::new()));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetSendMailCOD", |lua, copper: Value| {
+        let n = neutral_number_arg(copper, "Usage: SetSendMailCOD(amount)")? as u32;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if model.mail_send_item.is_none() {
+            return Ok(());
+        }
+        model.mail_send_cod = n;
+        model
+            .pending_events
+            .push(("SEND_MAIL_COD_CHANGED".to_string(), Vec::new()));
+        Ok(())
+    })?;
 
     // GetSendMailItem() → name, texture, stackCount, quality off the attached cursor item
     // (MailFrame.lua l.511).
@@ -691,64 +639,55 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // quality from `[rec+0x1c]` gated on `[rec+0x2c] != 0` = InventoryType, so a **non-equippable**
     // item answers quality `-1` (`0x4ae6bf`). We do not carry an inventory type here, so an item
     // whose quality we have not cached answers 0 rather than -1.
-    g.set(
-        "GetSendMailItem",
-        lua.create_function(|lua, ()| {
-            // The stack count is read while the model is borrowed: a whole-stack pickup records
-            // no count of its own, so the true size comes back from the source slot.
-            let item = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.mail_send_item.clone().map(|it| {
-                    let count = cursor::held_count(&model, &it);
-                    (it, count)
-                })
-            };
-            let Some((it, count)) = item else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Integer(0),
-                ]));
-            };
-            let name = cursor::item_link_name(it.link.as_deref());
-            let name = if name.is_empty() {
-                Value::Nil
-            } else {
-                Value::String(lua.create_string(&name)?)
-            };
-            let texture = match &it.texture {
-                Some(t) => Value::String(lua.create_string(t)?),
-                None => Value::Nil,
-            };
-            // A number on every path — the reference's row has no nil alternative in this slot.
-            let quality = Value::Integer(i64::from(it.quality.unwrap_or(0)));
-            Ok(MultiValue::from_vec(vec![
-                name,
-                texture,
-                Value::Integer(i64::from(count)),
-                quality,
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetSendMailItem", |lua, ()| {
+        // The stack count is read while the model is borrowed: a whole-stack pickup records
+        // no count of its own, so the true size comes back from the source slot.
+        let item = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.mail_send_item.clone().map(|it| {
+                let count = cursor::held_count(&model, &it);
+                (it, count)
+            })
+        };
+        let Some((it, count)) = item else {
+            return Ok(MultiValue::from(vec![
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(0),
+                Value::Integer(0),
+            ]));
+        };
+        let name = cursor::item_link_name(it.link.as_deref());
+        let name = if name.is_empty() {
+            Value::Nil
+        } else {
+            Value::from(name)
+        };
+        let texture = match &it.texture {
+            Some(t) => Value::from(t.clone()),
+            None => Value::Nil,
+        };
+        // A number on every path — the reference's row has no nil alternative in this slot.
+        let quality = Value::Integer(i64::from(it.quality.unwrap_or(0)));
+        Ok(MultiValue::from(vec![
+            name,
+            texture,
+            Value::Integer(i64::from(count)),
+            quality,
+        ]))
+    })?;
 
     // GetSendMailPrice() → the flat 30c postage (vmangos's fee; the reference reads a C constant).
-    g.set(
-        "GetSendMailPrice",
-        lua.create_function(|_, ()| Ok(Value::Integer(30)))?,
-    )?;
+    lua.register_function("GetSendMailPrice", |_, ()| Ok(Value::Integer(30)))?;
 
     // ClickSendMailItemButton() — attach the cursor's held bag item as the send attachment, or, with
     // an empty cursor and a filled slot, pick the attachment back onto the cursor (MailFrame.lua
     // l.719, mirroring pickup_container_item's swap). A spell/action cursor is refused (no-op).
-    g.set(
-        "ClickSendMailItemButton",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            click_send_mail_item(&mut model);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ClickSendMailItemButton", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        click_send_mail_item(&mut model);
+        Ok(())
+    })?;
 
     // ── The stationery family (wow-re `ui/scratch/stationery-bindings.md`, 1970) ──
     // The list is the app's (`Stationery.dbc` × the player's bags × the template cache); the
@@ -756,82 +695,58 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // on the last item-query answer — the app's per-frame recompute covers all three moments.
 
     // `GetNumStationeries()` — 0 args, 1 number: the usable count.
-    g.set(
-        "GetNumStationeries",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.mail_stationeries.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumStationeries", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.mail_stationeries.len() as i64)
+    })?;
 
     // `GetStationeryInfo(index)` — shape A (`lua_isnumber`, truncate), raising its Usage on a
     // non-number; 1-based, unsigned bound; exactly 3 returns on every exit: name, the FULL icon
     // path, BuyPrice in copper — cost nil when the player carries the item; 3 nils out of range.
-    g.set(
-        "GetStationeryInfo",
-        lua.create_function(|lua, index: Value| {
-            let index = crate::script::binding_abi::number_arg(
-                lua,
-                index,
-                "Usage: GetStationeryInfo(index)",
-            )?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let row = usize::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_sub(1))
-                .and_then(|i| model.mail_stationeries.get(i));
-            let Some(row) = row else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                ]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&row.name)?),
-                Value::String(lua.create_string(&row.icon)?),
-                row.cost
-                    .map_or(Value::Nil, |c| Value::Integer(i64::from(c))),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetStationeryInfo", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: GetStationeryInfo(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let row = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| model.mail_stationeries.get(i));
+        let Some(row) = row else {
+            return Ok(MultiValue::from(vec![Value::Nil, Value::Nil, Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(row.name.clone()),
+            Value::from(row.icon.clone()),
+            row.cost
+                .map_or(Value::Nil, |c| Value::Integer(i64::from(c))),
+        ]))
+    })?;
 
     // `SelectStationery(index)` — shape A, raising its Usage on a non-number; 0 returns. In range
     // it stores the row's DBC id; **out of range is not an error — it writes 0**, a deselect.
-    g.set(
-        "SelectStationery",
-        lua.create_function(|lua, index: Value| {
-            let index = crate::script::binding_abi::number_arg(
-                lua,
-                index,
-                "Usage: SelectStationery(index)",
-            )?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.mail_stationery = usize::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_sub(1))
-                .and_then(|i| model.mail_stationeries.get(i))
-                .map_or(0, |row| row.id);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SelectStationery", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: SelectStationery(index)")?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.mail_stationery = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| model.mail_stationeries.get(i))
+            .map_or(0, |row| row.id);
+        Ok(())
+    })?;
 
     // `GetSelectedStationeryTexture()` — 0 args, 1 return: the BARE `Stationery.dbc` texture name
     // of the selection; nil for no selection (id 0) or an id the table does not carry.
-    g.set(
-        "GetSelectedStationeryTexture",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let id = model.mail_stationery;
-            let tex = (id != 0)
-                .then(|| model.mail_stationeries.iter().find(|r| r.id == id))
-                .flatten();
-            Ok(match tex {
-                Some(row) => Value::String(lua.create_string(&row.texture)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("GetSelectedStationeryTexture", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let id = model.mail_stationery;
+        let tex = (id != 0)
+            .then(|| model.mail_stationeries.iter().find(|r| r.id == id))
+            .flatten();
+        Ok(match tex {
+            Some(row) => Value::from(row.texture.clone()),
+            None => Value::Nil,
+        })
+    })?;
 
     Ok(())
 }
@@ -1101,12 +1016,12 @@ mod tests {
     fn get_inbox_text_returns_body_and_queues_open() {
         let mut s = UiScript::new().unwrap();
         s.set_mail(Some(state()));
-        let (body, tex, takeable, invoice): (String, String, Value, Value) =
+        let (body, tex, takeable, invoice): (String, String, Option<i64>, Option<i64>) =
             s.eval("return GetInboxText(1)").unwrap();
         assert_eq!(body, "Lok'tar.");
         assert_eq!(tex, "STATIONERYTEST");
-        assert_eq!(takeable, Value::Integer(1)); // has a fetchable body
-        assert!(matches!(invoice, Value::Nil));
+        assert_eq!(takeable, Some(1)); // has a fetchable body
+        assert_eq!(invoice, None);
         // Opening queued the row for the mark-read/body ask; deduped within the drain window.
         s.run("GetInboxText(1)").unwrap();
         assert_eq!(s.take_mail_opens(), vec![1]);
@@ -1302,7 +1217,7 @@ mod stationery_tests {
     /// out of range deselects, and the texture is the bare basename or nil.
     #[test]
     fn the_stationery_family_answers_like_the_client() {
-        let s = seated();
+        let mut s = seated();
         assert_eq!(s.eval::<i64>("return GetNumStationeries()").unwrap(), 2);
         assert_eq!(
             s.eval::<(String, String, i64)>("return GetStationeryInfo(1)")

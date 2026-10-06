@@ -368,7 +368,7 @@ fn the_base_library_answers_the_reference_s_return_arity_and_kinds() {
         "the vendored table's baselib rows look wrong: {}",
         rows.len()
     );
-    let s = benilla_ui::script::UiScript::new().expect("VM");
+    let mut s = benilla_ui::script::UiScript::new().expect("VM");
     let mut checked = 0usize;
     let mut kinds_checked = 0usize;
     let mut mismatches: Vec<String> = Vec::new();
@@ -531,7 +531,7 @@ fn every_widget_method_answers_the_reference_s_return_arity() {
     );
     let text = std::fs::read_to_string(tsv).expect("reference/1.12-shapes.tsv");
 
-    let s = benilla_ui::script::UiScript::new().expect("VM");
+    let mut s = benilla_ui::script::UiScript::new().expect("VM");
     let mut made: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     for (table, kind, name) in WIDGET_PROBES {
         if s.run(&format!(
@@ -794,7 +794,7 @@ fn every_widget_method_answers_the_reference_s_return_kinds() {
     );
     let text = std::fs::read_to_string(tsv).expect("reference/1.12-shapes.tsv");
 
-    let s = benilla_ui::script::UiScript::new().expect("VM");
+    let mut s = benilla_ui::script::UiScript::new().expect("VM");
     s.run(KIND_HELPER).expect("kind helper");
     let mut made: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     for (table, kind, name) in WIDGET_PROBES {
@@ -989,7 +989,7 @@ fn no_widget_method_answers_a_lua_boolean() {
     );
     let text = std::fs::read_to_string(tsv).expect("reference/1.12-shapes.tsv");
 
-    let s = benilla_ui::script::UiScript::new().expect("VM");
+    let mut s = benilla_ui::script::UiScript::new().expect("VM");
     s.run(KIND_HELPER).expect("kind helper");
     let mut made: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     for (table, kind, name) in WIDGET_PROBES {

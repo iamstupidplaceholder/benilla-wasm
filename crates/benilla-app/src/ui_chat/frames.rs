@@ -64,8 +64,8 @@ pub(crate) fn route(
     // The composer's strings are the VM's own — `getglobal` against the `GlobalStrings.lua` the
     // reference's Lua reads, so the log line and the window line cannot say different things
     // (decision 2045).
-    if let Some(line) = compose(event, kind, &default_language, &|key| {
-        script.lua().globals().get::<String>(key).ok()
+    if let Some(line) = compose(event, kind, &default_language, &mut |key| {
+        script.global_string(key)
     }) {
         windows.logs.record(kind.is_combat_log(), &line);
     }
@@ -78,7 +78,7 @@ pub(crate) fn compose(
     event: &ChatEvent,
     kind: ChatEventKind,
     default_language: &str,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     use ChatEventKind as K;
     Some(match kind {
@@ -207,7 +207,7 @@ pub(crate) fn compose(
 ///
 /// A key the chain has no string for resolves to `""` — the same nothing an unprefixed line gets,
 /// and the reference's own data-suppression posture.
-fn get_pattern(kind: ChatEventKind, get: &dyn Fn(&str) -> Option<String>) -> String {
+fn get_pattern(kind: ChatEventKind, get: &mut dyn FnMut(&str) -> Option<String>) -> String {
     let ty = event_name(kind)
         .strip_prefix("CHAT_MSG_")
         .unwrap_or_default();
@@ -249,7 +249,7 @@ fn strip_zone(channel: &str) -> &str {
 pub(crate) fn compose_notice(
     event: &ChatEvent,
     kind: ChatEventKind,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     let token = notice_token(event.notice_byte()?, event.slot_state)?;
     let template = get(&format!("CHAT_{token}_NOTICE"))?;

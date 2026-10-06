@@ -62,29 +62,54 @@ impl CombinedAlphaMap {
 
     fn ingest_big(&mut self, raw: &[u8], offset: usize) {
         const LAYER: usize = W * W;
-        if offset + LAYER <= raw.len() {
-            for &a in &raw[offset..offset + LAYER] {
-                if !self.set_next(a) {
-                    break;
-                }
+        if offset + LAYER <= raw.len() && self.layer < 4 {
+            // Uncompressed planes are always complete and start at (0,0).
+            // Decode directly into the channel; only the border needs fixing.
+            for (px, &a) in self
+                .map
+                .chunks_exact_mut(4)
+                .zip(&raw[offset..offset + LAYER])
+            {
+                px[self.layer] = a;
             }
+            self.fix_layer_edges();
         }
         self.next_layer();
     }
 
     fn ingest_small(&mut self, raw: &[u8], offset: usize) {
         const PACKED: usize = W * W / 2;
-        if offset + PACKED <= raw.len() {
-            for &p in &raw[offset..offset + PACKED] {
-                if !self.set_next((p & 0x0F) * 16) {
-                    break;
-                }
-                if !self.set_next(((p >> 4) & 0x0F) * 16) {
-                    break;
-                }
+        if offset + PACKED <= raw.len() && self.layer < 4 {
+            for (pair, &p) in self
+                .map
+                .chunks_exact_mut(8)
+                .zip(&raw[offset..offset + PACKED])
+            {
+                pair[self.layer] = (p & 0x0F) * 16;
+                pair[4 + self.layer] = ((p >> 4) & 0x0F) * 16;
             }
+            self.fix_layer_edges();
         }
         self.next_layer();
+    }
+
+    /// Equivalent to set_next's column-then-row substitutions on a full plane:
+    /// row 63 copies the already-fixed row 62, including its last column. Only
+    /// the current channel is touched; other decoded layers and opaque A stay
+    /// intact. Short input still skips the whole uncompressed layer above.
+    fn fix_layer_edges(&mut self) {
+        if !self.fix_alpha {
+            return;
+        }
+        for y in 0..W {
+            let last = (y * W + W - 1) * 4 + self.layer;
+            self.map[last] = self.map[last - 4];
+        }
+        let last_row = (W - 1) * W * 4;
+        for x in 0..W {
+            let last = last_row + x * 4 + self.layer;
+            self.map[last] = self.map[last - W * 4];
+        }
     }
 
     fn ingest_compressed(&mut self, raw: &[u8], mut offset: usize) {

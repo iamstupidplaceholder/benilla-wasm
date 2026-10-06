@@ -61,7 +61,7 @@ fn harness() -> UiScript {
         r"Interface\FrameXML\UIDropDownMenu.xml",
         r"Interface\FrameXML\UIOptionsFrame.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s
@@ -88,7 +88,7 @@ fn drawn_textures(s: &mut UiScript) -> Vec<String> {
 #[test]
 fn a_check_button_from_the_template_names_its_label_after_the_caller() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run(r#"MyCheck = CreateFrame("CheckButton", "MyCheck", UIParent, "UICheckButtonTemplate")"#)
         .unwrap();
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
@@ -172,7 +172,7 @@ fn the_templated_check_button_draws_the_reference_checkbox_art() {
 #[test]
 fn a_templated_check_button_toggles_before_its_on_click_runs() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run(
         r#"MyCheck = CreateFrame("CheckButton", "MyCheck", UIParent, "UICheckButtonTemplate")
            MySeen = {}
@@ -197,7 +197,7 @@ fn a_templated_check_button_toggles_before_its_on_click_runs() {
         .unwrap());
 
     assert_eq!(
-        s.eval::<Vec<i64>>("return MySeen").unwrap(),
+        s.eval_sequence::<i64>("return MySeen").unwrap(),
         vec![1, 0],
         "the handler read the post-toggle state both times, not the pre-toggle one"
     );
@@ -244,7 +244,7 @@ fn a_panel_button_from_the_template_labels_and_paints() {
 #[test]
 fn the_templated_close_button_hides_the_frame_it_sits_on() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run(
         r#"MyPanel = CreateFrame("Frame", "MyPanel", UIParent)
            MyPanel:SetWidth(200) MyPanel:SetHeight(100)
@@ -474,7 +474,7 @@ fn tab_resize_falls_back_to_this_when_no_tab_is_passed() {
         </Ui>"#,
     )
     .unwrap();
-    let report = benilla_ui::loader::load_in(&s, &doc, "test", &|_: &str| None);
+    let report = benilla_ui::loader::load_in(&mut s, &doc, "test", &|_: &str| None);
     assert!(
         report.errors.is_empty(),
         "the OnLoad must not throw: {:?}",
@@ -537,7 +537,7 @@ fn the_stock_tab_fits_its_text_on_the_first_show() {
         </Ui>"#,
     )
     .unwrap();
-    let report = benilla_ui::loader::load_in(&s, &doc, "test", &|_: &str| None);
+    let report = benilla_ui::loader::load_in(&mut s, &doc, "test", &|_: &str| None);
     assert!(report.errors.is_empty(), "load: {:?}", report.errors);
 
     // The first show, and nothing else: no tick, no measure round trip to pump.

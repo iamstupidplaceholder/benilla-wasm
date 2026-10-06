@@ -431,7 +431,12 @@ pub type DrawList = std::sync::Arc<[(ZTarget, ZKey)]>;
 pub struct OrderCache(std::cell::RefCell<Option<OrderMemo>>);
 
 /// The last walk, in arena order, and the sorted list built from it.
-type OrderMemo = (Vec<(ZTarget, ZKey)>, DrawList);
+#[derive(Debug)]
+struct OrderMemo {
+    walked: Vec<(ZTarget, ZKey)>,
+    list: DrawList,
+    scratch: Vec<(ZTarget, ZKey)>,
+}
 
 /// Every `(target, key)` of the draw list, in ARENA order — the one walk both the fingerprint
 /// and the rebuild are made of, so they cannot disagree.
@@ -492,31 +497,31 @@ fn walk(arena: &WidgetArena, mut f: impl FnMut(ZTarget, ZKey)) {
 /// hashes differently from the last one, which on a still frame it never does.
 pub fn traversal(arena: &WidgetArena) -> DrawList {
     let mut cache = arena.order_cache.0.borrow_mut();
-    // One walk into a scratch (the previous walk's buffer, reused), then an EXACT compare
+    // One walk into a retained scratch buffer, then an EXACT compare
     // against the last walk: equal inputs hand out the same list; a hash would have made a
     // wrong draw order a possibility, however remote, and cost a second walk on every miss.
-    let (mut walked, last) = match cache.take() {
-        Some((prev, list)) => {
-            let mut scratch = Vec::with_capacity(prev.len());
-            walk(arena, |t, k| scratch.push((t, k)));
-            if scratch == prev {
-                *cache = Some((prev, list.clone()));
-                return list;
-            }
-            (scratch, Some(prev))
+    if let Some(memo) = cache.as_mut() {
+        memo.scratch.clear();
+        walk(arena, |t, k| memo.scratch.push((t, k)));
+        if memo.scratch == memo.walked {
+            return memo.list.clone();
         }
-        None => {
-            let mut scratch = Vec::new();
-            walk(arena, |t, k| scratch.push((t, k)));
-            (scratch, None)
-        }
-    };
-    drop(last);
+        std::mem::swap(&mut memo.walked, &mut memo.scratch);
+        let mut out = memo.walked.clone();
+        out.sort_by_key(|&(_, k)| k);
+        memo.list = out.into();
+        return memo.list.clone();
+    }
+    let mut walked = Vec::new();
+    walk(arena, |t, k| walked.push((t, k)));
     let mut out = walked.clone();
     out.sort_by_key(|&(_, k)| k);
     let list: DrawList = out.into();
-    walked.shrink_to_fit();
-    *cache = Some((walked, list.clone()));
+    *cache = Some(OrderMemo {
+        walked,
+        list: list.clone(),
+        scratch: Vec::new(),
+    });
     list
 }
 

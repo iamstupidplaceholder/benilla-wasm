@@ -84,7 +84,8 @@ use crate::ui_chat::{default_color, ChatEventKind};
 use crate::ui_pass::{overlay_z, UiQuad, UiQuadAppend, UiQuads, UvRect};
 use crate::ui_text::{layout_text_quads, measure_text, FontSpec, Justify, TextSeat, UiFontAtlas};
 use crate::vplates::{device_snap, gx_px, plate_basis, text_px, VPlateSet, VPlates};
-use benilla_assets::{AssetSet, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::AssetSet;
 use benilla_world::view::WorldCamera;
 
 /// The two CVars (registrar `0x603280`), host side. **Registered knobs since decision 1139** —
@@ -345,15 +346,23 @@ struct BubbleArt {
 
 fn load_bubble_art(
     mut commands: Commands,
-    assets: Option<ResMut<WorldAssets>>,
+    mut assets: crate::ui_sprites::UiSprites,
     mut images: ResMut<Assets<Image>>,
+    mut done: Local<bool>,
 ) {
-    let Some(mut assets) = assets else {
+    if *done {
+        return;
+    }
+    if assets.as_mut().is_none() {
         return; // no game data (bare test app) — drive_bubbles tolerates the missing resource
+    }
+    let bg = assets.sprite_texture_ready(BG_TEXTURE, &mut images);
+    let edge = assets.sprite_texture_tiled_ready(EDGE_TEXTURE, &mut images);
+    let tail = assets.sprite_texture_ready(TAIL_TEXTURE, &mut images);
+    let (Some(bg), Some(edge), Some(tail)) = (bg, edge, tail) else {
+        return; // Pending: all requests are issued, but no partial bubble art is published.
     };
-    let bg = assets.sprite_texture(BG_TEXTURE, &mut images);
-    let edge = assets.sprite_texture_tiled(EDGE_TEXTURE, &mut images);
-    let tail = assets.sprite_texture(TAIL_TEXTURE, &mut images);
+    *done = true;
     let (Some(bg), Some(edge), Some(tail)) = (bg, edge, tail) else {
         warn!("chat_bubble: bubble art missing from the patch chain — bubbles will not draw");
         return;
@@ -828,7 +837,6 @@ impl Plugin for ChatBubblePlugin {
             .init_resource::<BubbleConfig>()
             .init_resource::<Bubbles>()
             .init_resource::<BubblesActive>()
-            .add_systems(Startup, load_bubble_art.after(AssetSet::Open))
             // After the V-plate drive (the spawn gate reads this frame's plate verdict),
             // inside the UI-quad append window; the name driver orders after [`BubbleSet`]
             // (the bubble/name exclusion reads this frame's verdict).
@@ -839,6 +847,10 @@ impl Plugin for ChatBubblePlugin {
                     .in_set(UiQuadAppend)
                     .in_set(BubbleSet),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Startup, load_bubble_art.after(AssetSet::Open));
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(Update, load_bubble_art.before(BubbleSet));
     }
 }
 

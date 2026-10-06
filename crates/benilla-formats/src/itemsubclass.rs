@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{i32_at, parse, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 const ITEM_SUB_CLASS: &str = "DBFilesClient\\ItemSubClass.dbc";
@@ -255,7 +256,7 @@ fn item_sub_class_mask_schema() -> Schema {
 
 /// Load ItemSubClass.dbc — plus the ItemSubClassMask.dbc group names, which are stage 1 of the same
 /// lookup ([`ItemSubClassCatalog::requirement_name`]) — from the patch chain.
-pub fn load_item_sub_classes(chain: &mut Chain) -> Result<ItemSubClassCatalog> {
+pub fn load_item_sub_classes(chain: &mut impl crate::FileSource) -> Result<ItemSubClassCatalog> {
     let bytes = chain
         .read_file(ITEM_SUB_CLASS)
         .with_context(|| format!("reading {ITEM_SUB_CLASS}"))?;

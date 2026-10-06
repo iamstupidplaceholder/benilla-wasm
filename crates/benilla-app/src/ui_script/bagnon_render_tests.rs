@@ -193,7 +193,7 @@ fn seat(root: &Path, seat: Seat) -> UiScript {
     if seat == Seat::BeforeAddons {
         s.set_unit("player", Some(player.clone()));
     }
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(
         failures.is_empty(),
         "our own FrameXML failed to load: {failures:#?}"
@@ -334,7 +334,7 @@ fn centre_of(s: &mut UiScript, name: &str) -> (f32, f32) {
 /// The name of the Bagnon item button showing backpack slot `slot`. Bagnon lays its buttons out in
 /// its own order and `SetID`s each to the game slot, so the button holding the fixture's one item
 /// is found by asking, never by assuming an index.
-fn bagnon_button_for_slot(s: &UiScript, bag: i64, slot: u32) -> String {
+fn bagnon_button_for_slot(s: &mut UiScript, bag: i64, slot: u32) -> String {
     s.eval::<String>(&format!(
         "for i = 1, 36 do \
            local b = getglobal(\"BagnonItem\"..i) \
@@ -462,7 +462,7 @@ fn the_item_button_helpers_paint_a_slots_icon_and_count() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "our own FrameXML: {failures:#?}");
 
     // A button shaped the way the family's naming contract requires, built the way an addon does.
@@ -510,7 +510,7 @@ fn the_item_button_helpers_paint_a_slots_icon_and_count() {
     // The no-shader branch: benilla has no `Texture:SetDesaturated`, so a locked slot takes the
     // reference's own fixed-function fallback — a flat 0.5 grey tint on the icon.
     let tint = s
-        .eval::<Vec<f32>>("return {ProbeItemButtonIconTexture:GetVertexColor()}")
+        .eval_sequence::<f32>("return {ProbeItemButtonIconTexture:GetVertexColor()}")
         .expect("GetVertexColor");
     assert_eq!(
         &tint[..3],
@@ -590,7 +590,7 @@ fn the_roster_seat_names_the_character_the_addons_will_meet() {
 fn hovering_a_bagnon_slot_shows_the_items_tooltip() {
     let root = corpus_and_install_or_skip!();
     let mut s = open_bagnon(&root);
-    let occupied = bagnon_button_for_slot(&s, 0, 1);
+    let occupied = bagnon_button_for_slot(&mut s, 0, 1);
 
     let (x, y) = centre_of(&mut s, &occupied);
     s.mouse_move(x, y);
@@ -627,7 +627,7 @@ fn hovering_a_bagnon_slot_shows_the_items_tooltip() {
 fn left_clicking_a_bagnon_slot_picks_the_item_up() {
     let root = corpus_and_install_or_skip!();
     let mut s = open_bagnon(&root);
-    let occupied = bagnon_button_for_slot(&s, 0, 1);
+    let occupied = bagnon_button_for_slot(&mut s, 0, 1);
 
     assert!(
         !s.eval::<bool>("return CursorHasItem()").unwrap(),
@@ -646,7 +646,7 @@ fn left_clicking_a_bagnon_slot_picks_the_item_up() {
     );
 
     // …and clicking an empty slot puts it back down, through the same one entry point.
-    let empty = bagnon_button_for_slot(&s, 0, 2);
+    let empty = bagnon_button_for_slot(&mut s, 0, 2);
     click(&mut s, &empty, "LeftButton");
     assert_eq!(
         s.take_container_moves(),
@@ -668,7 +668,7 @@ fn left_clicking_a_bagnon_slot_picks_the_item_up() {
 fn right_clicking_a_bagnon_slot_uses_the_item() {
     let root = corpus_and_install_or_skip!();
     let mut s = open_bagnon(&root);
-    let occupied = bagnon_button_for_slot(&s, 0, 1);
+    let occupied = bagnon_button_for_slot(&mut s, 0, 1);
 
     click(&mut s, &occupied, "RightButton");
 
@@ -691,8 +691,8 @@ fn right_clicking_a_bagnon_slot_uses_the_item() {
 fn dragging_a_bagnon_slot_picks_the_item_up() {
     let root = corpus_and_install_or_skip!();
     let mut s = open_bagnon(&root);
-    let occupied = bagnon_button_for_slot(&s, 0, 1);
-    let empty = bagnon_button_for_slot(&s, 0, 2);
+    let occupied = bagnon_button_for_slot(&mut s, 0, 1);
+    let empty = bagnon_button_for_slot(&mut s, 0, 2);
 
     let (sx, sy) = centre_of(&mut s, &occupied);
     let (dx, dy) = centre_of(&mut s, &empty);
@@ -828,8 +828,8 @@ fn a_button_reports_its_own_label_width() {
 #[test]
 fn the_reference_cooldown_template_resolves() {
     let root = corpus_or_skip!();
-    let s = open_bagnon(&root);
-    let occupied = bagnon_button_for_slot(&s, 0, 1);
+    let mut s = open_bagnon(&root);
+    let occupied = bagnon_button_for_slot(&mut s, 0, 1);
 
     // The child exists and answers as a frame, whatever Bagnon does to it.
     assert!(
@@ -1325,7 +1325,7 @@ fn the_character_dropdown_is_as_wide_as_the_names_in_it() {
     // …and the rows are really inside it: the addon's 6px left inset plus a name, not a 140px
     // template button overhanging a 40px box.
     let (list_r, row_r): (f32, f32) = s
-        .eval::<Vec<f32>>(
+        .eval_sequence::<f32>(
             "local l = BagnonDBUICharacterList \
              return { l:GetLeft() + l:GetWidth(), BagnonDBUICharacterList1:GetLeft() + \
              BagnonDBUICharacterList1:GetTextWidth() + 24 }",

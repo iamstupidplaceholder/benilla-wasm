@@ -1,6 +1,24 @@
 use crate::messages::MovementInfo;
 use crate::wire::Vector3d;
 
+/// The complete live mover snapshot, shared by TCP writer and WebSocket adapter.
+pub fn movement_snapshot(
+    pos: [f32; 3],
+    orientation: f32,
+    flags: u32,
+    pitch: f32,
+    fall_time: u32,
+    jump: Option<crate::JumpInfo>,
+    transport: Option<crate::TransportPose>,
+) -> MovementInfo {
+    let mut info = movement_info(pos, orientation, flags);
+    info.pitch = pitch;
+    info.fall_time = fall_time;
+    info.jump = jump;
+    info.transport = transport;
+    info
+}
+
 /// `MovementFlags::FORWARD` — the only movement flag benilla sets.
 pub(super) const MOVEMENT_FLAG_FORWARD: u32 = 0x1;
 
@@ -13,15 +31,15 @@ pub(super) const MOVEMENT_FLAG_FORWARD: u32 = 0x1;
 /// reaches observers. Hence: match the real client's clock kind, wrap cleanly as a full `u32` (~49.7 days,
 /// which `getMSTimeDiff` handles), and keep it non-zero. (The old value was wall-clock masked to 31 bits,
 /// which folded backwards every ~24.85 days — a delta glitch the clean `u32` wrap avoids.)
-pub(super) fn client_uptime_ms() -> u32 {
+pub fn client_uptime_ms() -> u32 {
+    use benilla_time::Instant;
     use std::sync::OnceLock;
-    use std::time::Instant;
     static START: OnceLock<Instant> = OnceLock::new();
     (START.get_or_init(Instant::now).elapsed().as_millis() as u32).max(1)
 }
 
 /// Build a `MovementInfo` stamped with the client-uptime time ([`client_uptime_ms`]).
-pub(super) fn movement_info(pos: [f32; 3], orientation: f32, flags: u32) -> MovementInfo {
+pub fn movement_info(pos: [f32; 3], orientation: f32, flags: u32) -> MovementInfo {
     MovementInfo {
         flags,
         timestamp: client_uptime_ms(),
@@ -64,5 +82,35 @@ mod tests {
             info.timestamp, 0,
             "a movement packet must carry a non-zero time"
         );
+    }
+
+    #[test]
+    fn full_snapshot_preserves_live_tails() {
+        let jump = crate::JumpInfo {
+            zspeed: 4.0,
+            cos_angle: 0.5,
+            sin_angle: 0.25,
+            xy_speed: 7.0,
+        };
+        let info = movement_snapshot(
+            [1.0, 2.0, 3.0],
+            0.5,
+            0x2000 | 0x200000,
+            0.75,
+            123,
+            Some(jump),
+            None,
+        );
+        assert_ne!(info.timestamp, 0);
+        assert_eq!(info.position.x, 1.0);
+        assert_eq!(info.orientation, 0.5);
+        assert_eq!(info.pitch, 0.75);
+        assert_eq!(info.fall_time, 123);
+        assert_eq!(info.jump.unwrap().xy_speed, 7.0);
+        // Existing serializers must retain the exact echoed speed and counter.
+        let body = crate::messages::force_speed_ack(7, 42, &info, 9.0);
+        assert_eq!(&body[..8], &7u64.to_le_bytes());
+        assert_eq!(&body[8..12], &42u32.to_le_bytes());
+        assert_eq!(&body[body.len() - 4..], &9.0f32.to_le_bytes());
     }
 }

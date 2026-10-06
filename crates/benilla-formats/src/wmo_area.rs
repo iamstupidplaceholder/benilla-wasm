@@ -22,7 +22,6 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
 
 /// One WMO area row — the audio fields (all 0 = none/inherit).
 #[derive(Clone)]
@@ -156,7 +155,7 @@ fn schema() -> Schema {
 }
 
 /// Read `WMOAreaTable.dbc` off the patch chain.
-pub fn load_wmo_area_catalog(chain: &mut Chain) -> Result<WmoAreaCatalog> {
+pub fn load_wmo_area_catalog(chain: &mut impl crate::FileSource) -> Result<WmoAreaCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\WMOAreaTable.dbc")
         .context("reading WMOAreaTable.dbc")?;

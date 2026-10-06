@@ -26,7 +26,7 @@ use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
 const CHAR_BASE_INFO: &str = "DBFilesClient\\CharBaseInfo.dbc";
@@ -197,7 +197,7 @@ impl CharCreateCatalog {
     /// loudly on a misparse: the parsed combos must equal the frozen 1.12 table (guards the 2-byte
     /// CharBaseInfo layout), and every playable (race, sex) must have a body display + all five
     /// ranges nonzero.
-    pub fn load(chain: &mut Chain) -> Result<Self> {
+    pub fn load(chain: &mut impl FileSource) -> Result<Self> {
         let (displays, files, custom_tokens) = load_races(chain)?;
         let combos = load_combos(chain)?;
         let start_outfits = load_start_outfits(chain)?;
@@ -309,7 +309,7 @@ impl CharCreateCatalog {
 /// guarded by [`CharCreateCatalog::self_check`]'s frozen fileString table.
 #[allow(clippy::type_complexity)] // one pass over one DBC → the catalog's three race-keyed maps
 fn load_races(
-    chain: &mut Chain,
+    chain: &mut impl FileSource,
 ) -> Result<(
     HashMap<u8, (u32, u32)>,
     HashMap<u8, String>,
@@ -355,7 +355,7 @@ fn load_races(
 /// (record size 2, not 8), so the generic 4-byte-field reader can't touch it — parsed by hand off the
 /// raw record block. Byte 0 = RaceID, byte 1 = ClassID (verified against the 5875 file + the known
 /// combo table).
-fn load_combos(chain: &mut Chain) -> Result<HashSet<(u8, u8)>> {
+fn load_combos(chain: &mut impl FileSource) -> Result<HashSet<(u8, u8)>> {
     let bytes = chain
         .read_file(CHAR_BASE_INFO)
         .with_context(|| format!("reading {CHAR_BASE_INFO}"))?;
@@ -366,7 +366,9 @@ fn load_combos(chain: &mut Chain) -> Result<HashSet<(u8, u8)>> {
     let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
     if field_count != 2 || record_size != 2 {
-        bail!("CharBaseInfo: unexpected layout (fields {field_count}, record size {record_size}; expected 2/2)");
+        bail!(
+            "CharBaseInfo: unexpected layout (fields {field_count}, record size {record_size}; expected 2/2)"
+        );
     }
     let data = &bytes[20..];
     let mut combos = HashSet::new();
@@ -389,7 +391,9 @@ fn load_combos(chain: &mut Chain) -> Result<HashSet<(u8, u8)>> {
 /// **worn** slot (both ≥ 1 — this drops the empty `-1` tail and the InventoryType-0 bag/food/hearth
 /// entries, which never render). DisplayId is already an ItemDisplayInfo id (the char-enum
 /// equipment convention), so it feeds the equipment pipeline with no template hop.
-fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<StartOutfitItem>>> {
+fn load_start_outfits(
+    chain: &mut impl FileSource,
+) -> Result<HashMap<(u8, u8, u8), Vec<StartOutfitItem>>> {
     let bytes = chain
         .read_file(CHAR_START_OUTFIT)
         .with_context(|| format!("reading {CHAR_START_OUTFIT}"))?;
@@ -435,7 +439,7 @@ fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<Sta
 /// a player may select (`Flags & 0x1 == 0`; the `0x1`-flagged rows are `SECTION_FLAG_UNAVAILABLE`,
 /// the late `…_100` extras the compositor already skips). This is exactly the domain vmangos's
 /// `GetCharSectionEntry` searches, so range derivation + validation read the same predicate.
-fn load_available_sections(chain: &mut Chain) -> Result<HashSet<SectionKey>> {
+fn load_available_sections(chain: &mut impl FileSource) -> Result<HashSet<SectionKey>> {
     let bytes = chain
         .read_file(CHAR_SECTIONS)
         .with_context(|| format!("reading {CHAR_SECTIONS}"))?;
@@ -461,7 +465,7 @@ fn load_available_sections(chain: &mut Chain) -> Result<HashSet<SectionKey>> {
 
 /// CharHairGeosets → (race, sex) → the set of hair-style `VariationID`s. 6 fields (ID, Race, Sex,
 /// Variation, GeosetID, unused); we key on cols 1/2/3 (wow-re RF-0073).
-fn load_hair_geosets(chain: &mut Chain) -> Result<HashMap<(u8, u8), HashSet<u8>>> {
+fn load_hair_geosets(chain: &mut impl FileSource) -> Result<HashMap<(u8, u8), HashSet<u8>>> {
     let bytes = chain
         .read_file(CHAR_HAIR_GEOSETS)
         .with_context(|| format!("reading {CHAR_HAIR_GEOSETS}"))?;
@@ -483,7 +487,7 @@ fn load_hair_geosets(chain: &mut Chain) -> Result<HashMap<(u8, u8), HashSet<u8>>
 
 /// CharacterFacialHairStyles → (race, sex) → the set of facial-hair `VariationID`s. 9 fields; the
 /// keys are cols 0/1/2 (Race, Sex, Variation — wow-re RF-0073, note col 0 is Race here, not an ID).
-fn load_facial_hair_styles(chain: &mut Chain) -> Result<HashMap<(u8, u8), HashSet<u8>>> {
+fn load_facial_hair_styles(chain: &mut impl FileSource) -> Result<HashMap<(u8, u8), HashSet<u8>>> {
     let bytes = chain
         .read_file(CHAR_FACIAL_HAIR_STYLES)
         .with_context(|| format!("reading {CHAR_FACIAL_HAIR_STYLES}"))?;

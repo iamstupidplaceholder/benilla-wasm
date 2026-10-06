@@ -3,8 +3,6 @@
 //! ([`UiScript::tick`]: OnUpdate + the engine-side fades and the model panes' clocks), and the FrameXML session clock
 //! ([`UiScript::now`]). The low-level handler-firing these drive lives in [`super::event`].
 
-use mlua::Lua;
-
 use crate::widget::FrameHandle;
 
 use super::{editbox, event, tooltip, Model, ScriptValue, UiScript};
@@ -53,28 +51,25 @@ impl UiScript {
     /// its zeroed links — memory-accident territory we render as a deterministic stop, a knowing
     /// divergence from an accident, not from a mechanism).
     pub fn fire_event(&mut self, event: &str, args: Vec<ScriptValue>) {
-        fire_event_into(&self.lua, event, args);
+        fire_event_into_context(&mut self.lua, event, args);
     }
 }
 
-/// [`UiScript::fire_event`] against the VM directly, for a caller that holds `&Lua` rather than
-/// `&UiScript` — which is every Lua binding, and therefore `UpdateSpells` (decision 1924).
-///
-/// Identical behaviour; `fire_event` is the same call with the script's own VM. The `&mut self` on
-/// the method was never load-bearing — the body reaches everything through `lua.app_data_mut()` —
-/// and this is the shape [`crate::loader::load_into`] already uses for the same reason (1188 §2).
-pub(crate) fn fire_event_into(lua: &Lua, event: &str, args: Vec<ScriptValue>) {
-    let model_mut = || lua.app_data_mut::<Model>().expect("model app_data set");
+pub(crate) fn fire_event_into_context(
+    lua: &mut impl benilla_lua::LuaContext,
+    event: &str,
+    args: Vec<ScriptValue>,
+) {
     {
         let mut at = {
-            let model = model_mut();
+            let model = lua.app_data_mut::<Model>().expect("model app_data set");
             model
                 .event_to_frames
                 .get(event)
                 .and_then(|l| l.first().copied())
         };
         while let Some(h) = at {
-            let mut model = model_mut();
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data set");
             // The saved handle must still be registered — its removal (by the previous handler)
             // ends the walk, per the doc above.
             let Some(pos) = model
@@ -90,13 +85,15 @@ pub(crate) fn fire_event_into(lua: &Lua, event: &str, args: Vec<ScriptValue>) {
                 .and_then(|l| l.get(pos + 1).copied());
             let id = model.frame_id(h);
             drop(model);
-            if let Err(e) = event::fire_event_handler(lua, id, event, &args) {
-                model_mut().record_script_error(e.to_string());
+            if let Err(e) = event::fire_event_handler_context(lua, id, event, &args) {
+                lua.app_data_mut::<Model>()
+                    .expect("model app_data set")
+                    .record_script_error(e.to_string());
             }
             at = next;
         }
     }
-    event::fire_all_event_listeners(lua, event, &args);
+    event::fire_all_event_listeners_context(lua, event, &args);
 }
 
 impl super::UiScript {
@@ -111,7 +108,7 @@ impl super::UiScript {
     /// reads it to stamp an absolute expiry into the clock a Lua countdown reads (the aura feed's
     /// `expirationTime`, decision 0257); it is the same value `GetTime()` returns inside the VM.
     pub fn now(&self) -> f64 {
-        self.lua.globals().get("__benilla_now").unwrap_or(0.0)
+        self.clock
     }
 
     /// Start this VM's `GetTime()` clock at `secs` rather than at zero — how a host hands a
@@ -127,32 +124,29 @@ impl super::UiScript {
     /// Set once, at construction: from then on only [`Self::tick`] moves the clock, so the
     /// `(Instant, GetTime)` pair a host keeps beside it stays atomic by construction.
     pub fn set_now(&mut self, secs: f64) {
-        if let Err(e) = self.lua.globals().set("__benilla_now", secs) {
+        self.clock = secs;
+        if let Err(e) = self.lua.set_global("__benilla_now", secs) {
             self.push_error(e);
         }
     }
 
     pub fn tick(&mut self, elapsed: f32) {
-        let clock = {
-            let g = self.lua.globals();
-            let now: f64 = g.get("__benilla_now").unwrap_or(0.0);
-            g.set("__benilla_now", now + f64::from(elapsed))
-        };
-        if let Err(e) = clock {
+        self.clock += f64::from(elapsed);
+        if let Err(e) = self.lua.set_global("__benilla_now", self.clock) {
             self.push_error(e);
         }
         // The focused edit box's caret blink (`0x77a790` runs on the client's frame tick).
-        editbox::tick_blink(&self.lua, elapsed);
+        editbox::tick_blink(&mut self.lua, elapsed);
         // …and, from inside that same `0x77a790` (`0x77a7a1`), the dirty-word drain that fires the
         // `OnTextChanged`s an edit only marked (decision 1831). It runs BEFORE this tick's
         // OnUpdate sweep, matching the reference's order: the box's own OnUpdate override drains
         // before the FrameXML handlers that read the box get their turn.
-        editbox::drain_text_changed(&self.lua);
+        editbox::drain_text_changed(&mut self.lua);
         // …and the caret flush's own fire, the second half of `0x77a790`'s update walk
         // (`0x77d3e0` → `0x77da80`): `OnCursorChanged` when the caret has moved. It is what
         // `ScrollingEdit_OnCursorChanged` records and `ScrollingEdit_OnUpdate` then scrolls by,
         // so this is the mail body and the GM ticket box following the caret as you type.
-        editbox::drain_cursor_changed(&self.lua);
+        editbox::drain_cursor_changed(&mut self.lua);
         // Events queued by Lua bindings last tick (`Model::pending_events` — e.g. `SetMapZoom` →
         // `WORLD_MAP_UPDATE`; the cursor arc's `CURSOR_UPDATE`/`ITEM_LOCK_CHANGED`/
         // `DELETE_ITEM_CONFIRM`, decision 0216) fire first, so handlers see them before this
@@ -204,8 +198,8 @@ impl super::UiScript {
             ids
         };
         for id in ids {
-            if let Err(e) = event::fire_update_handler(&self.lua, id, elapsed) {
-                self.push_error(e);
+            if let Err(e) = event::fire_update_handler_context(&mut self.lua, id, elapsed) {
+                self.model_mut().record_script_error(e.to_string());
             }
         }
         self.tick_model_panes(elapsed);
@@ -250,7 +244,7 @@ impl super::UiScript {
         drop(model);
         // Advance fading tooltips (FadeOut's ramp + end-of-ramp hide) — engine behavior like the
         // message fade above, decision 0274.
-        tooltip::tick_fades(&self.lua);
+        tooltip::tick_fades(&mut self.lua);
         // The hover RE-PICK ([`Model::hover_repick`]): the world under a stationary cursor
         // changed this tick (the hovered frame hid, or a frame was shown over the cursor), so
         // re-run the hover walk at the SAVED cursor position — the reference's own pump tail
@@ -344,8 +338,10 @@ impl UiScript {
             ids
         };
         for id in update_ids {
-            if let Err(e) = event::fire_widget_handler(&self.lua, id, "OnUpdateModel", Vec::new()) {
-                self.push_error(e);
+            if let Err(e) =
+                event::fire_widget_handler_context(&mut self.lua, id, "OnUpdateModel", Vec::new())
+            {
+                self.model_mut().record_script_error(e.to_string());
             }
         }
         let finished_ids: Vec<u32> = {
@@ -387,9 +383,10 @@ impl UiScript {
             ids
         };
         for id in finished_ids {
-            if let Err(e) = event::fire_widget_handler(&self.lua, id, "OnAnimFinished", Vec::new())
+            if let Err(e) =
+                event::fire_widget_handler_context(&mut self.lua, id, "OnAnimFinished", Vec::new())
             {
-                self.push_error(e);
+                self.model_mut().record_script_error(e.to_string());
             }
         }
     }

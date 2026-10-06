@@ -12,8 +12,8 @@ use super::test_ui::load_ui as load_xml;
 /// Fonts then BasicControls — the manifest's own order, and the whole dependency this file has.
 fn basic_controls() -> UiScript {
     let mut s = UiScript::new().unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
     s.set_screen_size(1024.0, 768.0);
     s.resolve();
     s
@@ -23,7 +23,7 @@ fn basic_controls() -> UiScript {
 /// reason the frame has to exist rather than the function being a stub that prints somewhere.
 #[test]
 fn message_shows_the_script_errors_dialog_carrying_its_text() {
-    let s = basic_controls();
+    let mut s = basic_controls();
     assert!(
         !s.eval::<bool>("return ScriptErrors:IsVisible()").unwrap(),
         "the dialog starts hidden (DialogBoxFrame's `hidden=true`)"
@@ -57,7 +57,7 @@ fn message_shows_the_script_errors_dialog_carrying_its_text() {
 /// is replaceable — which is the entire point for the two corpus addons that replace it.
 #[test]
 fn error_message_returns_its_argument_and_can_be_replaced() {
-    let s = basic_controls();
+    let mut s = basic_controls();
     assert_eq!(
         s.eval::<String>(r#"return _ERRORMESSAGE("boom")"#).unwrap(),
         "boom",
@@ -120,7 +120,7 @@ fn error_message_is_the_installed_handler_and_the_host_channel_stays_sighted() {
 /// `TEXT` is the identity function, and 26 corpus addons call it because shipped FrameXML does.
 #[test]
 fn text_is_the_identity_function_the_corpus_expects() {
-    let s = basic_controls();
+    let mut s = basic_controls();
     assert_eq!(
         s.eval::<String>(r#"return TEXT("Level")"#).unwrap(),
         "Level"
@@ -133,7 +133,7 @@ fn text_is_the_identity_function_the_corpus_expects() {
 /// name — `MyDialogButton`, never `DialogBoxFrameButton`.
 #[test]
 fn a_dialog_box_from_the_template_names_and_closes_the_callers_frame() {
-    let s = basic_controls();
+    let mut s = basic_controls();
     s.run(
         r#"MyDialog = CreateFrame("Frame", "MyDialog", UIParent, "DialogBoxFrame")
            MyDialog:SetWidth(384) MyDialog:SetHeight(128)

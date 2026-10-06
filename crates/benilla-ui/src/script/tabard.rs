@@ -19,11 +19,9 @@
 //! `GetTabardCreationCost()` is a **hard-coded constant**: `0x6d6de0` is `mov eax,0x186a0; ret`
 //! — 100 000 copper, ten gold, no `.data` cell and no server input.
 
-use mlua::{Lua, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
-use super::binding_abi::number_arg;
-use super::object::{decode_id, frame_handle_of};
-use super::region::region_handle_of;
+use super::binding_abi::neutral_number_arg;
 use super::Model;
 use crate::widget::{FrameHandle, FrameKind, RegionKind};
 
@@ -89,19 +87,19 @@ impl super::UiScript {
 
 /// The three `this` raises every method shares (`0x847ef8` / `0x847ec0` / `0x847e98`), then the
 /// frame handle of a `TabardModel`.
-fn this_tabard(lua: &Lua, this: &Value) -> mlua::Result<FrameHandle> {
+fn this_tabard(lua: &mut impl LuaContext, this: &Value) -> benilla_lua::Result<FrameHandle> {
     let Value::Table(t) = this else {
-        return Err(mlua::Error::runtime(
+        return Err(benilla_lua::Error::runtime(
             "Attempt to find 'this' in non-table object (used '.' instead of ':' ?)",
         ));
     };
-    if decode_id(t).is_err() {
-        return Err(mlua::Error::runtime(
+    if super::object::decode_id_context(lua, t).is_err() {
+        return Err(benilla_lua::Error::runtime(
             "Attempt to find 'this' in non-framescript object",
         ));
     }
-    let wrong = || mlua::Error::runtime("Wrong object type for member function");
-    let h = frame_handle_of(lua, t).map_err(|_| wrong())?;
+    let wrong = || benilla_lua::Error::runtime("Wrong object type for member function");
+    let h = super::object::frame_handle_of_context(lua, t).map_err(|_| wrong())?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     let is_tabard = model
         .arena
@@ -121,7 +119,7 @@ fn design(model: &Model, h: FrameHandle) -> [i32; 5] {
     model.tabard_designs.get(&h).copied().unwrap_or([0; 5])
 }
 
-fn store(lua: &Lua, h: FrameHandle, five: [i32; 5]) {
+fn store(lua: &mut impl LuaContext, h: FrameHandle, five: [i32; 5]) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     model.tabard_designs.insert(h, five);
     model.tabard_preview = Some(five);
@@ -135,8 +133,8 @@ fn draw(rand: u32, count: i32) -> i32 {
 /// A clock-seeded generator standing in for the client's table-driven one (`0x4531e0`); only the
 /// range law above is the reference's.
 fn random_words() -> impl Iterator<Item = u32> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = benilla_time::SystemTime::now()
+        .duration_since(benilla_time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x9E37_79B9_7F4A_7C15);
     let mut x = nanos | 1;
@@ -183,7 +181,12 @@ fn emblem_path(five: [i32; 5], half: &str) -> String {
 
 /// `Get{Upper,Lower}EmblemTexture(texture)` — the Texture-widget argument's three raises
 /// (`0x84efc8` / `0x84f050` / `0x84f010` and the lower twins), then the install.
-fn emblem_texture(lua: &Lua, this: Value, texture: Value, upper: bool) -> mlua::Result<()> {
+fn emblem_texture(
+    lua: &mut impl LuaContext,
+    this: Value,
+    texture: Value,
+    upper: bool,
+) -> benilla_lua::Result<()> {
     let h = this_tabard(lua, &this)?;
     let (name, half) = if upper {
         ("GetUpperEmblemTexture", "TU")
@@ -191,21 +194,21 @@ fn emblem_texture(lua: &Lua, this: Value, texture: Value, upper: bool) -> mlua::
         ("GetLowerEmblemTexture", "TL")
     };
     let Value::Table(t) = texture else {
-        return Err(mlua::Error::runtime(format!(
+        return Err(benilla_lua::Error::runtime(format!(
             "Usage: TabardModel:{name}(texture)"
         )));
     };
-    if decode_id(&t).is_err() {
-        return Err(mlua::Error::runtime(format!(
+    if super::object::decode_id_context(lua, &t).is_err() {
+        return Err(benilla_lua::Error::runtime(format!(
             "TabardModel:{name}(): Couldn't find 'this' in texture object"
         )));
     }
     let wrong = || {
-        mlua::Error::runtime(format!(
+        benilla_lua::Error::runtime(format!(
             "TabardModel:{name}(): Wrong object type, expected texture"
         ))
     };
-    let rh = region_handle_of(lua, &t).map_err(|_| wrong())?;
+    let rh = super::region::region_handle_of_context(lua, &t).map_err(|_| wrong())?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     if !model
         .arena
@@ -223,66 +226,70 @@ fn emblem_texture(lua: &Lua, this: Value, texture: Value, upper: bool) -> mlua::
     Ok(())
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     let m = lua.create_table()?;
+    macro_rules! register_method {
+        ($name:expr, $callback:expr) => {{
+            let function = lua.create_function($name, $callback)?;
+            lua.table_set(&m, $name, function)?;
+        }};
+    }
 
     // `InitializeTabardColors()` — `0x502b10`: the active player gates the seed; zero returns.
-    m.set(
-        "InitializeTabardColors",
-        lua.create_function(|lua, this: Value| {
-            let h = this_tabard(lua, &this)?;
-            let host = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                if !model.unit("player").is_some_and(|u| u.exists) {
-                    return Ok(());
-                }
-                model.tabard_host
-            };
-            store(lua, h, seed(host));
-            Ok(())
-        })?,
-    )?;
-
-    // `Save()` — `0x502bd0`: the intent carries the five; the app does the fourteen checks.
-    m.set(
-        "Save",
-        lua.create_function(|lua, this: Value| {
-            let h = this_tabard(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    register_method!("InitializeTabardColors", |lua, this: Value| {
+        let h = this_tabard(lua, &this)?;
+        let host = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
             if !model.unit("player").is_some_and(|u| u.exists) {
                 return Ok(());
             }
-            let five = design(&model, h);
-            model.tabard_intents.push(TabardIntent::Save(five));
-            Ok(())
-        })?,
-    )?;
+            model.tabard_host
+        };
+        store(lua, h, seed(host));
+        Ok(())
+    });
+
+    // `Save()` — `0x502bd0`: the intent carries the five; the app does the fourteen checks.
+    register_method!("Save", |lua, this: Value| {
+        let h = this_tabard(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if !model.unit("player").is_some_and(|u| u.exists) {
+            return Ok(());
+        }
+        let five = design(&model, h);
+        model.tabard_intents.push(TabardIntent::Save(five));
+        Ok(())
+    });
 
     // `CycleVariation(variationIndex, delta)` — `0x502ca0`: both args `lua_isnumber` else the
     // usage raise; the index 1..5 (unsigned-checked, so 0 is out) else its own raise; both
     // `ftol`-truncated; the worker's silent no-op for a delta past the count.
-    m.set(
-        "CycleVariation",
-        lua.create_function(|lua, (this, index, delta): (Value, Value, Value)| {
-            let h = this_tabard(lua, &this)?;
-            const USAGE: &str = "Usage: CycleVariation(variationIndex, delta)";
-            let index = number_arg(lua, index, USAGE)?;
-            let delta = number_arg(lua, delta, USAGE)?;
-            let slot = usize::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_sub(1))
-                .filter(|i| *i < 5)
-                .ok_or_else(|| mlua::Error::runtime("Invalid variationIndex in CycleVariation"))?;
-            let mut five = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                design(&model, h)
-            };
-            if cycle(&mut five, slot, delta as i32) {
-                store(lua, h, five);
-            }
-            Ok(())
-        })?,
-    )?;
+    register_method!("CycleVariation", |lua,
+                                        (this, index, delta): (
+        Value,
+        Value,
+        Value
+    )| {
+        let h = this_tabard(lua, &this)?;
+        const USAGE: &str = "Usage: CycleVariation(variationIndex, delta)";
+        let index = neutral_number_arg(index, USAGE)?;
+        let delta = neutral_number_arg(delta, USAGE)?;
+        let slot = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .filter(|i| *i < 5)
+            .ok_or_else(|| {
+                benilla_lua::Error::runtime("Invalid variationIndex in CycleVariation")
+            })?;
+        let mut five = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            design(&model, h)
+        };
+        if cycle(&mut five, slot, delta as i32) {
+            store(lua, h, five);
+        }
+        Ok(())
+    });
 
     // The four `…FileName` getters (`0x502dc0` / `0x502ea0` / `0x502f80` / `0x503070`): one
     // string each, no extension — the loader appends `.blp`.
@@ -292,74 +299,65 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("GetUpperEmblemFileName", true, false),
         ("GetLowerEmblemFileName", false, false),
     ] {
-        m.set(
-            name,
-            lua.create_function(move |lua, this: Value| {
-                let h = this_tabard(lua, &this)?;
-                let five = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    design(&model, h)
-                };
-                let half = if upper { "TU" } else { "TL" };
-                Ok(if background {
-                    format!("Textures\\GuildEmblems\\Background_{:02}_{half}_U", five[4])
-                } else {
-                    format!(
-                        "Textures\\GuildEmblems\\Emblem_{:02}_{:02}_{half}_U",
-                        five[0], five[1]
-                    )
-                })
-            })?,
-        )?;
+        register_method!(name, move |lua, this: Value| {
+            let h = this_tabard(lua, &this)?;
+            let five = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                design(&model, h)
+            };
+            let half = if upper { "TU" } else { "TL" };
+            Ok(if background {
+                format!("Textures\\GuildEmblems\\Background_{:02}_{half}_U", five[4])
+            } else {
+                format!(
+                    "Textures\\GuildEmblems\\Emblem_{:02}_{:02}_{half}_U",
+                    five[0], five[1]
+                )
+            })
+        });
     }
 
     // The two texture SETTERS (`0x503160` / `0x503540`), zero returns.
-    m.set(
-        "GetUpperEmblemTexture",
-        lua.create_function(|lua, (this, texture): (Value, Value)| {
-            emblem_texture(lua, this, texture, true)
-        })?,
-    )?;
-    m.set(
-        "GetLowerEmblemTexture",
-        lua.create_function(|lua, (this, texture): (Value, Value)| {
-            emblem_texture(lua, this, texture, false)
-        })?,
-    )?;
+    register_method!("GetUpperEmblemTexture", |lua,
+                                               (this, texture): (
+        Value,
+        Value
+    )| {
+        emblem_texture(lua, this, texture, true)
+    });
+    register_method!("GetLowerEmblemTexture", |lua,
+                                               (this, texture): (
+        Value,
+        Value
+    )| {
+        emblem_texture(lua, this, texture, false)
+    });
 
     // `CanSaveTabardNow()` — `0x503910` never resolves `this`: the number 1, or nil, from
     // `player && guildRecordCached && !savePending` (`0x5f0800`). Not a would-it-succeed test.
-    m.set(
-        "CanSaveTabardNow",
-        lua.create_function(|lua, _: mlua::MultiValue| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let can = model.unit("player").is_some_and(|u| u.exists)
-                && model.tabard_host.guild_record.is_some()
-                && !model.tabard_host.save_pending;
-            Ok(if can { Value::Integer(1) } else { Value::Nil })
-        })?,
-    )?;
+    register_method!("CanSaveTabardNow", |lua, _: MultiValue| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let can = model.unit("player").is_some_and(|u| u.exists)
+            && model.tabard_host.guild_record.is_some()
+            && !model.tabard_host.save_pending;
+        Ok(if can { Value::Integer(1) } else { Value::Nil })
+    });
 
     lua.set_named_registry_value(REG_TABARDMODEL_METHODS, m)?;
 
-    let g = lua.globals();
     // `GetTabardCreationCost()` — 0 args, one number, the constant.
-    g.set(
-        "GetTabardCreationCost",
-        lua.create_function(|_, ()| Ok(i64::from(TABARD_CREATION_COST)))?,
-    )?;
+    lua.register_function("GetTabardCreationCost", |_, ()| {
+        Ok(i64::from(TABARD_CREATION_COST))
+    })?;
     // `CloseTabardCreation()` — `0x4f5900`: zero args, zero returns, no packet; the close core
     // (`0x4f58a0`) and its `CLOSE_TABARD_FRAME` are the app's, gated on a stored vendor.
-    g.set(
-        "CloseTabardCreation",
-        lua.create_function(|lua, _: mlua::MultiValue| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .tabard_intents
-                .push(TabardIntent::Close);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseTabardCreation", |lua, _: MultiValue| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .tabard_intents
+            .push(TabardIntent::Close);
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -386,7 +384,7 @@ mod tests {
 
     #[test]
     fn the_creation_cost_is_ten_gold_and_a_tabard_model_is_its_own_kind() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<i64>("return GetTabardCreationCost()").unwrap(),
             100_000
@@ -397,10 +395,10 @@ mod tests {
             "TabardModel"
         );
         assert!(s
-            .eval::<bool>("return t:IsObjectType('PlayerModel') and t:IsObjectType('Model')")
+            .eval_truthy("return t:IsObjectType('PlayerModel') and t:IsObjectType('Model')")
             .unwrap());
         assert!(
-            s.eval::<bool>("return t.SetUnit ~= nil and t.SetRotation ~= nil")
+            s.eval_truthy("return t.SetUnit ~= nil and t.SetRotation ~= nil")
                 .unwrap(),
             "the inherited pane verbs"
         );

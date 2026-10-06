@@ -80,7 +80,7 @@ fn load_area_table(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_area_table_catalog(&mut chain)
+        benilla_formats::load_area_table_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -274,15 +274,15 @@ fn feed_zone_events(
         });
     let (pvp_type, pvp_faction) = pvp.unwrap_or(("", ""));
 
-    let globals = script.lua().globals();
-    let pushed = globals
-        .set("__benilla_zone_name", signal.zone_text.clone())
-        .and_then(|()| globals.set("__benilla_real_zone_name", real_zone_text))
-        .and_then(|()| globals.set("__benilla_subzone_name", signal.subzone_text.clone()))
-        .and_then(|()| globals.set("__benilla_zone_text", minimap_text.clone()))
-        .and_then(|()| globals.set("__benilla_pvp_type", pvp_type))
-        .and_then(|()| globals.set("__benilla_pvp_faction", pvp_faction))
-        .and_then(|()| globals.set("__benilla_pvp_arena", is_arena));
+    let vm = script.vm_mut();
+    let pushed = vm
+        .set_global("__benilla_zone_name", signal.zone_text.clone())
+        .and_then(|()| vm.set_global("__benilla_real_zone_name", real_zone_text))
+        .and_then(|()| vm.set_global("__benilla_subzone_name", signal.subzone_text.clone()))
+        .and_then(|()| vm.set_global("__benilla_zone_text", minimap_text.clone()))
+        .and_then(|()| vm.set_global("__benilla_pvp_type", pvp_type))
+        .and_then(|()| vm.set_global("__benilla_pvp_faction", pvp_faction))
+        .and_then(|()| vm.set_global("__benilla_pvp_arena", is_arena));
     if let Err(e) = pushed {
         warn!("area: zone host globals: {e}");
         return;

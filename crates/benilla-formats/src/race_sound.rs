@@ -40,7 +40,7 @@ impl ExplorationSoundCatalog {
 }
 
 /// Load the race → exploration-sound map off the patch chain.
-pub fn load_exploration_sound_catalog(chain: &mut Chain) -> Result<ExplorationSoundCatalog> {
+pub fn load_exploration_sound_catalog(chain: &mut impl crate::FileSource) -> Result<ExplorationSoundCatalog> {
     let bytes = chain
         .read_file(CHR_RACES)
         .with_context(|| format!("reading {CHR_RACES}"))?;

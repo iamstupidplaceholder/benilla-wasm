@@ -317,13 +317,14 @@ fn feed_gossip(
     script: Option<NonSendMut<UiScript>>,
     state: Res<GossipState>,
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
-    names: Res<NameCache>,
+    names: (Res<NameCache>, crate::npc_text::MacroNames),
     commands: Res<NetCommands>,
     states: Res<crate::world_state::WorldStates>,
     mut last: Local<crate::ui_script::VmMemo<Option<GossipMenu>>>,
     mut last_name: Local<crate::ui_script::VmMemo<Option<String>>>,
     mut last_npc: Local<crate::ui_script::VmMemo<Option<u64>>>,
 ) {
+    let (names, labels) = names;
     let Some(mut script) = script else {
         return;
     };
@@ -354,7 +355,7 @@ fn feed_gossip(
     let mut fresh = snapshot(&state);
     // Expand the greeting's chat-text macros ($N/$B/$G/$<n>w) client-side, as the real client does.
     if let Some(greeting) = fresh.as_mut().map(|m| &mut m.greeting) {
-        let player = crate::npc_text::player_identity(&self_q, &names, &commands);
+        let player = crate::npc_text::player_identity(&self_q, &names, &commands, &labels);
         *greeting = crate::npc_text::substitute(
             greeting,
             &crate::npc_text::MacroContext {
@@ -575,9 +576,9 @@ mod tests {
     /// `GetGossipText()` (`""` for nil).
     fn tick(app: &mut App) -> (Vec<String>, String) {
         app.update();
-        let s = app.world_mut().non_send_resource_mut::<UiScript>();
+        let mut s = app.world_mut().non_send_resource_mut::<UiScript>();
         assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
-        let seen = s.eval::<Vec<String>>("return SEEN").unwrap();
+        let seen = s.eval_sequence::<String>("return SEEN").unwrap();
         s.run("SEEN = {}").unwrap();
         let text = s.eval::<String>("return GetGossipText() or ''").unwrap();
         (seen, text)

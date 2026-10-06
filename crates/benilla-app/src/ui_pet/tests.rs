@@ -909,7 +909,7 @@ fn a_cooldown_alone_fires_the_cooldown_event_and_not_the_bar_update() {
         })
         .insert_resource(bar)
         .add_systems(Update, super::bar::feed_pet_bar);
-    let script = benilla_ui::script::UiScript::new().unwrap();
+    let mut script = benilla_ui::script::UiScript::new().unwrap();
     script
         .run(
             r#"
@@ -928,7 +928,7 @@ fn a_cooldown_alone_fires_the_cooldown_event_and_not_the_bar_update() {
             .world_mut()
             .non_send_resource_mut::<benilla_ui::script::UiScript>();
         s.resolve();
-        let out = s.eval::<Vec<String>>("return SEEN").unwrap();
+        let out = s.eval_sequence::<String>("return SEEN").unwrap();
         s.run("SEEN = {}").unwrap();
         out
     };
@@ -942,7 +942,7 @@ fn a_cooldown_alone_fires_the_cooldown_event_and_not_the_bar_update() {
     app.world_mut()
         .resource_mut::<PetBar>()
         .cooldowns
-        .start_spell(CLAW, &claw(), 0, std::time::Instant::now());
+        .start_spell(CLAW, &claw(), 0, benilla_time::Instant::now());
     assert_eq!(
         seen(&mut app),
         vec!["PET_BAR_UPDATE_COOLDOWN".to_string()],

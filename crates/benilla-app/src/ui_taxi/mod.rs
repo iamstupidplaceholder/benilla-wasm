@@ -40,6 +40,7 @@ use crate::ui_script::{UiFeed, UiInput};
 use crate::ui_session::{close_npc_session_out_of_range, NpcSession};
 
 mod routing;
+pub(crate) use routing::publish_catalogs;
 use routing::{build_nodes, load_taxi_catalogs, taxi_error_key, TaxiCatalogs, TaxiRouteCache};
 
 /// The open taxi map (`SMSG_SHOWTAXINODES`'s payload, held exactly as the wire delivered it).
@@ -159,11 +160,7 @@ fn feed_taxi(
     if let Some(code) = state.reply.take() {
         match taxi_error_key(code) {
             Some(key) => {
-                let text = script
-                    .lua()
-                    .globals()
-                    .get::<String>(key)
-                    .unwrap_or_default();
+                let text = script.global_string(key).unwrap_or_default();
                 if !text.is_empty() {
                     crate::ui_action::show_messages(
                         &mut script,
@@ -191,11 +188,7 @@ fn feed_taxi(
     // `+0x04`, the text from the key, the cue from `+0x08` — where the surface and the cue used to
     // be hand-carried here, which is exactly the drift the catalog exists to stop.
     if std::mem::take(&mut state.discovered) {
-        let text = script
-            .lua()
-            .globals()
-            .get::<String>("ERR_NEWTAXIPATH")
-            .unwrap_or_default();
+        let text = script.global_string("ERR_NEWTAXIPATH").unwrap_or_default();
         if !text.is_empty() {
             crate::ui_action::show_messages(
                 &mut script,

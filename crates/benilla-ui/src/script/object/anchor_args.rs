@@ -19,12 +19,15 @@
 //! past the `0x7679c8 call 0x767c70`). That half lives in `crate::loader::geometry`, which
 //! therefore resolves its own names and never reaches the ladder here.
 
-use mlua::{Lua, MultiValue, Table, Value};
+use benilla_lua::{LuaContext, MultiValue as LuaMultiValue, Value as LuaValue};
 
 use crate::layout::Point;
 use crate::script::{Model, SCREEN};
 
-use super::{decode_id, point_from_str, prefetch_named_target, resolve_named_target, NamedTarget};
+use super::{
+    decode_id_context, point_from_str, prefetch_named_target_context, resolve_named_target,
+    NamedTarget,
+};
 
 /// What the reference prints where a widget has no name — the literal `0x84c7f0`, reached from
 /// `call [primary_vt+0x4]` (`GetName` → `[widget+0x98]`) returning NULL.
@@ -40,7 +43,7 @@ pub(crate) enum RelTarget {
     /// `lua_touserdata` returned and a table carrying any light userdata at `[0]` is accepted as a
     /// widget. That is a wild pointer, not a behaviour: [`resolve_rel_target`] takes the layout
     /// parent for a table that decodes to no live widget, and says so there.
-    Wrapper(Table),
+    Wrapper(Option<u32>),
     /// A name string, already read out of `_G` with no `Model` guard alive ([`NamedTarget`]).
     Named(NamedTarget),
     /// An explicit `nil` — the **screen root** `ds:[0xcf0bd8]` (`0x7a2710`), *not* the parent. One
@@ -63,8 +66,8 @@ pub(crate) struct PointArgs {
 }
 
 /// `Usage: %s:SetPoint(…)` — `luaL_error(0x87cc28)`, the string read out of the reference image.
-fn usage(who: &str) -> mlua::Error {
-    mlua::Error::runtime(format!(
+fn usage(who: &str) -> benilla_lua::Error {
+    benilla_lua::Error::runtime(format!(
         "Usage: {who}:SetPoint(\"point\" [, region or nil] [, \"relativePoint\"] \
          [, offsetX, offsetY])"
     ))
@@ -72,41 +75,39 @@ fn usage(who: &str) -> mlua::Error {
 
 /// `%s:SetPoint(): Unknown region point` — `0x87cd04`, raised by the 9-entry name scan `0x6f1840`
 /// for either the `point` or a `relativePoint` that is a string it rejects.
-fn unknown_point(who: &str) -> mlua::Error {
-    mlua::Error::runtime(format!("{who}:SetPoint(): Unknown region point"))
+fn unknown_point(who: &str) -> benilla_lua::Error {
+    benilla_lua::Error::runtime(format!("{who}:SetPoint(): Unknown region point"))
 }
 
 /// `%s:%s(): Couldn't find region named '%s'` — `0x87ccd4` for `SetPoint`, `0x87cd84` for
 /// `SetAllPoints`. **No fallback and no no-op**: this is the leg benilla answered with the parent
 /// plus a warning until 2176.
-pub(crate) fn no_such_region(who: &str, verb: &str, name: &str) -> mlua::Error {
-    mlua::Error::runtime(format!(
+pub(crate) fn no_such_region(who: &str, verb: &str, name: &str) -> benilla_lua::Error {
+    benilla_lua::Error::runtime(format!(
         "{who}:{verb}(): Couldn't find region named '{name}'"
     ))
 }
 
 /// `%s:%s(): trying to anchor to itself` — `0x87cca8` / `0x87cd54`, the `[ebp-4] == this+0x24`
 /// compare at `0x7a2764` / `0x7a2aa8`.
-fn anchor_to_self(who: &str, verb: &str) -> mlua::Error {
-    mlua::Error::runtime(format!("{who}:{verb}(): trying to anchor to itself"))
+fn anchor_to_self(who: &str, verb: &str) -> benilla_lua::Error {
+    benilla_lua::Error::runtime(format!("{who}:{verb}(): trying to anchor to itself"))
 }
 
-/// `lua_isnumber 0x6f34d0` — a number, or a string Lua can read as one.
-fn as_number(lua: &Lua, v: &Value) -> Option<f32> {
-    lua.coerce_number(v.clone())
-        .ok()
-        .flatten()
-        .map(|n| n as f32)
+fn as_number_context(value: &LuaValue) -> Option<f32> {
+    match value {
+        LuaValue::Integer(value) => Some(*value as f32),
+        LuaValue::Number(value) => Some(*value as f32),
+        LuaValue::String(value) => value.as_str().ok()?.trim().parse().ok(),
+        _ => None,
+    }
 }
 
-/// `lua_isstring 0x6f3510` — tag 4 **or** 3, so a number is a string here.
-fn as_string(lua: &Lua, v: &Value) -> Option<String> {
-    match v {
-        Value::String(_) | Value::Number(_) | Value::Integer(_) => lua
-            .coerce_string(v.clone())
-            .ok()
-            .flatten()
-            .and_then(|s| s.to_str().ok().map(|r| r.to_string())),
+fn as_string_context(value: &LuaValue) -> Option<String> {
+    match value {
+        LuaValue::String(value) => value.as_str().ok().map(str::to_owned),
+        LuaValue::Integer(value) => Some(value.to_string()),
+        LuaValue::Number(value) => Some(value.to_string()),
         _ => None,
     }
 }
@@ -120,14 +121,14 @@ fn as_string(lua: &Lua, v: &Value) -> Option<String> {
 /// expands to. Both are the caller's to compute, under a short `Model` borrow, **before** this
 /// runs: the `_G` read here is a `lua_gettable` and an `__index` on `_G` can call straight back
 /// into a binding ([`NamedTarget`]).
-pub(crate) fn parse_set_point(
-    lua: &Lua,
-    args: &MultiValue,
+pub(crate) fn parse_set_point_context(
+    lua: &mut impl LuaContext,
+    args: &LuaMultiValue,
     who: &str,
     parent_base: &str,
-) -> mlua::Result<PointArgs> {
+) -> benilla_lua::Result<PointArgs> {
     // arg 2 = point. `lua_isstring(L,2)` false → `0x7a290d` Usage (`0x7a25d2`).
-    let point_str = args.front().and_then(|v| as_string(lua, v));
+    let point_str = args.first().and_then(as_string_context);
     let Some(point_str) = point_str else {
         return Err(usage(who));
     };
@@ -138,13 +139,13 @@ pub(crate) fn parse_set_point(
         return Err(usage(who));
     };
     let target = match rel_arg {
-        Value::String(s) => RelTarget::Named(match s.to_str() {
-            Ok(n) => prefetch_named_target(lua, n.as_ref(), Some(parent_base)),
+        LuaValue::String(s) => RelTarget::Named(match s.as_str() {
+            Ok(n) => prefetch_named_target_context(lua, n, Some(parent_base)),
             Err(_) => NamedTarget::unreadable(),
         }),
-        Value::Table(t) => RelTarget::Wrapper(t.clone()),
-        Value::Nil => RelTarget::Screen,
-        Value::Number(_) | Value::Integer(_) => RelTarget::DefaultParent,
+        LuaValue::Table(table) => RelTarget::Wrapper(decode_id_context(lua, table).ok()),
+        LuaValue::Nil => RelTarget::Screen,
+        LuaValue::Number(_) | LuaValue::Integer(_) => RelTarget::DefaultParent,
         _ => return Err(usage(who)),
     };
 
@@ -161,17 +162,19 @@ pub(crate) fn parse_set_point(
         2
     };
     let mut rel_point = point;
-    if let Some(Value::String(s)) = args.get(cur) {
-        let name = s.to_str()?;
-        rel_point = point_from_str(name.as_ref()).ok_or_else(|| unknown_point(who))?;
+    if let Some(LuaValue::String(s)) = args.get(cur) {
+        let name = s
+            .as_str()
+            .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?;
+        rel_point = point_from_str(name).ok_or_else(|| unknown_point(who))?;
         cur += 1;
     }
 
     // **Both offsets, or neither** (`0x7a2888 je 0x7a28e6`): each is gated on `lua_isnumber`, and
     // one failing zeroes the pair rather than only itself.
     let (x, y) = match (
-        args.get(cur).and_then(|v| as_number(lua, v)),
-        args.get(cur + 1).and_then(|v| as_number(lua, v)),
+        args.get(cur).and_then(as_number_context),
+        args.get(cur + 1).and_then(as_number_context),
     ) {
         (Some(x), Some(y)) => (x, y),
         _ => (0.0, 0.0),
@@ -195,13 +198,19 @@ pub(crate) fn parse_set_point(
 ///    `f:SetAllPoints(42)` stringifies and looks up `_G["42"]`, where `SetPoint` tests
 ///    `lua_type == 4` strictly and routes a number to the offset shorthand.
 /// 3. There is no `relativePoint` or offset parsing at all.
-pub(crate) fn parse_set_all_points(lua: &Lua, arg: Option<&Value>, parent_base: &str) -> RelTarget {
+pub(crate) fn parse_set_all_points_context(
+    lua: &mut impl LuaContext,
+    arg: Option<&LuaValue>,
+    parent_base: &str,
+) -> RelTarget {
     match arg {
-        Some(Value::Table(t)) => RelTarget::Wrapper(t.clone()),
-        Some(Value::Nil) => RelTarget::Screen,
+        Some(LuaValue::Table(table)) => RelTarget::Wrapper(decode_id_context(lua, table).ok()),
+        Some(LuaValue::Nil) => RelTarget::Screen,
         // `lua_isstring` — a NUMBER takes the name path here, unlike `SetPoint`.
-        Some(v) => match as_string(lua, v) {
-            Some(n) => RelTarget::Named(prefetch_named_target(lua, &n, Some(parent_base))),
+        Some(value) => match as_string_context(value) {
+            Some(name) => {
+                RelTarget::Named(prefetch_named_target_context(lua, &name, Some(parent_base)))
+            }
             None => RelTarget::DefaultParent,
         },
         None => RelTarget::DefaultParent,
@@ -213,17 +222,18 @@ pub(crate) fn parse_set_all_points(lua: &Lua, arg: Option<&Value>, parent_base: 
 ///
 /// The **wrapper** arm takes `default_parent` where the reference would take a wild pointer (see
 /// [`RelTarget::Wrapper`]); every other arm is the reference's.
-pub(crate) fn resolve_rel_target(
+pub(crate) fn resolve_rel_target_context(
     model: &Model,
     target: &RelTarget,
     who: &str,
     verb: &str,
     me: u32,
     default_parent: u32,
-) -> mlua::Result<u32> {
+) -> benilla_lua::Result<u32> {
     let id = match target {
-        RelTarget::Wrapper(t) => decode_id(t)
-            .ok()
+        RelTarget::Wrapper(id) => id
+            .as_ref()
+            .copied()
             .filter(|id| model.id_to_frame.contains_key(id) || model.id_to_region.contains_key(id))
             .unwrap_or(default_parent),
         RelTarget::Named(nt) => {
@@ -249,14 +259,18 @@ pub(crate) fn resolve_rel_target(
 /// does not fall back to the parent, which is what benilla did until 2176.
 ///
 /// `$parent` is already expanded by the caller, so no base is taken.
-pub(crate) fn resolve_xml_relative_to(lua: &Lua, name: &str) -> Option<Table> {
+pub(crate) fn resolve_xml_relative_to_context(
+    lua: &mut impl LuaContext,
+    name: &str,
+) -> Option<benilla_lua::Table> {
     // ONE `_G` read, and the wrapper it produced is the one handed back — re-reading `_G` to fetch
     // the table again would be a second `lua_gettable`, and an `__index` is allowed to answer
     // twice differently.
-    let nt = prefetch_named_target(lua, name, None);
+    let nt = prefetch_named_target_context(lua, name, None);
     let model = lua.app_data_ref::<Model>().expect("model");
     resolve_named_target(&model, &nt)?;
+    drop(model);
     // The wrapper the ladder's TABLE arm takes — resolved here so the binding never sees a name
     // from the XML path and so its raise can never reach a loading document.
-    nt.wrapper.clone()
+    nt.wrapper
 }

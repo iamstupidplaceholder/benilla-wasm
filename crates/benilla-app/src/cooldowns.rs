@@ -26,7 +26,7 @@
 //! widget animates itself from `(start, duration)` and hides at the end, the reference
 //! `Cooldown.lua` machine).
 
-use std::time::{Duration, Instant};
+use benilla_time::{Duration, Instant};
 
 use bevy::prelude::*;
 

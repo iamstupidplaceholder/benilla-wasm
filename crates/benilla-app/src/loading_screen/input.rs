@@ -152,6 +152,9 @@ pub(crate) struct CoverInput;
 ///   window.
 /// - Otherwise nothing has moved since we stashed it, so the stash *is* where the pointer is and
 ///   writing it back moves nothing.
+///
+/// Browser hosts cannot perform even this stationary warp. They discard the stash on reveal
+/// and wait for the next real cursor event to restore hover coordinates.
 #[derive(Resource, Default)]
 pub(crate) struct CoveredPointer {
     /// The last position seen while covered, in physical pixels.
@@ -260,6 +263,7 @@ fn swallow_input_under_the_cover(
     mut departures: MessageReader<CursorLeft>,
     mut buttons: Buttons,
     mut raw: RawInput,
+    #[cfg(target_arch = "wasm32")] startup: Res<super::startup::StartupCover>,
 ) {
     // **Winit's last word on the pointer, read before anything below can overwrite it.** The
     // window's position field already reflects the LAST cursor event of this frame (bevy_winit
@@ -278,18 +282,24 @@ fn swallow_input_under_the_cover(
         pointer.left = true;
     }
 
-    if !screen.covering() {
+    let covered = screen.covering();
+    #[cfg(target_arch = "wasm32")]
+    let covered = covered || startup.active;
+    if !covered {
         // The way out: hand the window its pointer back, once, on the frame the cover drops — and
         // only when that hand-back is TRUE, because the write is a hardware warp (see
         // [`CoveredPointer`]). Winit's own fresher answer wins; a pointer that has left the window,
         // or a window that does not have the keyboard, gets nothing.
         if pointer.blanked {
             pointer.blanked = false;
-            let stashed = pointer.stashed.take();
-            let left = std::mem::take(&mut pointer.left);
+            let _stashed = pointer.stashed.take();
+            let _left = std::mem::take(&mut pointer.left);
+            // Web cursor warping is unsupported, including a write of the same
+            // saved position. Only a fresh host cursor event can restore it.
+            #[cfg(not(target_arch = "wasm32"))]
             if let Ok(mut window) = window.single_mut() {
-                if here.is_none() && !left && window.focused {
-                    window.set_physical_cursor_position(stashed);
+                if here.is_none() && !_left && window.focused {
+                    window.set_physical_cursor_position(_stashed);
                 }
             }
         }

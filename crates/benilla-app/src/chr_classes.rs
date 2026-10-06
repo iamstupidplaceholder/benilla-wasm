@@ -35,7 +35,7 @@ fn load_chr_classes(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_chr_classes(&mut chain)
+        benilla_formats::load_chr_classes(&mut *chain)
     };
     match loaded {
         Ok(table) => commands.insert_resource(ChrClassTable(table)),

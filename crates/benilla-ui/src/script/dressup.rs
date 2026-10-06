@@ -27,9 +27,8 @@
 //!   stock `DressUpItemLink` hands it the digits it `gsub`bed out of the `|Hitem:` link. It gates
 //!   on nothing — no class, level or proficiency check anywhere in the path (`DressUpFrame.lua:2-16`).
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table, Value, Vm};
 
-use super::object::frame_handle_of;
 use super::Model;
 use crate::widget::FrameKind;
 
@@ -64,7 +63,7 @@ impl super::UiScript {
     }
 }
 
-fn queue(lua: &Lua, intent: DressUpIntent) {
+fn queue(lua: &mut impl LuaContext, intent: DressUpIntent) {
     lua.app_data_mut::<Model>()
         .expect("model app_data")
         .dressup_intents
@@ -73,8 +72,11 @@ fn queue(lua: &Lua, intent: DressUpIntent) {
 
 /// `PlayerModel`'s `SetUnit`/`RefreshUnit` on a pane that is a `DressUpModel`: the rebuild that
 /// drops every substitution (the module doc). A no-op on any other pane.
-pub(super) fn redress_if_dressup(lua: &Lua, this: &Table) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+pub(super) fn redress_if_dressup(
+    lua: &mut impl LuaContext,
+    this: &Table,
+) -> benilla_lua::Result<()> {
+    let h = super::object::frame_handle_of_context(lua, this)?;
     let is_dressup = lua
         .app_data_ref::<Model>()
         .expect("model app_data")
@@ -94,7 +96,7 @@ fn item_arg(v: &Value) -> i64 {
         Value::Integer(i) => *i,
         Value::Number(n) => n.trunc() as i64,
         Value::String(s) => s
-            .to_str()
+            .as_str()
             .ok()
             .and_then(|t| t.trim().parse::<f64>().ok())
             .map_or(0, |n| n.trunc() as i64),
@@ -102,43 +104,38 @@ fn item_arg(v: &Value) -> i64 {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     let m = lua.create_table()?;
 
     // `Undress()` — `0x84f190` -> `0x504c00` -> `0x504490`.
-    m.set(
-        "Undress",
-        lua.create_function(|lua, this: Table| {
-            frame_handle_of(lua, &this)?;
-            queue(lua, DressUpIntent::Undress);
-            Ok(())
-        })?,
-    )?;
+    let undress = lua.create_function("DressUpModel.Undress", |lua, this: Table| {
+        super::object::frame_handle_of_context(lua, &this)?;
+        queue(lua, DressUpIntent::Undress);
+        Ok(())
+    })?;
+    lua.table_set(&m, "Undress", undress)?;
 
     // `Dress()` — `0x504cd0`, the Reset button (`DressUpFrame.xml:182`).
-    m.set(
-        "Dress",
-        lua.create_function(|lua, this: Table| {
-            frame_handle_of(lua, &this)?;
-            queue(lua, DressUpIntent::Dress);
-            Ok(())
-        })?,
-    )?;
+    let dress = lua.create_function("DressUpModel.Dress", |lua, this: Table| {
+        super::object::frame_handle_of_context(lua, &this)?;
+        queue(lua, DressUpIntent::Dress);
+        Ok(())
+    })?;
+    lua.table_set(&m, "Dress", dress)?;
 
     // `TryOn(item)` — `0x504d90` -> `0x504540(itemId)`. Item 0 (a non-number, a link string) looks
     // up nothing in the client's cache and previews nothing; so does a negative one here.
-    m.set(
-        "TryOn",
-        lua.create_function(|lua, (this, item): (Table, Value)| {
-            frame_handle_of(lua, &this)?;
+    let try_on =
+        lua.create_function("DressUpModel.TryOn", |lua, (this, item): (Table, Value)| {
+            super::object::frame_handle_of_context(lua, &this)?;
             if let Ok(id) = u32::try_from(item_arg(&item)) {
                 if id != 0 {
                     queue(lua, DressUpIntent::TryOn(id));
                 }
             }
             Ok(())
-        })?,
-    )?;
+        })?;
+    lua.table_set(&m, "TryOn", try_on)?;
 
     lua.set_named_registry_value(REG_DRESSUPMODEL_METHODS, m)
 }
@@ -160,7 +157,7 @@ mod tests {
     /// and a plain PlayerModel does not answer the three (the chain runs derived → base only).
     #[test]
     fn a_dress_up_model_is_a_player_model_plus_three_and_the_chain_runs_one_way() {
-        let s = room();
+        let mut s = room();
         s.run(r#"pm = CreateFrame("PlayerModel", "PMOnly", UIParent)"#)
             .unwrap();
         for verb in [

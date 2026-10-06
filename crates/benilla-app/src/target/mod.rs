@@ -53,11 +53,13 @@ use benilla_ui::script::UiScript;
 use crate::creature_anim::Engaged;
 use crate::net::{ClientCommand, Guid, NetCommands, ObjectStore, SelfPlayer};
 use crate::ui_script::InspectMode;
-use benilla_assets::AssetSet;
 use benilla_world::interact::{WorldClick, WorldRightClick};
 use benilla_world::schedule::WorldStage;
 
 mod by_name;
+pub(crate) mod catalogs;
+#[cfg(feature = "port-gates")]
+pub(crate) mod port_gates;
 // `pub(crate)` for the chest live probe alone (decision 1471): it resolves a GameObject's
 // right-click action through the very same [`click::resolve_go_action`] the mouse does, rather
 // than re-deciding lockless-vs-opener itself — an instrument that guesses the packet is testing
@@ -405,15 +407,45 @@ pub(crate) fn on_cvar(
 /// Targeting: click-to-select + the ground selection ring.
 pub(crate) struct TargetPlugin;
 
+/// The production scene-pick phase, independent of selection/action routing.
+/// Its outputs are real frame state for UI input and targeting consumers.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TargetPick;
+
+pub(crate) struct WorldPickPlugin;
+
+impl Plugin for WorldPickPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Hovered>()
+            .init_resource::<HoveredObject>()
+            .init_resource::<PickOcclusion>()
+            .configure_sets(Update, TargetPick.in_set(TargetUpdate))
+            .add_systems(
+                Update,
+                (
+                    hover::update_pick_occlusion,
+                    hover::update_hover,
+                    hover::update_hovered_object,
+                )
+                    .chain()
+                    .in_set(TargetPick)
+                    .after(WorldStage::Input),
+            );
+    }
+}
+
 impl Plugin for TargetPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<catalogs::TargetCatalogsPlugin>() {
+            app.add_plugins(catalogs::TargetCatalogsPlugin);
+        }
+        if !app.is_plugin_added::<WorldPickPlugin>() {
+            app.add_plugins(WorldPickPlugin);
+        }
         app.add_observer(on_cvar);
         app.init_resource::<Selection>()
             .init_resource::<ClickConfig>()
             .init_resource::<AssistAttack>()
-            .init_resource::<Hovered>()
-            .init_resource::<HoveredObject>()
-            .init_resource::<PickOcclusion>()
             .init_resource::<PressPick>()
             .init_resource::<WorldCursor>()
             .init_resource::<CombatFlash>()
@@ -423,13 +455,15 @@ impl Plugin for TargetPlugin {
             .add_message::<TargetByNameRequest>()
             .add_message::<AssistRequest>()
             .add_message::<click::DeselectGuid>()
+            .add_systems(Startup, (ring::setup_ring, reticle::setup_reticle))
+            // The press latch reads the previous frame's pick/cursor, before
+            // the common scene-pick phase refreshes either hover output.
             .add_systems(
-                Startup,
-                (
-                    ring::setup_ring,
-                    reticle::setup_reticle,
-                    (ring::load_factions, scan::load_creature_types).after(AssetSet::Open),
-                ),
+                Update,
+                latch_press_pick
+                    .in_set(TargetUpdate)
+                    .after(WorldStage::Input)
+                    .before(TargetPick),
             )
             // All after input (so this frame's `WorldClick` from `player::control` is available), in
             // order: refresh the hovered unit, resolve its context cursor, route the right-click
@@ -440,12 +474,6 @@ impl Plugin for TargetPlugin {
             .add_systems(
                 Update,
                 (
-                    // Grouped as one element (the outer chain is at Bevy's 20-tuple limit), and
-                    // ordered: the latch FIRST, ahead of every pick refresh, to freeze what the
-                    // press was over while it still exists (decision 1122 — see [`latch_press_pick`]).
-                    (latch_press_pick, hover::update_pick_occlusion).chain(),
-                    hover::update_hover,
-                    hover::update_hovered_object,
                     cursor_mode::classify_cursor,
                     // The right button's down-edge cancel first (the ref's OnMouseDown hook,
                     // 0792): the frame the press lands, the cursor drive below already reads
@@ -513,6 +541,7 @@ impl Plugin for TargetPlugin {
                 )
                     .chain()
                     .in_set(TargetUpdate)
+                    .after(TargetPick)
                     .after(WorldStage::Input),
             )
             // The model brighten writes MeshTag bit 31 — PostUpdate, after every Update payload

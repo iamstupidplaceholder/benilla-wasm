@@ -29,7 +29,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const AREA_POI: &str = "DBFilesClient\\AreaPOI.dbc";
 
@@ -119,7 +119,7 @@ fn schema() -> Schema {
 }
 
 /// Read `AreaPOI.dbc` off the patch chain into an [`AreaPoiCatalog`].
-pub fn load_area_poi_catalog(chain: &mut Chain) -> Result<AreaPoiCatalog> {
+pub fn load_area_poi_catalog(chain: &mut impl FileSource) -> Result<AreaPoiCatalog> {
     let bytes = chain.read_file(AREA_POI).context("reading AreaPOI.dbc")?;
     let rs = parse(&bytes, schema(), "AreaPOI")?;
     let mut rows = Vec::with_capacity(rs.records().len());

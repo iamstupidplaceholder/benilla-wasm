@@ -51,6 +51,7 @@
 
 use std::sync::Arc;
 
+use benilla_assets::gpu_table::{write_gpu_table, GpuTable};
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::renderer::RenderQueue;
@@ -102,9 +103,7 @@ pub fn pack(rgb: [u8; 3]) -> u32 {
 /// instance the reference writes (`0x472939 -> 0x710cf0`, the char-select ghost proc). It carries its
 /// OWN rig slot, allocated by the booth spawn, so nothing a world unit does can reach it.
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct InstanceTintMirrors(
-    pub std::collections::HashMap<&'static str, bevy::render::render_resource::Buffer>,
-);
+pub struct InstanceTintMirrors(pub std::collections::HashMap<&'static str, GpuTable>);
 
 /// The live per-slot tint table, indexed by the instance's `MeshTag` rig slot. `Arc`-shared so the
 /// render-world extract is a pointer bump, and generation-stamped so a world with nothing tinted
@@ -178,8 +177,11 @@ fn upload_instance_tints(
     }
     *last = Some(gate);
     let words = bytemuck::cast_slice(tints.slots.as_slice());
-    for buffer in shared.iter().map(|s| &s.0).chain(mirrors.iter()) {
-        queue.write_buffer(buffer, region_offset(), words);
+    for buffer in shared.iter().map(|s| &s.0) {
+        write_gpu_table(&queue, buffer, region_offset(), words);
+    }
+    for buffer in &mirrors {
+        write_gpu_table(&queue, buffer, region_offset(), words);
     }
 }
 

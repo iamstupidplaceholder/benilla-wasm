@@ -1,31 +1,32 @@
 //! Region method-table cluster: **layout** — size, anchors and the resolved-rect readers.
 //! Split out of `region.rs` at the 0716 file-size budget.
 
-use mlua::{Lua, MultiValue, Table, Value};
+use benilla_lua::{MultiValue as LuaMultiValue, Table as LuaTable, Value as LuaValue, Vm};
 
 use crate::layout::{Anchor, Point};
-use crate::script::object::anchor_args::{parse_set_all_points, resolve_rel_target};
-use crate::script::object::{anchor_bits_eq, frame_wrapper, point_name};
+use crate::script::object::anchor_args::{
+    parse_set_all_points_context, resolve_rel_target_context,
+};
+use crate::script::object::{anchor_bits_eq, frame_wrapper_context, point_name};
 use crate::script::region_map::{set_shared, Side};
 use crate::script::{Model, SCREEN};
 
 /// Resolve `self` (a region wrapper) to its live [`RegionHandle`].
 use super::{
-    measured_wh, region_handle_of, region_ladder_context, region_owner_id, region_set_point,
-    size_bits_eq,
+    measured_wh_context, region_handle_of_context, region_ladder_context_context, region_owner_id,
+    region_set_point_context, region_wrapper_context, size_bits_eq,
 };
 
-/// Populate `m`'s layout methods (see the module doc).
-pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install_context(vm: &mut Vm, m: &LuaTable) -> benilla_lua::Result<()> {
     // Region explicit size — fills the axes the region's anchors don't pin (unread under an
     // implicit SetAllPoints's two corners; decision 1310).
     set_shared(
-        lua,
+        vm,
         m,
         Side::Region,
         "SetWidth",
-        |lua, (this, w): (Table, f32)| {
-            let rh = region_handle_of(lua, &this)?;
+        |lua, (this, w): (LuaTable, f32)| {
+            let rh = region_handle_of_context(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let d = model.region_data.entry(rh).or_default();
             let new = Some((w, d.size.map_or(0.0, |s| s.1)));
@@ -43,12 +44,12 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     )?;
 
     set_shared(
-        lua,
+        vm,
         m,
         Side::Region,
         "SetHeight",
-        |lua, (this, h): (Table, f32)| {
-            let rh = region_handle_of(lua, &this)?;
+        |lua, (this, h): (LuaTable, f32)| {
+            let rh = region_handle_of_context(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let d = model.region_data.entry(rh).or_default();
             let new = Some((d.size.map_or(0.0, |s| s.0), h));
@@ -68,12 +69,12 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // **No `SetSize`** — the frame twin's note in `object/layout_methods.rs` applies here
     // unchanged: an Era verb 1.12's Region map does not carry (decision 2142).
 
-    set_shared(lua, m, Side::Region, "GetWidth", |lua, this: Table| {
-        Ok(measured_wh(lua, &this)?.0)
+    set_shared(vm, m, Side::Region, "GetWidth", |lua, this: LuaTable| {
+        Ok(measured_wh_context(lua, &this)?.0)
     })?;
 
-    set_shared(lua, m, Side::Region, "GetHeight", |lua, this: Table| {
-        Ok(measured_wh(lua, &this)?.1)
+    set_shared(vm, m, Side::Region, "GetHeight", |lua, this: LuaTable| {
+        Ok(measured_wh_context(lua, &this)?.1)
     })?;
 
     // GetLeft/GetRight/GetTop/GetBottom — the region's RESOLVED edges in its OWNER's units (y-up;
@@ -89,8 +90,8 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         ("GetTop", 2u8),
         ("GetBottom", 3u8),
     ] {
-        set_shared(lua, m, Side::Region, name, move |lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
+        set_shared(vm, m, Side::Region, name, move |lua, this: LuaTable| {
+            let rh = region_handle_of_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model");
             let inv = 1.0 / owner_scale(&model, rh);
             Ok(model.region_resolved.get(&rh).map(|r| {
@@ -109,20 +110,20 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // defaults to the **owner frame**; a named one may be a frame or a sibling region (the real
     // XML anchors regions to sibling regions everywhere — merchant label plate → `$parentSlot`).
     set_shared(
-        lua,
+        vm,
         m,
         Side::Region,
         "SetPoint",
-        |lua, (this, rest): (Table, MultiValue)| region_set_point(lua, &this, &rest),
+        |lua, (this, rest): (LuaTable, LuaMultiValue)| region_set_point_context(lua, &this, &rest),
     )?;
 
     set_shared(
-        lua,
+        vm,
         m,
         Side::Region,
         "ClearAllPoints",
-        |lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
+        |lua, this: LuaTable| {
+            let rh = region_handle_of_context(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let d = model.region_data.entry(rh).or_default();
             // Names its node, the frame twin's rule and for the frame twin's reason (decision
@@ -139,19 +140,20 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     )?;
 
     set_shared(
-        lua,
+        vm,
         m,
         Side::Region,
         "SetAllPoints",
-        |lua, (this, rest): (Table, MultiValue)| {
-            let rh = region_handle_of(lua, &this)?;
+        |lua, (this, rest): (LuaTable, LuaMultiValue)| {
+            let rh = region_handle_of_context(lua, &this)?;
             // `who`/`$parent` first, then the `_G` read, then the guard — `region_ladder_context`.
-            let (who, base) = region_ladder_context(lua, rh);
-            let target = parse_set_all_points(lua, rest.front(), &base);
+            let (who, base) = region_ladder_context_context(lua, rh);
+            let target = parse_set_all_points_context(lua, rest.first(), &base);
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let me = model.region_id(rh);
             let owner = region_owner_id(&mut model, rh);
-            let rel_id = resolve_rel_target(&model, &target, &who, "SetAllPoints", me, owner)?;
+            let rel_id =
+                resolve_rel_target_context(&model, &target, &who, "SetAllPoints", me, owner)?;
             let pair = [
                 Anchor::new(Point::TopLeft, rel_id, Point::TopLeft, 0.0, 0.0),
                 Anchor::new(Point::BottomRight, rel_id, Point::BottomRight, 0.0, 0.0),
@@ -164,9 +166,12 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     .zip(&pair)
                     .all(|(a, b)| anchor_bits_eq(a, b));
             if !same {
+                let old: Vec<u32> = data.anchors.iter().map(|a| a.relative_to).collect();
                 data.anchors.clear();
                 data.anchors.extend_from_slice(&pair);
-                model.touch_layout();
+                // Reuse the same exact edge patch as SetPoint/ClearAllPoints;
+                // missing region nodes still take the conservative full derive.
+                model.touch_layout_retarget_region(rh, &old, &[rel_id, rel_id]);
             }
             Ok(())
         },
@@ -183,13 +188,13 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
 
     // GetParent() → the OWNER frame's wrapper. A region always has one (`region_owner_id` falls
     // back to the owner for every unresolved case), so unlike the frame twin this never answers nil.
-    set_shared(lua, m, Side::Region, "GetParent", |lua, this: Table| {
-        let rh = region_handle_of(lua, &this)?;
+    set_shared(vm, m, Side::Region, "GetParent", |lua, this: LuaTable| {
+        let rh = region_handle_of_context(lua, &this)?;
         let owner = {
             let mut model = lua.app_data_mut::<Model>().expect("model");
             region_owner_id(&mut model, rh)
         };
-        frame_wrapper(lua, owner)
+        frame_wrapper_context(lua, owner)
     })?;
 
     // GetCenter() → the resolved rect's midpoint, or a nil PAIR before the first resolve — the same
@@ -199,29 +204,35 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // readers report raw resolved units; scaling only the centre would make `GetCenter()` disagree
     // with `(GetLeft() + GetRight()) / 2` on any scaled subtree — a contradiction inside one method
     // table is worse than a missing division, and regions have no scale of their own to divide by.
-    set_shared(lua, m, Side::Region, "GetCenter", |lua, this: Table| {
-        let rh = region_handle_of(lua, &this)?;
+    set_shared(vm, m, Side::Region, "GetCenter", |lua, this: LuaTable| {
+        let rh = region_handle_of_context(lua, &this)?;
         let model = lua.app_data_ref::<Model>().expect("model");
         let inv = 1.0 / owner_scale(&model, rh);
         Ok(match model.region_resolved.get(&rh) {
             Some(r) => (
-                Value::Number(f64::from(inv * (r.left + r.right) * 0.5)),
-                Value::Number(f64::from(inv * (r.bottom + r.top) * 0.5)),
+                LuaValue::Number(f64::from(inv * (r.left + r.right) * 0.5)),
+                LuaValue::Number(f64::from(inv * (r.bottom + r.top) * 0.5)),
             ),
-            None => (Value::Nil, Value::Nil),
+            None => (LuaValue::Nil, LuaValue::Nil),
         })
     })?;
 
     // GetNumPoints() → how many anchors this region carries. Absent on our FRAMES too, which is the
     // same drift one table up; this side is what the corpus named.
-    set_shared(lua, m, Side::Region, "GetNumPoints", |lua, this: Table| {
-        let rh = region_handle_of(lua, &this)?;
-        let model = lua.app_data_ref::<Model>().expect("model");
-        Ok(model
-            .region_data
-            .get(&rh)
-            .map_or(0, |d| d.anchors.len() as i64))
-    })?;
+    set_shared(
+        vm,
+        m,
+        Side::Region,
+        "GetNumPoints",
+        |lua, this: LuaTable| {
+            let rh = region_handle_of_context(lua, &this)?;
+            let model = lua.app_data_ref::<Model>().expect("model");
+            Ok(model
+                .region_data
+                .get(&rh)
+                .map_or(0, |d| d.anchors.len() as i64))
+        },
+    )?;
 
     // GetPoint([n]) → point, relativeTo, relativePoint, xOfs, yOfs — the n-th (1-based, default
     // first) anchor, mirroring the frame twin including its out-of-range answer (five nils).
@@ -232,12 +243,12 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // matched against both tables and answered with the matching wrapper kind; handing back a frame
     // wrapper for a region id would be a working-looking handle onto the wrong object.
     set_shared(
-        lua,
+        vm,
         m,
         Side::Region,
         "GetPoint",
-        |lua, (this, n): (Table, Option<i64>)| {
-            let rh = region_handle_of(lua, &this)?;
+        |lua, (this, n): (LuaTable, Option<i64>)| {
+            let rh = region_handle_of_context(lua, &this)?;
             let anchor = {
                 let model = lua.app_data_ref::<Model>().expect("model");
                 let idx = (n.unwrap_or(1).max(1) - 1) as usize;
@@ -248,7 +259,13 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     .cloned()
             };
             let Some(a) = anchor else {
-                return Ok((Value::Nil, Value::Nil, Value::Nil, Value::Nil, Value::Nil));
+                return Ok((
+                    LuaValue::Nil,
+                    LuaValue::Nil,
+                    LuaValue::Nil,
+                    LuaValue::Nil,
+                    LuaValue::Nil,
+                ));
             };
             let rel = {
                 let is_frame = {
@@ -256,19 +273,19 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     model.id_to_frame.contains_key(&a.relative_to)
                 };
                 if a.relative_to == SCREEN {
-                    Value::Nil
+                    LuaValue::Nil
                 } else if is_frame {
-                    Value::Table(frame_wrapper(lua, a.relative_to)?)
+                    LuaValue::Table(frame_wrapper_context(lua, a.relative_to)?)
                 } else {
-                    Value::Table(super::region_wrapper(lua, a.relative_to)?)
+                    LuaValue::Table(region_wrapper_context(lua, a.relative_to)?)
                 }
             };
             Ok((
-                Value::String(lua.create_string(point_name(a.point))?),
+                LuaValue::from(point_name(a.point)),
                 rel,
-                Value::String(lua.create_string(point_name(a.relative_point))?),
-                Value::Number(f64::from(a.x_off)),
-                Value::Number(f64::from(a.y_off)),
+                LuaValue::from(point_name(a.relative_point)),
+                LuaValue::Number(f64::from(a.x_off)),
+                LuaValue::Number(f64::from(a.y_off)),
             ))
         },
     )?;

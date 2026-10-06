@@ -76,6 +76,12 @@ mod smoke;
 
 pub(crate) use load::pvp_rp;
 
+/// Whether this transport can keep the realmd session parked while switching
+/// world sockets. Native can; fixed-upstream browser gateways currently cannot.
+pub(crate) const fn change_realm_available() -> bool {
+    true
+}
+
 use bevy::prelude::*;
 
 use crate::net::{RealmChoice, RealmListMessage, RealmRequest};
@@ -346,7 +352,7 @@ impl Plugin for RealmSelectPlugin {
                 apply_realm_policy,
                 // Ungated by state on purpose: the dialog stands over the login screen and over
                 // character select alike, and `shown` is the only thing that decides.
-                screen::drive_screen,
+                screen::drive_screen.after(crate::glue::GlueArtLoad),
                 // Input first, then the row refresh — a click that moved the highlight shows on
                 // the frame it landed, not the next one.
                 smoke::debug_realm_smoke,

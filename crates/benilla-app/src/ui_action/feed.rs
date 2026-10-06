@@ -161,7 +161,7 @@ pub(super) fn feed_actions(
             } = fail;
             let pet = caster == crate::ui_action::Caster::Pet;
             let d = spells.as_ref().and_then(|s| s.catalog.get(spell_id));
-            let get = |key: &str| script.lua().globals().get::<String>(key).ok();
+            let mut get = |key: &str| script.global_string(key);
             // The displayed line first, the log line off it — the reference's own order, and the
             // reason the two can no longer drift apart (see the combat-log twin below).
             let line = (|| -> Option<cast_fail::CastFailLine> {
@@ -183,7 +183,7 @@ pub(super) fn feed_actions(
                         .flatten()
                     {
                         let key = cast_fail::CAST_FAIL_KEYS[reason as usize];
-                        return get(key)
+                        return (&mut get)(key)
                             .filter(|s| !s.is_empty())
                             .map(|t| cast_fail::CastFailLine::passthrough(t.replace("%s", &name)));
                     }
@@ -217,7 +217,7 @@ pub(super) fn feed_actions(
                         .requirement_display_name(ITEM_CLASS_PROJECTILE, 1u32 << (arg & 31))
                     {
                         let key = cast_fail::CAST_FAIL_KEYS[reason as usize];
-                        return get(key)
+                        return (&mut get)(key)
                             .filter(|s| !s.is_empty())
                             .map(|t| cast_fail::CastFailLine::passthrough(t.replace("%s", &name)));
                     }
@@ -258,7 +258,7 @@ pub(super) fn feed_actions(
                     } else {
                         "SPELL_FAILED_REAGENTS"
                     };
-                    return get(key)
+                    return (&mut get)(key)
                         .filter(|s| !s.is_empty())
                         .map(|t| cast_fail::CastFailLine::passthrough(t.replace("%s", &name)));
                 }
@@ -270,7 +270,7 @@ pub(super) fn feed_actions(
                         arg: fail.arg,
                         ..fail_args
                     },
-                    &get,
+                    &mut get,
                 )
             })();
             // The retest instrument for this whole bug class (decision 1313). A red-line defect is
@@ -368,7 +368,7 @@ pub(super) fn feed_actions(
         .drain(..)
         .filter_map(|(mount, code)| {
             let key = mount_result_key(mount, code)?;
-            Some((key, script.lua().globals().get::<String>(key).ok()?))
+            Some((key, script.global_string(key)?))
         })
         .collect();
     show_messages(
@@ -390,8 +390,8 @@ pub(super) fn feed_actions(
         .drain(..)
         .filter_map(|reason| {
             let reason_key = benilla_protocol::messages::pet_tame_failure_key(reason);
-            let reason_text = script.lua().globals().get::<String>(reason_key).ok()?;
-            super::keyed_line_s(&script, "ERR_TAME_FAILED", &[&reason_text])
+            let reason_text = script.global_string(reason_key)?;
+            super::keyed_line_s(&mut script, "ERR_TAME_FAILED", &[&reason_text])
         })
         .collect();
     show_messages(&mut script, &mut sink, "ui_action", tame_texts);
@@ -404,8 +404,7 @@ pub(super) fn feed_actions(
         .0
         .drain(..)
         .filter_map(|e| {
-            ui_error_text(&e, &|key| script.lua().globals().get::<String>(key).ok())
-                .map(|t| Shown::keyed(e.key, t))
+            ui_error_text(&e, &mut |key| script.global_string(key)).map(|t| Shown::keyed(e.key, t))
         })
         .collect();
     show_messages(&mut script, &mut sink, "ui_action", key_lines);
@@ -430,8 +429,7 @@ pub(super) fn feed_actions(
         .into_iter()
         .filter_map(|key| {
             let e = UiError::key(key);
-            ui_error_text(&e, &|k| script.lua().globals().get::<String>(k).ok())
-                .map(|t| Shown::keyed(e.key, t))
+            ui_error_text(&e, &mut |k| script.global_string(k)).map(|t| Shown::keyed(e.key, t))
         })
         .collect();
     show_messages(&mut script, &mut sink, "ui_action", engine_lines);

@@ -9,7 +9,7 @@
 //! The one thing that is genuinely not shared with [`super`] is the **filter**: see
 //! [`PlayerBuffFilter`] for why reusing the Era parser would be a silent bug rather than a tidy-up.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{FromLua, LuaContext, MultiValue, Value, Vm};
 
 use super::{cancel_authorized, AuraState, Model};
 
@@ -76,12 +76,10 @@ impl PlayerBuffFilter {
 /// `luaL_where` + `lua_pushvfstring` + `lua_concat` + `lua_error`) rather than returning nil, so an
 /// addon sees the same "Usage:" line the reference prints. Lua 5.1's `lua_isnumber` accepts a numeric
 /// *string*, and [`Lua::coerce_number`] is that same coercion.
-fn buff_index_arg(lua: &Lua, v: Value, usage: &'static str) -> mlua::Result<i64> {
-    match lua.coerce_number(v)? {
-        // `__ftol` truncates toward zero; `as i64` on f64 does the same (and saturates).
-        Some(n) => Ok(n as i64),
-        None => Err(mlua::Error::RuntimeError(usage.into())),
-    }
+fn buff_index_arg(value: Value, usage: &'static str) -> benilla_lua::Result<i64> {
+    f64::from_lua(value)
+        .map(|number| number as i64)
+        .map_err(|_| benilla_lua::Error::runtime(usage))
 }
 
 /// The player's display cache — the reference's `0xbc6040`, which for us **is** the pushed
@@ -97,7 +95,7 @@ fn buff_index_arg(lua: &Lua, v: Value, usage: &'static str) -> mlua::Result<i64>
 /// `+0x9`, which `BuildBuffRecord` never rewrites when it clears — so the real client hands back the
 /// previous occupant's stack count. It is unreachable from any guarded call site, and stale memory is
 /// not a mechanism worth mirroring; we answer with the absent-record default, `1`.)
-fn player_buff_record(lua: &Lua, pos: i64) -> Option<AuraState> {
+fn player_buff_record(lua: &impl LuaContext, pos: i64) -> Option<AuraState> {
     let pos = usize::try_from(pos).ok()?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     model.auras.get("player")?.get(pos).cloned()
@@ -111,7 +109,7 @@ fn player_buff_record(lua: &Lua, pos: i64) -> Option<AuraState> {
 /// the hit test is an equality (`cmp ebx,[ebp-4]; je`), so it walks the whole cache and falls out
 /// with `*outPos` still at its pre-seeded `-1`.
 fn enumerate_player_buff(
-    lua: &Lua,
+    lua: &impl LuaContext,
     index: i64,
     filter: PlayerBuffFilter,
 ) -> Option<(usize, AuraState)> {
@@ -131,9 +129,7 @@ fn enumerate_player_buff(
 
 /// Register the six 1.12 globals. Signatures are byte-verified — see [`super`]'s header table for
 /// the addresses and the corpus/FrameXML site that pins each shape.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetPlayerBuff(index [, "filter"]) — 0x4e45d0. ALWAYS two numbers: the physical cache position
     // (-1 past the end) and untilCancelled (0/1). Never nil, never a different arity: both the hit
     // path (0x4e471e) and the miss path (0x4e4733) end `mov eax,0x2`.
@@ -142,20 +138,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // counter advances in lockstep with the position and `GetPlayerBuff(i)` returns exactly `i` over
     // the packed prefix — which `_LazyPig/LazyPig.lua:1174-1181` relies on, enumerating with
     // `counter` and then cancelling `counter` rather than the returned index.
-    g.set(
+    lua.register_function(
         "GetPlayerBuff",
-        lua.create_function(|lua, (index, filter): (Value, Option<String>)| {
-            let index = buff_index_arg(lua, index, r#"Usage: GetPlayerBuff(index [, "filter"])"#)?;
+        |lua, (index, filter): (Value, Option<String>)| {
+            let index = buff_index_arg(index, r#"Usage: GetPlayerBuff(index [, "filter"])"#)?;
             let hit = enumerate_player_buff(lua, index, PlayerBuffFilter::parse(filter.as_deref()));
             let (pos, until_cancelled) = match hit {
                 Some((pos, a)) => (pos as i64, i64::from(a.until_cancelled)),
                 None => (-1, 0),
             };
-            Ok(MultiValue::from_vec(vec![
+            Ok(MultiValue::from(vec![
                 Value::Integer(pos),
                 Value::Integer(until_cancelled),
             ]))
-        })?,
+        },
     )?;
 
     // GetPlayerBuffTexture(buffIndex) — 0x4e4740. One value: the icon path, or nil when the position
@@ -165,16 +161,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // The extra argument `CT_BuffMod/CT_BuffFrame.lua:148` passes
     // (`GetPlayerBuffTexture(buffIndex, "HELPFUL|HARMFUL")`) is simply ignored — the reference reads
-    // argument 1 and nothing else, and mlua drops the surplus for the same reason.
-    g.set(
-        "GetPlayerBuffTexture",
-        lua.create_function(|lua, index: Value| {
-            let pos = buff_index_arg(lua, index, "Usage: GetPlayerBuffTexture(buffIndex)")?;
-            Ok(player_buff_record(lua, pos).and_then(|a| a.icon))
-        })?,
-    )?;
+    // argument 1 and nothing else, and the Lua callback ABI drops the surplus for the same reason.
+    lua.register_function("GetPlayerBuffTexture", |lua, index: Value| {
+        let pos = buff_index_arg(index, "Usage: GetPlayerBuffTexture(buffIndex)")?;
+        Ok(player_buff_record(lua, pos).and_then(|a| a.icon))
+    })?;
 
-    // GetPlayerBuffDispelType(buffIndex) — 0x4e4800. One value: SpellDispelType.dbc's name for the
+    // GetPlayerBuffDispelType(buffIndex) — 0x4e4800. One value: SpellDispelType.dbc's invariant key for the
     // spell's `Dispel` column, or nil (dispel id 0, or any missing row — gated at 0x4e485e before
     // the DBC is touched). The vocabulary is the DBC's, shared with `UnitDebuff`'s third return.
     //
@@ -185,13 +178,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // It must also tolerate `-1` directly: `ref-BuffFrame.lua:83` calls
     // `GetPlayerBuffDispelType(GetPlayerBuff(this:GetID(), "HARMFUL"))` with no guard between them.
-    g.set(
-        "GetPlayerBuffDispelType",
-        lua.create_function(|lua, index: Value| {
-            let pos = buff_index_arg(lua, index, "Usage: GetPlayerBuffDispelType(buffIndex)")?;
-            Ok(player_buff_record(lua, pos).and_then(|a| a.debuff_type))
-        })?,
-    )?;
+    lua.register_function("GetPlayerBuffDispelType", |lua, index: Value| {
+        let pos = buff_index_arg(index, "Usage: GetPlayerBuffDispelType(buffIndex)")?;
+        Ok(player_buff_record(lua, pos).and_then(|a| a.debuff_type))
+    })?;
 
     // GetPlayerBuffApplications(buffIndex) — 0x4e48b0. One value, always a number: the record's
     // stack count, and **1** for an absent position (`push 0x3ff00000; push 0x0` = the double 1.0,
@@ -202,13 +192,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // the same constant 0x4e4930 pushes. A copy-paste in the shipped binary; we name the verb the
     // caller actually called, since nothing can depend on the wrong name and a debugging addon
     // author would be misled by it.)
-    g.set(
-        "GetPlayerBuffApplications",
-        lua.create_function(|lua, index: Value| {
-            let pos = buff_index_arg(lua, index, "Usage: GetPlayerBuffApplications(buffIndex)")?;
-            Ok(player_buff_record(lua, pos).map_or(1, |a| i64::from(a.count)))
-        })?,
-    )?;
+    lua.register_function("GetPlayerBuffApplications", |lua, index: Value| {
+        let pos = buff_index_arg(index, "Usage: GetPlayerBuffApplications(buffIndex)")?;
+        Ok(player_buff_record(lua, pos).map_or(1, |a| i64::from(a.count)))
+    })?;
 
     // GetPlayerBuffTimeLeft(buffIndex) — 0x4e4930 over the reader 0x4e4450. One value, always a
     // number in **seconds** (the reader returns ms and 0x4e4986 multiplies by the 0.001 at
@@ -223,16 +210,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // expressed on (decision 0257) — so this is a live subtraction per call, exactly as
     // `ref-BuffFrame.lua:130` re-reads it every frame from `OnUpdate` rather than caching it on the
     // event.
-    g.set(
-        "GetPlayerBuffTimeLeft",
-        lua.create_function(|lua, index: Value| {
-            let pos = buff_index_arg(lua, index, "Usage: GetPlayerBuffTimeLeft(buffIndex)")?;
-            let now: f64 = lua.globals().get("__benilla_now").unwrap_or(0.0);
-            // The `max(0, …)` covers both of the reference's zero cases at once: an expired aura,
-            // and a permanent one, whose expiry array slot holds 0 so that `now - 0` is positive.
-            Ok(player_buff_record(lua, pos).map_or(0.0, |a| (a.expiration_time - now).max(0.0)))
-        })?,
-    )?;
+    lua.register_function("GetPlayerBuffTimeLeft", |lua, index: Value| {
+        let pos = buff_index_arg(index, "Usage: GetPlayerBuffTimeLeft(buffIndex)")?;
+        let now: f64 = lua.get_global("__benilla_now").unwrap_or(0.0);
+        // The `max(0, …)` covers both of the reference's zero cases at once: an expired aura,
+        // and a permanent one, whose expiry array slot holds 0 so that `now - 0` is positive.
+        Ok(player_buff_record(lua, pos).map_or(0.0, |a| (a.expiration_time - now).max(0.0)))
+    })?;
 
     // CancelPlayerBuff(buffIndex) — 0x4e49a0. **Zero** return values on every path, including the
     // successful one (`xor eax,eax; ret`). Resolves the position to a record, applies
@@ -240,17 +224,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // there is one queue because there is one packet: `Spell_C::CancelAura 0x6e7040` sends
     // `CMSG_CANCEL_AURA` (0x136) with a single u32 spell id (decision 0257 B8). A refused or absent
     // aura is a silent no-op, as in the reference.
-    g.set(
-        "CancelPlayerBuff",
-        lua.create_function(|lua, index: Value| {
-            let pos = buff_index_arg(lua, index, "Usage: CancelPlayerBuff(buffIndex)")?;
-            if let Some(a) = player_buff_record(lua, pos).filter(cancel_authorized) {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.cancel_aura_requests.push(a.spell_id);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CancelPlayerBuff", |lua, index: Value| {
+        let pos = buff_index_arg(index, "Usage: CancelPlayerBuff(buffIndex)")?;
+        if let Some(a) = player_buff_record(lua, pos).filter(cancel_authorized) {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.cancel_aura_requests.push(a.spell_id);
+        }
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -420,7 +401,7 @@ mod tests {
     /// the two filters.
     #[test]
     fn get_player_buff_defaults_to_both_halves_and_indexes_absolutely() {
-        let s = with_player_cache();
+        let mut s = with_player_cache();
 
         // No filter: three matches — the debuff included.
         assert_eq!(

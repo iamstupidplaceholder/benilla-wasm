@@ -32,6 +32,8 @@
 
 use bevy::prelude::Resource;
 
+use benilla_time::{SystemTime, UNIX_EPOCH};
+
 /// The shared `rand()` state — see the module note. Seeded by [`Self::seed_for_session`] at
 /// startup; [`Default`] is the CRT's own pre-`srand` value so a test or a headless build that
 /// never seeds still walks a defined sequence.
@@ -80,8 +82,8 @@ impl AnimRng {
         }
         // `GetTickCount` is milliseconds since boot; the wall clock's sub-second span is the same
         // kind of number and is what a non-Windows host can offer.
-        self.0 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        self.0 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map_or(1, |d| d.as_millis() as u32);
     }
 }

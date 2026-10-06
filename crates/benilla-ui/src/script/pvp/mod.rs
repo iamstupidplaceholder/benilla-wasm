@@ -103,9 +103,9 @@
 //!    `UnitPVPName` both render.
 //! 4. `GetPVPLifetimeStats` **suppresses a highest-lifetime rank below 5**, reporting `0`.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
-use super::binding_abi::{number_arg, string_arg};
+use super::binding_abi::{neutral_string_arg, number_arg_value};
 use super::unit::{check_unit_token, is_civilian_kill};
 use super::Model;
 
@@ -270,8 +270,13 @@ impl super::UiScript {
     /// (`0x625374` hands `0x612bf0` the entry `this`, still the local player), and a victim whose
     /// team resolves to **−1 emits no line at all** (`0x625321 js` bails the whole formatter) —
     /// which is a `u8` here precisely so that decision cannot be smuggled into a key that misses.
-    pub fn pvp_rank_title(&self, rank: u8, team: u8, female: bool) -> Option<String> {
-        rank_title_gendered(self.lua(), i64::from(rank), i64::from(team), female)
+    pub fn pvp_rank_title(&mut self, rank: u8, team: u8, female: bool) -> Option<String> {
+        rank_title_gendered(
+            &mut self.lua,
+            i64::from(rank),
+            i64::from(team),
+            female,
+        )
     }
 }
 
@@ -325,12 +330,12 @@ fn rank_progress(bar: u8) -> f64 {
 }
 
 /// The local player's honor snapshot, or `None` before the first push.
-fn honor(lua: &Lua) -> Option<HonorState> {
+fn honor(lua: &mut impl LuaContext) -> Option<HonorState> {
     lua.app_data_ref::<Model>().expect("model app_data").honor
 }
 
 /// The last inspect-honor reply, or `None` when none is held.
-fn inspect_honor(lua: &Lua) -> Option<InspectHonorData> {
+fn inspect_honor(lua: &mut impl LuaContext) -> Option<InspectHonorData> {
     lua.app_data_ref::<Model>()
         .expect("model app_data")
         .inspect_honor
@@ -339,9 +344,8 @@ fn inspect_honor(lua: &Lua) -> Option<InspectHonorData> {
 /// A GlobalString off the VM's own globals, `None` when it is absent **or empty** — the
 /// no-install / bare-VM path. (`GetPVPRankInfo` tests both explicitly: `0x51aa1c` NULL,
 /// `0x51aa20` empty first byte.)
-fn global_string(lua: &Lua, key: &str) -> Option<String> {
-    lua.globals()
-        .get::<Option<String>>(key)
+fn global_string(lua: &mut impl LuaContext, key: &str) -> Option<String> {
+    lua.get_global::<Option<String>>(key)
         .ok()
         .flatten()
         .filter(|s| !s.is_empty())
@@ -381,17 +385,17 @@ fn team_of(u: &super::UnitState) -> i64 {
 /// answers −1 instead, and −1 misses the key ([`team_of`]).
 ///
 /// An unrecognised token raises `Unknown unit name`, as `0x515970` does for every unit binding.
-fn team_arg(lua: &Lua, v: Value) -> mlua::Result<i64> {
+fn team_arg(lua: &mut impl LuaContext, v: Value) -> benilla_lua::Result<i64> {
     // `lua_isnumber` before `lua_isstring`, which is what puts a numeric string on the number arm.
-    if let Some(n) = lua.coerce_number(v.clone())? {
-        return Ok(i64::from(n as i64 as i32));
+    if let Ok(n) = number_arg_value(v.clone(), "") {
+        return Ok(i64::from(n));
     }
-    let Some(token) = lua.coerce_string(v)? else {
+    let Value::String(token) = v else {
         // Absent, boolean, table — the local-player preamble.
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         return Ok(model.unit("player").map_or(0, team_of));
     };
-    let token = Some(token.to_str()?.to_owned());
+    let token = Some(token.to_string_lossy().into_owned());
     check_unit_token(&token)?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     Ok(token
@@ -415,7 +419,7 @@ fn team_arg(lua: &Lua, v: Value) -> mlua::Result<i64> {
 /// This is `GetPVPRankInfo`'s lookup (`0x51aa0f push 0`), and the reason the honor panes show a
 /// male/default title to a female character. Do not "fix" it; see the module doc's `_FEMALE`
 /// section.
-fn rank_title_ungendered(lua: &Lua, rank: i64, team: i64) -> Option<String> {
+fn rank_title_ungendered(lua: &mut impl LuaContext, rank: i64, team: i64) -> Option<String> {
     global_string(lua, &format!("PVP_RANK_{rank}_{team}"))
 }
 
@@ -426,11 +430,18 @@ fn rank_title_ungendered(lua: &Lua, rank: i64, team: i64) -> Option<String> {
 /// Two callers, both verified to be gendered: `UnitPVPName`'s decoration (by the *subject unit*)
 /// and [`UiScript::pvp_rank_title`], the app's `SMSG_PVP_CREDIT` line (by the *local player*, even
 /// though the team digit is the victim's — `0x625374`).
-fn rank_title_gendered(lua: &Lua, rank: i64, team: i64, female: bool) -> Option<String> {
-    female
-        .then(|| global_string(lua, &format!("PVP_RANK_{rank}_{team}_FEMALE")))
-        .flatten()
-        .or_else(|| rank_title_ungendered(lua, rank, team))
+fn rank_title_gendered(
+    lua: &mut impl LuaContext,
+    rank: i64,
+    team: i64,
+    female: bool,
+) -> Option<String> {
+    if female {
+        if let Some(title) = global_string(lua, &format!("PVP_RANK_{rank}_{team}_FEMALE")) {
+            return Some(title);
+        }
+    }
+    rank_title_ungendered(lua, rank, team)
 }
 
 /// Fill a **two-`%s` C format string** — the shape `snprintf(buf, size, GlobalString(...), a, b)`
@@ -465,7 +476,12 @@ fn format_two_strings(fmt: &str, a: &str, b: &str) -> String {
 
 /// `0x609370` — the name builder behind `UnitPVPName`, called with its flag set. `name` is the
 /// unit's plain `UnitName`; see the binding for the three legs and the two divergences.
-fn pvp_name(lua: &Lua, u: &super::UnitState, name: &str, player_level: u32) -> String {
+fn pvp_name(
+    lua: &mut impl LuaContext,
+    u: &super::UnitState,
+    name: &str,
+    player_level: u32,
+) -> String {
     // Leg A: a player with a rank. The title is gendered by THIS unit and range-unchecked.
     if u.is_player && u.pvp_rank != 0 {
         let title = rank_title_gendered(lua, i64::from(u.pvp_rank), team_of(u), u.sex == 3);
@@ -493,22 +509,17 @@ fn pvp_name(lua: &Lua, u: &super::UnitState, name: &str, player_level: u32) -> S
 }
 
 /// Register the PvP + honor globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // TogglePVP() — /pvp and the unit popup's PvP row. Takes no argument in 1.12: the *state*
     // form of the opcode (a one-byte body) has no binding, so there is nothing to pass. The
     // reference registers it at `0x48d700` and calls it from exactly one place in the whole
     // shipped 1.12 UI: `SlashCmdList["PVP"]` (ChatFrame.lua); benilla's popup row is a deliberate
     // second caller — decision 0646 §3.
-    g.set(
-        "TogglePVP",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pvp_toggles += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("TogglePVP", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pvp_toggles += 1;
+        Ok(())
+    })?;
 
     // ── The self getters ─────────────────────────────────────────────────────────────────────
     // Every one of them answers at full arity on every path, zeros included: the reference
@@ -517,52 +528,40 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // therefore read as a zeroed snapshot — which is also exactly what a fresh character has.
 
     // GetPVPSessionStats() → hk, dk.
-    g.set(
-        "GetPVPSessionStats",
-        lua.create_function(|lua, ()| {
-            let h = honor(lua).unwrap_or_default();
-            Ok((i64::from(h.session_hk), i64::from(h.session_dk)))
-        })?,
-    )?;
+    lua.register_function("GetPVPSessionStats", |lua, ()| {
+        let h = honor(lua).unwrap_or_default();
+        Ok((i64::from(h.session_hk), i64::from(h.session_dk)))
+    })?;
 
     // GetPVPYesterdayStats() → hk, dk, contribution (THREE — the weekly pair below is different).
-    g.set(
-        "GetPVPYesterdayStats",
-        lua.create_function(|lua, ()| {
-            let h = honor(lua).unwrap_or_default();
-            Ok((
-                i64::from(h.yesterday_hk),
-                i64::from(h.yesterday_dk),
-                i64::from(h.yesterday_honor),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetPVPYesterdayStats", |lua, ()| {
+        let h = honor(lua).unwrap_or_default();
+        Ok((
+            i64::from(h.yesterday_hk),
+            i64::from(h.yesterday_dk),
+            i64::from(h.yesterday_honor),
+        ))
+    })?;
 
     // GetPVPThisWeekStats() → hk, contribution. **Two, not three**: the reference destructures
     // `local hk, contribution = GetPVPThisWeekStats()` and shows no this-week DK column at all.
-    g.set(
-        "GetPVPThisWeekStats",
-        lua.create_function(|lua, ()| {
-            let h = honor(lua).unwrap_or_default();
-            Ok((i64::from(h.this_week_hk), i64::from(h.this_week_honor)))
-        })?,
-    )?;
+    lua.register_function("GetPVPThisWeekStats", |lua, ()| {
+        let h = honor(lua).unwrap_or_default();
+        Ok((i64::from(h.this_week_hk), i64::from(h.this_week_honor)))
+    })?;
 
     // GetPVPLastWeekStats() → hk, dk, contribution, standing. **Four**: the fourth is
     // `PLAYER_FIELD_LAST_WEEK_RANK`, which is the ladder STANDING, not a rank — the pane prints it
     // through `format(PVP_RANK_LAST_WEEK, standing)` and never looks a title up for it.
-    g.set(
-        "GetPVPLastWeekStats",
-        lua.create_function(|lua, ()| {
-            let h = honor(lua).unwrap_or_default();
-            Ok((
-                i64::from(h.last_week_hk),
-                i64::from(h.last_week_dk),
-                i64::from(h.last_week_honor),
-                i64::from(h.last_week_standing),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetPVPLastWeekStats", |lua, ()| {
+        let h = honor(lua).unwrap_or_default();
+        Ok((
+            i64::from(h.last_week_hk),
+            i64::from(h.last_week_dk),
+            i64::from(h.last_week_honor),
+            i64::from(h.last_week_standing),
+        ))
+    })?;
 
     // GetPVPLifetimeStats() → hk, dk, highestRank. The third is the HIGHEST LIFETIME rank
     // (`PLAYER_FIELD_BYTES` byte 3), internal scale — not the current one `UnitPVPRank` answers.
@@ -573,29 +572,25 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // best was one of them: the suppression is here, in the binding, not in the pane's Lua.
     // Suppressed to 0 — not to nil — so the pane's `GetPVPRankInfo(highestRank)` still gets a
     // number.
-    g.set(
-        "GetPVPLifetimeStats",
-        lua.create_function(|lua, ()| {
-            let h = honor(lua).unwrap_or_default();
-            let highest = if h.highest_rank >= 5 {
-                h.highest_rank
-            } else {
-                0
-            };
-            Ok((
-                i64::from(h.lifetime_hk),
-                i64::from(h.lifetime_dk),
-                i64::from(highest),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetPVPLifetimeStats", |lua, ()| {
+        let h = honor(lua).unwrap_or_default();
+        let highest = if h.highest_rank >= 5 {
+            h.highest_rank
+        } else {
+            0
+        };
+        Ok((
+            i64::from(h.lifetime_hk),
+            i64::from(h.lifetime_dk),
+            i64::from(highest),
+        ))
+    })?;
 
     // GetPVPRankProgress() → the bar fraction. A multiply, and unclamped — see `rank_progress`,
     // which is the whole law of this binding. Absent player → `0.0`, still one value.
-    g.set(
-        "GetPVPRankProgress",
-        lua.create_function(|lua, ()| Ok(rank_progress(honor(lua).unwrap_or_default().rank_bar)))?,
-    )?;
+    lua.register_function("GetPVPRankProgress", |lua, ()| {
+        Ok(rank_progress(honor(lua).unwrap_or_default().rank_bar))
+    })?;
 
     // GetPVPRankInfo(rank [, unit]) → rankName, rankNumber — the title off the VM's globals
     // (module doc) and the VISUAL rank. **Always two values**: every failure edge answers
@@ -621,30 +616,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //    non-player unit, or no local player leaves the team register at its initial 0 — the HORDE
     //    list — while a unit that resolves but has no *side* gets −1 and misses the key. The two
     //    are different answers and this reproduces both.
-    g.set(
-        "GetPVPRankInfo",
-        lua.create_function(|lua, (rank, unit): (Value, Value)| {
-            let rank = i64::from(number_arg(
-                lua,
-                rank,
-                "Usage: GetPVPRankInfo(rank [, unit])",
-            )?);
-            let team = team_arg(lua, unit)?;
-            // The range gate first: outside [1, 18] no key is even built.
-            let name = if (1..=18).contains(&rank) {
-                rank_title_ungendered(lua, rank, team)
-            } else {
-                None
-            };
-            let Some(name) = name else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Integer(0)]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&name)?),
-                Value::Integer(visual_rank(rank)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetPVPRankInfo", |lua, (rank, unit): (Value, Value)| {
+        let rank = i64::from(number_arg_value(
+            rank,
+            "Usage: GetPVPRankInfo(rank [, unit])",
+        )?);
+        let team = team_arg(lua, unit)?;
+        // The range gate first: outside [1, 18] no key is even built.
+        let name = if (1..=18).contains(&rank) {
+            rank_title_ungendered(lua, rank, team)
+        } else {
+            None
+        };
+        let Some(name) = name else {
+            return Ok(MultiValue::from(vec![Value::Nil, Value::Integer(0)]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(name),
+            Value::Integer(visual_rank(rank)),
+        ]))
+    })?;
 
     // UnitPVPRank(unit) → the unit's CURRENT rank, internal scale, 0 for no rank.
     //
@@ -668,18 +659,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // silently zero a real player's rank in a pane that repaints every event. The creature case
     // needs no gate anyway: a creature has no PLAYER descriptor block, so the byte the app decodes
     // is already 0 — the reference's own answer for one, by its own path.
-    g.set(
-        "UnitPVPRank",
-        lua.create_function(|lua, token: Value| {
-            let token = Some(string_arg(lua, token, "Usage: UnitPVPRank(\"unit\")")?);
-            check_unit_token(&token)?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(token
-                .as_ref()
-                .and_then(|t| model.unit(t))
-                .map_or(0i64, |u| i64::from(u.pvp_rank)))
-        })?,
-    )?;
+    lua.register_function("UnitPVPRank", |lua, token: Value| {
+        let token = Some(neutral_string_arg(token, "Usage: UnitPVPRank(\"unit\")")?);
+        check_unit_token(&token)?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(token
+            .as_ref()
+            .and_then(|t| model.unit(t))
+            .map_or(0i64, |u| i64::from(u.pvp_rank)))
+    })?;
 
     // UnitPVPName(unit) → the unit's name, rank-title-decorated — `0x5172b0` into the builder
     // `0x609370`, whose three legs are:
@@ -706,28 +694,25 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // missing from `_G`, the engine would snprintf through an empty format and hand back an empty
     // string. We answer the plain name instead — the decoration is install data, and without the
     // data there is no decoration.
-    g.set(
-        "UnitPVPName",
-        lua.create_function(|lua, token: Value| {
-            let token = Some(string_arg(lua, token, "Usage: UnitPVPName(\"unit\")")?);
-            check_unit_token(&token)?;
-            let (unit, player_level) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                (
-                    token.as_ref().and_then(|t| model.unit(t)).cloned(),
-                    model.player_req.level,
-                )
-            };
-            let Some(u) = unit else {
-                return Ok(Value::Nil);
-            };
-            let Some(name) = u.name.clone() else {
-                return Ok(Value::Nil);
-            };
-            let decorated = pvp_name(lua, &u, &name, player_level);
-            Ok(Value::String(lua.create_string(&decorated)?))
-        })?,
-    )?;
+    lua.register_function("UnitPVPName", |lua, token: Value| {
+        let token = Some(neutral_string_arg(token, "Usage: UnitPVPName(\"unit\")")?);
+        check_unit_token(&token)?;
+        let (unit, player_level) = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            (
+                token.as_ref().and_then(|t| model.unit(t)).cloned(),
+                model.player_req.level,
+            )
+        };
+        let Some(u) = unit else {
+            return Ok(Value::Nil);
+        };
+        let Some(name) = u.name.clone() else {
+            return Ok(Value::Nil);
+        };
+        let decorated = pvp_name(lua, &u, &name, player_level);
+        Ok(Value::from(decorated))
+    })?;
 
     // ── The inspect half ─────────────────────────────────────────────────────────────────────
 
@@ -751,32 +736,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //    where the engine's latches on *send*, so a request the app drops leaves the latch set
     //    until the next `set_inspect_honor` — which the app's own `ClearInspectPlayer` path
     //    calls, exactly as `0x4c6f70` clears the engine's.
-    g.set(
-        "RequestInspectHonorData",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if model.inspect_honor.is_some() || model.inspect_honor_pending {
-                return Ok(());
-            }
-            model.inspect_honor_requests += 1;
-            model.inspect_honor_pending = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RequestInspectHonorData", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if model.inspect_honor.is_some() || model.inspect_honor_pending {
+            return Ok(());
+        }
+        model.inspect_honor_requests += 1;
+        model.inspect_honor_pending = true;
+        Ok(())
+    })?;
 
     // HasInspectHonorData() → 1/nil. The latch the request above is gated on: true exactly while a
     // reply is held, so dropping the inspected player (which clears the push) makes the next
     // `OnShow` re-request instead of repainting the last player's numbers.
-    g.set(
-        "HasInspectHonorData",
-        lua.create_function(|lua, ()| {
-            Ok(if inspect_honor(lua).is_some() {
-                Value::Integer(1)
-            } else {
-                Value::Nil
-            })
-        })?,
-    )?;
+    lua.register_function("HasInspectHonorData", |lua, ()| {
+        Ok(if inspect_honor(lua).is_some() {
+            Value::Integer(1)
+        } else {
+            Value::Nil
+        })
+    })?;
 
     // GetInspectHonorData() → the reference's twelve, in its own order:
     //   sessionHK, sessionDK, yesterdayHK, yesterdayHonor, thisweekHK, thisweekHonor,
@@ -791,42 +770,36 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // can answer a previous target's numbers here while `HasInspectHonorData` says no. We cannot —
     // our data and our latch are one `Option` — and that is the one place this pair diverges: it
     // needs the app to own the flag separately, which is a seam change, not a fix here.)
-    g.set(
-        "GetInspectHonorData",
-        lua.create_function(|lua, ()| {
-            let d = inspect_honor(lua).unwrap_or_default();
-            let out = vec![
-                Value::Integer(i64::from(d.session_hk)),
-                Value::Integer(i64::from(d.session_dk)),
-                Value::Integer(i64::from(d.yesterday_hk)),
-                Value::Integer(i64::from(d.yesterday_honor)),
-                Value::Integer(i64::from(d.this_week_hk)),
-                Value::Integer(i64::from(d.this_week_honor)),
-                Value::Integer(i64::from(d.last_week_hk)),
-                Value::Integer(i64::from(d.last_week_honor)),
-                Value::Integer(i64::from(d.last_week_standing)),
-                Value::Integer(i64::from(d.lifetime_hk)),
-                Value::Integer(i64::from(d.lifetime_dk)),
-                Value::Integer(i64::from(d.highest_rank)),
-            ];
-            debug_assert_eq!(out.len(), 12, "the tuple is twelve wide on every path");
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetInspectHonorData", |lua, ()| {
+        let d = inspect_honor(lua).unwrap_or_default();
+        let out = vec![
+            Value::Integer(i64::from(d.session_hk)),
+            Value::Integer(i64::from(d.session_dk)),
+            Value::Integer(i64::from(d.yesterday_hk)),
+            Value::Integer(i64::from(d.yesterday_honor)),
+            Value::Integer(i64::from(d.this_week_hk)),
+            Value::Integer(i64::from(d.this_week_honor)),
+            Value::Integer(i64::from(d.last_week_hk)),
+            Value::Integer(i64::from(d.last_week_honor)),
+            Value::Integer(i64::from(d.last_week_standing)),
+            Value::Integer(i64::from(d.lifetime_hk)),
+            Value::Integer(i64::from(d.lifetime_dk)),
+            Value::Integer(i64::from(d.highest_rank)),
+        ];
+        debug_assert_eq!(out.len(), 12, "the tuple is twelve wide on every path");
+        Ok(MultiValue::from(out))
+    })?;
 
     // GetInspectPVPRankProgress() → the same bar fraction as GetPVPRankProgress, off the reply's
     // trailing `rankBar` byte. `0x51ab00` is the same three-instruction kernel over the cached
     // byte — the `fild`/`fmul ds:0x8026c8`/`fstp` at `0x51ab04` is byte-identical to `0x51aace` —
     // with no object lookup, no gate and no clamp, so it too reads 0.0 from an empty slot rather
     // than nil ([`rank_progress`]).
-    g.set(
-        "GetInspectPVPRankProgress",
-        lua.create_function(|lua, ()| {
-            Ok(rank_progress(
-                inspect_honor(lua).unwrap_or_default().rank_bar,
-            ))
-        })?,
-    )?;
+    lua.register_function("GetInspectPVPRankProgress", |lua, ()| {
+        Ok(rank_progress(
+            inspect_honor(lua).unwrap_or_default().rank_bar,
+        ))
+    })?;
 
     Ok(())
 }

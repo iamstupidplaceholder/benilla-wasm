@@ -178,7 +178,7 @@ pub(super) fn feed_guild(
     // `/ginfo`'s two lines, resolved here because their templates are not catalog rows.
     let info_lines: Vec<crate::ui_action::Shown> = std::mem::take(&mut guild.pending_info)
         .iter()
-        .flat_map(|info| ginfo_lines(&script, info))
+        .flat_map(|info| ginfo_lines(&mut script, info))
         .collect();
     if !info_lines.is_empty() {
         crate::ui_action::show_messages(&mut script, &mut sink, "ui_guild", info_lines);
@@ -198,9 +198,9 @@ pub(super) fn feed_guild(
 /// (`0x5e704d`–`0x5e7061`) place the arguments **wire#2, wire#1, wire#3, wire#4, wire#5** — the
 /// first two swapped — which is exactly what an enUS `m-d-y` template does to vmangos's
 /// `createdDay, createdMonth, createdYear` order.
-fn ginfo_lines(script: &UiScript, info: &GuildInfo) -> Vec<crate::ui_action::Shown> {
+fn ginfo_lines(script: &mut UiScript, info: &GuildInfo) -> Vec<crate::ui_action::Shown> {
     use benilla_ui::strings::Arg;
-    let get = |key: &str| script.lua().globals().get::<String>(key).ok();
+    let mut get = |key: &str| script.global_string(key);
     let line = |template: Option<String>, args: &[Arg<'_>]| {
         let text = benilla_ui::strings::fill(&template?, args);
         (!text.is_empty())

@@ -20,7 +20,7 @@ create your own types that implement the [`SoundData`] and [`Sound`] traits.
 mod error;
 mod playback_position;
 pub mod static_sound;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), feature = "browser-streaming"))]
 pub mod streaming;
 #[cfg(feature = "symphonia")]
 mod symphonia;

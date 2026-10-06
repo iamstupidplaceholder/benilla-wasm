@@ -143,8 +143,12 @@ pub(super) fn control(
         benilla_world::world_point::WorldPoint,
         TransportQuery,
         Query<&ChildOf>,
+        Option<ResMut<crate::ui_cost::ControllerFrameCost>>,
+        (Res<crate::net::GuidIndex>, Query<&crate::net::ObjectStore>),
     ),
 ) {
+    let mut world_q = world_q;
+    let _cost = world_q.3.as_deref_mut().map(|cost| cost.measure());
     let (world, transports, child_of) = (&world_q.0, &world_q.1, &world_q.2);
     let (left_click, right_click) = (&mut *click_test.0, &mut *click_test.1);
     let Ok((mut cam_t, mut cam)) = cameras.single_mut() else {
@@ -417,7 +421,15 @@ pub(super) fn control(
             || cur.grab_mode != opts_shadow.grab_mode
             || cur.hit_test != opts_shadow.hit_test
         {
-            *cursor_opts = opts_shadow;
+            if cfg!(target_arch = "wasm32") {
+                // Winit re-applies grab_mode even on visibility-only changes.
+                // All browser physical locking belongs to the guarded JS
+                // adapter, including nonpersistent camera drags. CSS visibility
+                // is applied there too; do not trigger winit's unguarded lock.
+                *cur = opts_shadow;
+            } else {
+                *cursor_opts = opts_shadow;
+            }
         }
     }
 
@@ -455,6 +467,7 @@ pub(super) fn control(
         &mut net.9,
         &mut net.11,
         self_guid,
+        (&world_q.4 .0, &world_q.4 .1),
         transports,
         body.single()
             .ok()

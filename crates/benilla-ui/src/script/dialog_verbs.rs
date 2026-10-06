@@ -19,9 +19,9 @@
 //! `session.rs`'s. `ReplaceTradeEnchant` is not here: it rides the trade-slot enchant targeting
 //! this engine does not build yet, and stays a named gap.
 
-use mlua::{Lua, Value};
+use benilla_lua::{Value, Vm};
 
-use super::binding_abi::{bool_or_default, coerced_number, flag};
+use super::binding_abi::{bool_or_default, neutral_flag, neutral_number_arg};
 use super::Model;
 
 /// The area spirit healer's aura, `0xA18` — the one spell id `CancelAreaSpiritHeal` cancels, and
@@ -76,138 +76,96 @@ impl super::UiScript {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // 0 args → 1 number: `max(deadline − now, 0) / 1000`, truncated (§5).
-    g.set(
-        "GetInstanceBootTimeRemaining",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.instance_boot_secs))
-        })?,
-    )?;
+    lua.register_function("GetInstanceBootTimeRemaining", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.instance_boot_secs))
+    })?;
 
     // §6: `if (cached healer == 0:0) return;` — SILENT — else `0x2E3` + the cached guid.
-    g.set(
-        "AcceptAreaSpiritHeal",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if model.area_spirit_healer_cached {
-                model.area_spirit_accepts += 1;
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("AcceptAreaSpiritHeal", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if model.area_spirit_healer_cached {
+            model.area_spirit_accepts += 1;
+        }
+        Ok(())
+    })?;
     // §6: `0x6e7040(0xA18)` — the generic cancel-aura routine: the event fires (only for this
     // spell), then `0x136` + `u32 2584`, no guid. The routine's refusal — AttributesEx bit 13
     // set, bit 2 clear, and `0x5ee290(player)` — never reaches its third leg for spell 2584:
     // the shipped Spell.dbc fails the first two, checked against the data by the app's
     // `spell_2584_never_trips_the_cancel_gate`. So the send is unconditional here.
-    g.set(
-        "CancelAreaSpiritHeal",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model
-                .pending_events
-                .push(("AREA_SPIRIT_HEALER_OUT_OF_RANGE".to_string(), Vec::new()));
-            model.cancel_aura_requests.push(AREA_SPIRIT_HEALER_SPELL);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CancelAreaSpiritHeal", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model
+            .pending_events
+            .push(("AREA_SPIRIT_HEALER_OUT_OF_RANGE".to_string(), Vec::new()));
+        model.cancel_aura_requests.push(AREA_SPIRIT_HEALER_SPELL);
+        Ok(())
+    })?;
     // 0 → 1 number, whole seconds: `max(0, [0xb4e338] − now) / 1000`.
-    g.set(
-        "GetAreaSpiritHealerTime",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.area_spirit_secs))
-        })?,
-    )?;
+    lua.register_function("GetAreaSpiritHealerTime", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.area_spirit_secs))
+    })?;
 
     // §7: arg 1 must satisfy `lua_isnumber` (a number or a numeric string) or the binding
     // RAISES `Usage:`; truncated, 1-based, off 1..=3 SILENT. Arg 2 is the reference's
     // optional-boolean coercion (`0x6f1c10`, default 0), normalised to one byte.
-    g.set(
+    lua.register_function(
         "AcceptBattlefieldPort",
-        lua.create_function(|lua, (index, accept): (Value, Value)| {
-            let is_number = match &index {
-                Value::Integer(_) | Value::Number(_) => true,
-                Value::String(s) => s
-                    .to_str()
-                    .ok()
-                    .is_some_and(|t| t.trim().parse::<f64>().is_ok()),
-                _ => false,
-            };
-            if !is_number {
-                return Err(mlua::Error::runtime(
-                    "Usage: AcceptBattlefieldPort(index, accept)",
-                ));
-            }
-            let slot = coerced_number(lua, Some(index)).trunc();
-            if !(1.0..=3.0).contains(&slot) {
+        |lua, (index, accept): (Value, Value)| {
+            let slot = neutral_number_arg(index, "Usage: AcceptBattlefieldPort(index, accept)")?;
+            if !(1..=3).contains(&slot) {
                 return Ok(());
             }
             let accept = bool_or_default(Some(&accept), false);
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.battlefield_port_requests.push((slot as u8, accept));
             Ok(())
-        })?,
+        },
     )?;
 
     // §8: `0x293`, empty; gated only on party leadership (the app's, which holds the party) —
     // it clears nothing, the server's reply does.
-    g.set(
-        "CancelMeetingStoneRequest",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.meeting_stone_cancels += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CancelMeetingStoneRequest", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.meeting_stone_cancels += 1;
+        Ok(())
+    })?;
 
     // `IsInMeetingStoneQueue()` (`0x4ca570`): `mov eax,1` on BOTH legs — the number `1` when the
     // queued area is non-zero, else nil; never `0` (truthy in Lua — it would pin the icon shown),
     // never a boolean.
-    g.set(
-        "IsInMeetingStoneQueue",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.meeting_stone_area != 0))
-        })?,
-    )?;
+    lua.register_function("IsInMeetingStoneQueue", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(model.meeting_stone_area != 0))
+    })?;
 
     // `GetMeetingStoneStatusText()` (`0x4ca5b0`): `lua_pushstring([0xb7203c])`, whose NULL leg
     // tail-jumps to `lua_pushnil` — a string or nil, one value, never `""` for "nothing".
-    g.set(
-        "GetMeetingStoneStatusText",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match &model.meeting_stone_status_text {
-                Some(text) => Value::String(lua.create_string(text)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("GetMeetingStoneStatusText", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match &model.meeting_stone_status_text {
+            Some(text) => Value::from(text.clone()),
+            None => Value::Nil,
+        })
+    })?;
 
     // §9: `1` or `nil` — never `0`. The range test (`d² <= INTERACT_DISTANCE²`, a NaN OUT) is the
     // app's, on the latched trainer.
-    g.set(
-        "CheckPetUntrainerDist",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.pet_untrainer_pending))
-        })?,
-    )?;
+    lua.register_function("CheckPetUntrainerDist", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(model.pet_untrainer_pending))
+    })?;
     // §9: the confirm arm — the latch's guid, the money gate (`ERR_NOT_ENOUGH_MONEY`, no packet)
     // and `0x2F0`, all the app's; here the call is counted.
-    g.set(
-        "ConfirmPetUnlearn",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pet_unlearn_confirms += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConfirmPetUnlearn", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pet_unlearn_confirms += 1;
+        Ok(())
+    })?;
 
     Ok(())
 }

@@ -141,10 +141,7 @@ pub(super) fn drive_screen(
     realms: Res<Realms>,
     existing: Query<(Entity, &RealmListUi)>,
     assets: Res<AssetServer>,
-    mut art: ResMut<GlueArt>,
-    world_assets: Option<ResMut<benilla_assets::WorldAssets>>,
-    mut images: ResMut<Assets<Image>>,
-    mut add_mats: ResMut<Assets<crate::glue::add_material::AddUiMaterial>>,
+    art: Res<GlueArt>,
     strings: Option<Res<GlueStrings>>,
     window: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
@@ -154,9 +151,6 @@ pub(super) fn drive_screen(
             commands.entity(root).despawn();
         }
         return;
-    }
-    if let Some(mut wa) = world_assets {
-        art.ensure_loaded(&mut wa, &mut images, &mut add_mats);
     }
     let with_art = art.help_frame.is_some();
     let s = crate::glue::screen_scale(window.single().ok());

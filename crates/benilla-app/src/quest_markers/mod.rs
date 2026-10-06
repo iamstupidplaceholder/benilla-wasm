@@ -98,7 +98,6 @@ use crate::nameplates::Nameplates;
 use crate::net::GuidIndex;
 use crate::ui_quest::QuestGiver;
 use benilla_assets::m2_url;
-use benilla_assets::WorldAssets;
 use benilla_world::billboard::BillboardCard;
 use benilla_world::mesh_tag::spawn_tag;
 use bevy::mesh::MeshTag;
@@ -206,7 +205,6 @@ fn sync_markers(
     fm_status: Query<(&crate::net::Guid, &crate::ui_taxi::FlightMasterStatus)>,
     index: Res<GuidIndex>,
     asset_server: Res<AssetServer>,
-    assets: Option<Res<WorldAssets>>,
     roots: Query<&QuestMarkerRoot>,
     seats: Query<(), With<MarkerSeat>>,
     // The live overhead-slot pick's two inputs, read per pass off the unit (a handful of markers
@@ -215,9 +213,8 @@ fn sync_markers(
     mounts: Query<(), With<crate::entities::mount::MountChild>>,
     mut live: Local<HashMap<u64, MarkerInst>>,
 ) {
-    if assets.is_none() {
-        return; // no client data — nothing could build anyway
-    }
+    // AssetServer owns model delivery on both hosts. Native WorldAssets presence
+    // is not a readiness signal; build_markers waits for the actual M2 and rig.
     // Rebuild the whole instance whenever the built seat has stopped describing the unit — all
     // or nothing, because a partial rebuild would duplicate the root's billboard cards. The next
     // pass then re-attaches under the joints and the slot that are true now. Two triggers:

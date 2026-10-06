@@ -26,7 +26,7 @@ fn marker_clip(quads: &[crate::script::ExtractedQuad], marker: &str) -> Option<O
 
 #[test]
 fn scrollframe_methods_exist_only_on_scrollframes() {
-    let s = script();
+    let mut s = script();
     let ok: bool = s
         .eval(
             r#"
@@ -50,7 +50,7 @@ fn scrollframe_methods_exist_only_on_scrollframes() {
 
 #[test]
 fn get_scroll_child_roundtrips_wrapper_and_name_and_clears_on_nil() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local sf = CreateFrame("ScrollFrame", "SF")

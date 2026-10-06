@@ -39,7 +39,7 @@
 //!   use slot is its own validator, not the shared `CMSG_GAMEOBJ_USE` sender — four client-side
 //!   refusals ([`meeting_stone_join_refusal`]), then `CMSG 0x292 {u64 goGuid}`.
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use benilla_protocol::messages::{BattlefieldStatus, MeetingStoneNotice};
 use benilla_ui::script::{ScriptValue, UiScript};
@@ -101,7 +101,7 @@ impl InstanceBoot {
     /// `SMSG_RAID_GROUP_ONLY`: `delay > 0` arms, else clears — and the event fires either way.
     pub(crate) fn apply(&mut self, delay_ms: u32, reason: u32, now: Instant) {
         if delay_ms > 0 {
-            self.deadline = Some(now + std::time::Duration::from_millis(u64::from(delay_ms)));
+            self.deadline = Some(now + benilla_time::Duration::from_millis(u64::from(delay_ms)));
             self.events.push("INSTANCE_BOOT_START");
         } else {
             self.deadline = None;
@@ -176,7 +176,7 @@ impl AreaSpiritHealer {
     /// (a zero-landing deadline reads as 1 ms in the reference) and owe `_IN_RANGE`.
     pub(crate) fn on_time(&mut self, healer: u64, ms: u32, now: Instant) {
         if self.healer == Some(healer) && ms > 0 {
-            self.deadline = Some(now + std::time::Duration::from_millis(u64::from(ms)));
+            self.deadline = Some(now + benilla_time::Duration::from_millis(u64::from(ms)));
             self.in_range = true;
         }
     }
@@ -300,9 +300,9 @@ impl BattlefieldQueue {
             Some((expires_ms, elapsed_ms)) => {
                 self.active = Some((index, status.map_id));
                 self.instance_expiration = (expires_ms != 0)
-                    .then(|| now + std::time::Duration::from_millis(u64::from(expires_ms)));
+                    .then(|| now + benilla_time::Duration::from_millis(u64::from(expires_ms)));
                 self.run_started = (elapsed_ms != 0)
-                    .then(|| now - std::time::Duration::from_millis(u64::from(elapsed_ms)));
+                    .then(|| now - benilla_time::Duration::from_millis(u64::from(elapsed_ms)));
                 self.score_dirty = true;
             }
             None => {
@@ -421,12 +421,8 @@ impl MeetingStone {
 
 /// A `GlobalStrings` value as the client's `GetText` reads it: the string, or `""` when the Lua
 /// global is missing (`0x882748`, the shared empty-string constant — never NULL).
-fn global_text(script: &UiScript, key: &str) -> String {
-    script
-        .lua()
-        .globals()
-        .get::<String>(key)
-        .unwrap_or_default()
+fn global_text(script: &mut UiScript, key: &str) -> String {
+    script.global_string(key).unwrap_or_default()
 }
 
 /// The area's localized name, or `None` where the reference's three-part AreaTable resolve fails.
@@ -436,11 +432,11 @@ fn area_name(areas: Option<&AreaTableRes>, id: u32) -> Option<&str> {
 
 /// The status-text rebuild `0x4ca070`: `MEETINGSTONE_TOOLTIP` (or `""` when missing) over the
 /// queued area's name (or `UNKNOWN`), printed into a 256-byte buffer.
-fn build_stone_text(script: &UiScript, areas: Option<&AreaTableRes>, area: u32) -> String {
+fn build_stone_text(script: &mut UiScript, areas: Option<&AreaTableRes>, area: u32) -> String {
     let name = area_name(areas, area)
         .map(str::to_string)
-        .unwrap_or_else(|| global_text(script, "UNKNOWN"));
-    let mut text = global_text(script, "MEETINGSTONE_TOOLTIP").replacen("%s", &name, 1);
+        .unwrap_or_else(|| global_text(&mut *script, "UNKNOWN"));
+    let mut text = global_text(&mut *script, "MEETINGSTONE_TOOLTIP").replacen("%s", &name, 1);
     if text.len() > STONE_TEXT_BYTES {
         let mut cut = STONE_TEXT_BYTES;
         while !text.is_char_boundary(cut) {
@@ -455,7 +451,7 @@ fn build_stone_text(script: &UiScript, areas: Option<&AreaTableRes>, area: u32) 
 /// `None` where the reference prints nothing: status 0 with no row for the OLD area, status 1
 /// with an unchanged area, and any status past 4.
 fn stone_line(
-    script: &UiScript,
+    mut script: &mut UiScript,
     areas: Option<&AreaTableRes>,
     old: u32,
     new: u32,
@@ -464,7 +460,7 @@ fn stone_line(
     match status {
         0 => {
             let name = area_name(areas, old)?;
-            crate::ui_action::keyed_line_s(script, "ERR_MEETING_STONE_LEFT_QUEUE_S", &[name])
+            crate::ui_action::keyed_line_s(&mut script, "ERR_MEETING_STONE_LEFT_QUEUE_S", &[name])
         }
         1 => {
             if new == old {
@@ -472,12 +468,12 @@ fn stone_line(
             }
             let name = area_name(areas, new)
                 .map(str::to_string)
-                .unwrap_or_else(|| global_text(script, "UNKNOWN"));
-            crate::ui_action::keyed_line_s(script, "ERR_MEETING_STONE_IN_QUEUE_S", &[&name])
+                .unwrap_or_else(|| global_text(&mut *script, "UNKNOWN"));
+            crate::ui_action::keyed_line_s(&mut script, "ERR_MEETING_STONE_IN_QUEUE_S", &[&name])
         }
-        2 => crate::ui_action::keyed_line(script, "ERR_MEETING_STONE_OTHER_MEMBER_LEFT"),
-        3 => crate::ui_action::keyed_line(script, "ERR_MEETING_STONE_PARTY_KICKED_FROM_QUEUE"),
-        4 => crate::ui_action::keyed_line(script, "ERR_MEETING_STONE_MEMBER_STILL_IN_QUEUE"),
+        2 => crate::ui_action::keyed_line(&mut script, "ERR_MEETING_STONE_OTHER_MEMBER_LEFT"),
+        3 => crate::ui_action::keyed_line(&mut script, "ERR_MEETING_STONE_PARTY_KICKED_FROM_QUEUE"),
+        4 => crate::ui_action::keyed_line(&mut script, "ERR_MEETING_STONE_MEMBER_STILL_IN_QUEUE"),
         _ => None,
     }
 }
@@ -511,7 +507,7 @@ fn feed_meeting_stone(
 
     for (old, status) in std::mem::take(&mut stone.updates) {
         let new = stone.area;
-        lines.extend(stone_line(&script, areas, old, new, status));
+        lines.extend(stone_line(&mut script, areas, old, new, status));
         if status == 1 && new != old {
             // The status-1 arm's extra block: `Effect_C` kind `0xc` on the local player, then
             // the Meeting Stones tutorial (`0x4ca363`, 1976).
@@ -530,7 +526,7 @@ fn feed_meeting_stone(
         // Every path — the silent legs and an out-of-range status included — rebuilds and fires.
         // The two globals reach the VM BEFORE the event: the stock handler's first act is
         // `IsInMeetingStoneQueue()`, which has to see the area this packet stored.
-        let text = build_stone_text(&script, areas, new);
+        let text = build_stone_text(&mut script, areas, new);
         stone.text = StoneText::Built(text.clone());
         stone.dirty = false;
         script.set_meeting_stone(new, Some(text));
@@ -541,13 +537,13 @@ fn feed_meeting_stone(
         match notice {
             MeetingStoneNotice::Success => {
                 lines.extend(crate::ui_action::keyed_line(
-                    &script,
+                    &mut script,
                     "ERR_MEETING_STONE_SUCCESS",
                 ));
             }
             MeetingStoneNotice::InProgress => {
                 lines.extend(crate::ui_action::keyed_line(
-                    &script,
+                    &mut script,
                     "ERR_MEETING_STONE_IN_PROGRESS",
                 ));
             }
@@ -559,7 +555,7 @@ fn feed_meeting_stone(
                     3 => "ERR_MEETING_STONE_NO_RAID_GROUP",
                     _ => continue,
                 };
-                lines.extend(crate::ui_action::keyed_line(&script, key));
+                lines.extend(crate::ui_action::keyed_line(&mut script, key));
             }
         }
     }
@@ -572,7 +568,7 @@ fn feed_meeting_stone(
             .map(str::to_string)
         {
             Some(name) => lines.extend(crate::ui_action::keyed_line_s(
-                &script,
+                &mut script,
                 "ERR_MEETING_STONE_MEMBER_ADDED_S",
                 &[&name],
             )),
@@ -586,7 +582,7 @@ fn feed_meeting_stone(
     if std::mem::take(&mut stone.dirty) {
         let text = match &stone.text {
             StoneText::None => None,
-            StoneText::Unknown => Some(global_text(&script, "UNKNOWN")),
+            StoneText::Unknown => Some(global_text(&mut *script, "UNKNOWN")),
             StoneText::Built(t) => Some(t.clone()),
         };
         script.set_meeting_stone(stone.area, text);
@@ -777,7 +773,7 @@ fn drain_meeting_stone_joins(
         }
         match verdict {
             StoneJoin::Silent => {}
-            StoneJoin::Refuse(key) => lines.extend(crate::ui_action::keyed_line(&script, key)),
+            StoneJoin::Refuse(key) => lines.extend(crate::ui_action::keyed_line(&mut script, key)),
             StoneJoin::Send => {
                 debug!("meeting stone: join {go_guid:#x}");
                 let _ = commands.0.send(ClientCommand::MeetingStoneJoin { go_guid });
@@ -841,7 +837,7 @@ pub(crate) fn feed_dialog_verbs(
     }
     let lines: Vec<_> = std::mem::take(&mut boot.errors)
         .into_iter()
-        .filter_map(|key| crate::ui_action::keyed_line(&script, key))
+        .filter_map(|key| crate::ui_action::keyed_line(&mut script, key))
         .collect();
     if !lines.is_empty() {
         crate::ui_action::show_messages(&mut script, &mut sink, "ui_dialog_verbs", lines);
@@ -887,7 +883,7 @@ fn drain_latch_verbs(
                 .and_then(|store| store.0.player_money())
                 .unwrap_or(0);
             if pet.cost > money {
-                if let Some(line) = crate::ui_action::keyed_line(&script, "ERR_NOT_ENOUGH_MONEY") {
+                if let Some(line) = crate::ui_action::keyed_line(&mut script, "ERR_NOT_ENOUGH_MONEY") {
                     crate::ui_action::show_messages(
                         &mut script,
                         &mut sink,
@@ -945,7 +941,7 @@ fn drain_queue_verbs(
             .is_some_and(|g| g.in_group && Some(g.leader) != self_guid.0);
         if not_leader {
             if let Some(line) =
-                crate::ui_action::keyed_line(&script, "ERR_MEETING_STONE_NOT_LEADER")
+                crate::ui_action::keyed_line(&mut script, "ERR_MEETING_STONE_NOT_LEADER")
             {
                 crate::ui_action::show_messages(&mut script, &mut sink, "ui_dialog_verbs", [line]);
             }
@@ -1121,13 +1117,13 @@ mod net {
 
     fn on_raid_group_only(In(ev): In<SessionEvent>, mut boot: ResMut<InstanceBoot>) {
         if let SessionEvent::RaidGroupOnly { delay_ms, reason } = ev {
-            boot.apply(delay_ms, reason, std::time::Instant::now());
+            boot.apply(delay_ms, reason, benilla_time::Instant::now());
         }
     }
 
     fn on_area_spirit_healer_time(In(ev): In<SessionEvent>, mut spirit: ResMut<AreaSpiritHealer>) {
         if let SessionEvent::AreaSpiritHealerTime { healer, ms } = ev {
-            spirit.on_time(healer, ms, std::time::Instant::now());
+            spirit.on_time(healer, ms, benilla_time::Instant::now());
         }
     }
 
@@ -1984,7 +1980,7 @@ mod tests {
         let mut chain = benilla_formats::open_chain(&data).expect("open chain");
         let areas =
             AreaTableRes(benilla_formats::load_area_table_catalog(&mut chain).expect("AreaTable"));
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             r#"MEETINGSTONE_TOOLTIP = "Looking for more for %s" UNKNOWN = "Unknown"
                ERR_MEETING_STONE_LEFT_QUEUE_S = "You are no longer queued for %s."
@@ -1998,53 +1994,53 @@ mod tests {
         let text = |l: Option<crate::ui_action::Shown>| l.map(|l| l.text().to_string());
         // Status 0 names the OLD area — and is silent when it has no row.
         assert_eq!(
-            text(stone_line(&s, a, 1519, 0, 0)).as_deref(),
+            text(stone_line(&mut s, a, 1519, 0, 0)).as_deref(),
             Some("You are no longer queued for Stormwind City.")
         );
         assert_eq!(
-            text(stone_line(&s, a, 0, 0, 0)),
+            text(stone_line(&mut s, a, 0, 0, 0)),
             None,
             "no row for area 0: silent"
         );
-        assert_eq!(text(stone_line(&s, a, 999_999, 0, 0)), None);
+        assert_eq!(text(stone_line(&mut s, a, 999_999, 0, 0)), None);
         // Status 1 names the NEW area, falls back to UNKNOWN, and is skipped when unchanged.
         assert_eq!(
-            text(stone_line(&s, a, 0, 1519, 1)).as_deref(),
+            text(stone_line(&mut s, a, 0, 1519, 1)).as_deref(),
             Some("You are now in the queue to join a party for Stormwind City.")
         );
         assert_eq!(
-            text(stone_line(&s, a, 0, 999_999, 1)).as_deref(),
+            text(stone_line(&mut s, a, 0, 999_999, 1)).as_deref(),
             Some("You are now in the queue to join a party for Unknown.")
         );
         assert_eq!(
-            text(stone_line(&s, a, 1519, 1519, 1)),
+            text(stone_line(&mut s, a, 1519, 1519, 1)),
             None,
             "unchanged: skipped"
         );
-        assert_eq!(text(stone_line(&s, a, 0, 0, 2)).as_deref(), Some("left"));
-        assert_eq!(text(stone_line(&s, a, 0, 0, 3)).as_deref(), Some("kicked"));
-        assert_eq!(text(stone_line(&s, a, 0, 0, 4)).as_deref(), Some("still"));
+        assert_eq!(text(stone_line(&mut s, a, 0, 0, 2)).as_deref(), Some("left"));
+        assert_eq!(text(stone_line(&mut s, a, 0, 0, 3)).as_deref(), Some("kicked"));
+        assert_eq!(text(stone_line(&mut s, a, 0, 0, 4)).as_deref(), Some("still"));
         assert_eq!(
-            text(stone_line(&s, a, 0, 0, 5)),
+            text(stone_line(&mut s, a, 0, 0, 5)),
             None,
             "past the table: nothing"
         );
         // The rebuild.
         assert_eq!(
-            build_stone_text(&s, a, 1519),
+            build_stone_text(&mut s, a, 1519),
             "Looking for more for Stormwind City"
         );
-        assert_eq!(build_stone_text(&s, a, 0), "Looking for more for Unknown");
+        assert_eq!(build_stone_text(&mut s, a, 0), "Looking for more for Unknown");
         s.run("MEETINGSTONE_TOOLTIP = string.rep('x', 300) .. '%s'")
             .unwrap();
         assert_eq!(
-            build_stone_text(&s, a, 1519).len(),
+            build_stone_text(&mut s, a, 1519).len(),
             STONE_TEXT_BYTES,
             "the 256-byte buffer"
         );
         s.run("MEETINGSTONE_TOOLTIP = nil").unwrap();
         assert_eq!(
-            build_stone_text(&s, a, 1519),
+            build_stone_text(&mut s, a, 1519),
             "",
             "a missing template is GetText's empty string, not the unreachable %s fallback"
         );

@@ -21,7 +21,7 @@
 //! that the pet paper doll and the happiness icon read, and the **right-click menu**
 //! (`PetCanBeAbandoned`/`PetCanBeRenamed`/`PetAbandon`/`PetDismiss`/`PetRename`, decision 1066).
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -328,72 +328,55 @@ fn slot_at(model: &Model, i: u32) -> Option<&StoredPetAction> {
 }
 
 /// Register the pet-bar globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     let flag = |b: bool| if b { Value::Integer(1) } else { Value::Nil };
 
     // PetHasActionBar() → 1/nil. The bar frame's whole show/hide gate.
-    g.set(
-        "PetHasActionBar",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.pet_bar.has_bar))
-        })?,
-    )?;
+    lua.register_function("PetHasActionBar", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(flag(model.pet_bar.has_bar))
+    })?;
 
     // GetPetActionsUsable() → 1/nil — one answer for the whole bar (the SetDesaturation sweep).
-    g.set(
-        "GetPetActionsUsable",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.pet_bar.actions_usable))
-        })?,
-    )?;
+    lua.register_function("GetPetActionsUsable", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(flag(model.pet_bar.actions_usable))
+    })?;
 
     // GetPetActionInfo(i) → name, subtext, texture, isToken, isActive, autoCastAllowed,
     // autoCastEnabled. An out-of-range index answers a single nil, which the Lua's `if (name)`
     // occupancy test reads exactly as an empty slot (the spellbook bindings' shape).
-    g.set(
-        "GetPetActionInfo",
-        lua.create_function(move |lua, i: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(slot) = slot_at(&model, i) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let v = &slot.view;
-            let text = |s: &Option<String>| match s {
-                Some(s) => Ok(Value::String(lua.create_string(s)?)),
-                None => Ok::<_, mlua::Error>(Value::Nil),
-            };
-            Ok(MultiValue::from_vec(vec![
-                text(&v.name)?,
-                text(&v.subtext)?,
-                text(&v.texture)?,
-                flag(v.is_token),
-                flag(v.active),
-                flag(v.autocast_allowed),
-                flag(v.autocast_enabled),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetPetActionInfo", move |lua, i: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(slot) = slot_at(&model, i) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let v = &slot.view;
+        let text = |s: &Option<String>| s.as_deref().map(Value::from).unwrap_or(Value::Nil);
+        Ok(MultiValue::from(vec![
+            text(&v.name),
+            text(&v.subtext),
+            text(&v.texture),
+            flag(v.is_token),
+            flag(v.active),
+            flag(v.autocast_allowed),
+            flag(v.autocast_enabled),
+        ]))
+    })?;
 
     // GetPetActionCooldown(i) → start, duration, enable — GetActionCooldown's triple and its
     // elapsed-goes-cold rule (an elapsed/absent cooldown answers (0, 0, 1) so a re-feed never
     // replays the sweep).
-    g.set(
-        "GetPetActionCooldown",
-        lua.create_function(|lua, i: u32| {
-            let now: f64 = lua.globals().get("__benilla_now").unwrap_or(0.0);
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match slot_at(&model, i).and_then(|s| s.cooldown) {
-                Some((start, duration, enabled)) if start + duration > now || !enabled => {
-                    (start, duration, i32::from(enabled))
-                }
-                _ => (0.0, 0.0, 1),
-            })
-        })?,
-    )?;
+    lua.register_function("GetPetActionCooldown", |lua, i: u32| {
+        let now: f64 = LuaContext::get_global(lua, "__benilla_now").unwrap_or(0.0);
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match slot_at(&model, i).and_then(|s| s.cooldown) {
+            Some((start, duration, enabled)) if start + duration > now || !enabled => {
+                (start, duration, i32::from(enabled))
+            }
+            _ => (0.0, 0.0, 1),
+        })
+    })?;
 
     // IsPetAttackActive(i) → a BOOLEAN — the left-click fork: true means the press should call
     // the pet OFF (`PetStopAttack`) instead of running the slot.
@@ -403,52 +386,40 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // answers `false`, never nil, even out of range. Consumers only ever test it for truth, so
     // the difference is invisible in use — but a seam that quietly upgraded it to the house
     // convention would be lying about the API.
-    g.set(
-        "IsPetAttackActive",
-        lua.create_function(move |lua, i: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(slot_at(&model, i).is_some_and(|s| s.view.attack_active))
-        })?,
-    )?;
+    lua.register_function("IsPetAttackActive", move |lua, i: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(slot_at(&model, i).is_some_and(|s| s.view.attack_active))
+    })?;
 
     // CastPetAction(i) — queue the press. An EMPTY slot queues nothing: the reference's bar hides
     // an unnamed button, so a press on one can only come from the show-grid state, where it must
     // be inert.
-    g.set(
-        "CastPetAction",
-        lua.create_function(|lua, i: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if slot_at(&model, i).is_some_and(|s| s.view.name.is_some()) {
-                model.pet_actions_pressed.push(i);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CastPetAction", |lua, i: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if slot_at(&model, i).is_some_and(|s| s.view.name.is_some()) {
+            model.pet_actions_pressed.push(i);
+        }
+        Ok(())
+    })?;
 
     // TogglePetAutocast(i) — queue the right-click. Only a slot that CAN autocast queues: the
     // wire verb names a spell id, and a command token has none.
-    g.set(
-        "TogglePetAutocast",
-        lua.create_function(|lua, i: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if slot_at(&model, i).is_some_and(|s| s.view.autocast_allowed) {
-                model.pet_autocast_toggles.push(i);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("TogglePetAutocast", |lua, i: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if slot_at(&model, i).is_some_and(|s| s.view.autocast_allowed) {
+            model.pet_autocast_toggles.push(i);
+        }
+        Ok(())
+    })?;
 
     // HasPetUI() → hasUI, isHunterPet — ALWAYS exactly two returns (`EAX=2` on every path of
     // `0x4be670`), with `(nil, nil)` when there is no pet with a UI. The second return is the
     // gate every stat binding below shares.
-    g.set(
-        "HasPetUI",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let bar = &model.pet_bar;
-            Ok((flag(bar.has_ui), flag(bar.has_ui && bar.stats.hunter_pet)))
-        })?,
-    )?;
+    lua.register_function("HasPetUI", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let bar = &model.pet_bar;
+        Ok((flag(bar.has_ui), flag(bar.has_ui && bar.stats.hunter_pet)))
+    })?;
 
     // GetPetHappiness() → happiness, damagePercentage, loyaltyRate.
     //
@@ -457,69 +428,58 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `PetFrame.lua` hides the icon on `not happiness`, and a 0 leaves it showing with whatever
     // texcoords it had. Only the gate failure is nil, and even then returns 2 and 3 are the
     // numbers (100.0, 0.0), never nil.
-    g.set(
-        "GetPetHappiness",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let s = &model.pet_bar.stats;
-            let happiness = match s.happiness.filter(|_| s.hunter_pet) {
-                Some(b) => Value::Integer(i64::from(b)),
-                None => Value::Nil,
-            };
-            let (dmg, rate) = if happiness == Value::Nil {
-                (100.0, 0.0)
-            } else {
-                (s.damage_percentage, s.loyalty_rate)
-            };
-            Ok(MultiValue::from_vec(vec![
-                happiness,
-                Value::Number(f64::from(dmg)),
-                Value::Number(f64::from(rate)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetPetHappiness", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let s = &model.pet_bar.stats;
+        let happiness_value = s.happiness.filter(|_| s.hunter_pet);
+        let happiness = match happiness_value {
+            Some(b) => Value::Integer(i64::from(b)),
+            None => Value::Nil,
+        };
+        let (dmg, rate) = if happiness_value.is_none() {
+            (100.0, 0.0)
+        } else {
+            (s.damage_percentage, s.loyalty_rate)
+        };
+        Ok(MultiValue::from(vec![
+            happiness,
+            Value::Number(f64::from(dmg)),
+            Value::Number(f64::from(rate)),
+        ]))
+    })?;
 
     // GetPetLoyalty() → the localized level name, or NIL. The one stat binding whose failure is
     // nil rather than a number — level 0 (no loyalty yet) included.
-    g.set(
-        "GetPetLoyalty",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let s = &model.pet_bar.stats;
-            Ok(match s.loyalty.as_deref().filter(|_| s.hunter_pet) {
-                Some(name) => Value::String(lua.create_string(name)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("GetPetLoyalty", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let s = &model.pet_bar.stats;
+        Ok(match s.loyalty.as_deref().filter(|_| s.hunter_pet) {
+            Some(name) => Value::from(name),
+            None => Value::Nil,
+        })
+    })?;
 
     // GetPetTrainingPoints() → totalPoints, spent — the two halves of one packed dword, HIGH word
     // first. Numbers on every path: a gate failure is (0, 0), not nil.
-    g.set(
-        "GetPetTrainingPoints",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let s = &model.pet_bar.stats;
-            let (total, spent) = if s.hunter_pet {
-                s.training_points
-            } else {
-                (0, 0)
-            };
-            Ok((f64::from(total), f64::from(spent)))
-        })?,
-    )?;
+    lua.register_function("GetPetTrainingPoints", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let s = &model.pet_bar.stats;
+        let (total, spent) = if s.hunter_pet {
+            s.training_points
+        } else {
+            (0, 0)
+        };
+        Ok((f64::from(total), f64::from(spent)))
+    })?;
 
     // GetPetExperience() → currXP, nextXP. Numbers on every path, like the pair above; the client
     // converts both `fild qword` off a zero-extended dword, so neither can arrive negative.
-    g.set(
-        "GetPetExperience",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let s = &model.pet_bar.stats;
-            let (cur, next) = if s.hunter_pet { s.experience } else { (0, 0) };
-            Ok((f64::from(cur), f64::from(next)))
-        })?,
-    )?;
+    lua.register_function("GetPetExperience", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let s = &model.pet_bar.stats;
+        let (cur, next) = if s.hunter_pet { s.experience } else { (0, 0) };
+        Ok((f64::from(cur), f64::from(next)))
+    })?;
 
     // UnitCreatureFamily(unit) → the localized family word, or NIL. Exactly ONE return on every
     // path (`0x51a310`, wow-re-VERIFIED) — decision 1062.
@@ -540,34 +500,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // All four of the reference's nil paths arrive as one pushed `None` — no cached record, id 0,
     // id past the table, and a null row (ids 10/13/14/18/22 are absent from the shipped file). A
     // missing or absent token is nil too, through the same match.
-    g.set(
-        "UnitCreatureFamily",
-        lua.create_function(move |lua, token: Option<String>| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let family = token
-                .filter(|t| t.eq_ignore_ascii_case("pet"))
-                .and_then(|_| model.pet_bar.stats.family.as_deref());
-            Ok(match family {
-                Some(name) => Value::String(lua.create_string(name)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("UnitCreatureFamily", move |lua, token: Option<String>| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let family = token
+            .filter(|t| t.eq_ignore_ascii_case("pet"))
+            .and_then(|_| model.pet_bar.stats.family.as_deref());
+        Ok(match family {
+            Some(name) => Value::from(name),
+            None => Value::Nil,
+        })
+    })?;
 
     // GetPetIcon() → the pet's icon path, or NIL. One return. The stable window reads it both as a
     // predicate ("is there a current pet?", `PetStable.lua:51`) and as the texture itself (`161`),
     // so the nil must be a real nil rather than an empty string — `SetItemButtonTexture` would
     // happily take "" and a path resolving to nothing draws WHITE (decision 1046).
-    g.set(
-        "GetPetIcon",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match model.pet_bar.stats.icon.as_deref() {
-                Some(path) => Value::String(lua.create_string(path)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("GetPetIcon", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match model.pet_bar.stats.icon.as_deref() {
+            Some(path) => Value::from(path),
+            None => Value::Nil,
+        })
+    })?;
 
     // GetPetFoodTypes() → the diet names as VARARGS, one Lua return per food type, in record
     // order — the shape `BuildListString(GetPetFoodTypes())` needs (ref
@@ -579,20 +533,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // would silently break. It is reachable two ways, both real — a family whose mask is 0 (every
     // warlock minion), and the binding's own `0x6116e0` hunter gate, which the app applies before
     // filling this list.
-    g.set(
-        "GetPetFoodTypes",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let values: Vec<Value> = model
-                .pet_bar
-                .stats
-                .food_types
-                .iter()
-                .map(|f| lua.create_string(f).map(Value::String))
-                .collect::<mlua::Result<_>>()?;
-            Ok(MultiValue::from_vec(values))
-        })?,
-    )?;
+    lua.register_function("GetPetFoodTypes", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let values: Vec<Value> = model
+            .pet_bar
+            .stats
+            .food_types
+            .iter()
+            .map(|food| Value::from(food.as_str()))
+            .collect();
+        Ok(MultiValue::from(values))
+    })?;
 
     // PetStopAttack() — queue the call-off. No argument: the wire carries only the pet's guid.
     // The six one-shot orders (`0x4be450`…`0x4be4a0`, wow-re `pet-action-bar-api.md` §10.9,
@@ -618,26 +569,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("PetFollow", order(PET_ACT_COMMAND, PET_COMMAND_FOLLOW)),
         ("PetAttack", order(PET_ACT_COMMAND, PET_COMMAND_ATTACK)),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                if model.pet_bar.has_bar {
-                    model.pet_orders.push(packed);
-                }
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if model.pet_bar.has_bar {
+                model.pet_orders.push(packed);
+            }
+            Ok(())
+        })?;
     }
 
-    g.set(
-        "PetStopAttack",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pet_stop_attacks += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("PetStopAttack", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pet_stop_attacks += 1;
+        Ok(())
+    })?;
 
     // ── The right-click menu (decision 1066) ─────────────────────────────────────────────────
     // Two predicates that decide what the PET menu SHOWS, and three verbs it can pick. The
@@ -645,64 +590,53 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // one of its four uses is a bare `not PetCanBeAbandoned()` or an AND of the two.
 
     // PetCanBeAbandoned() → 1/nil. Do not read this as "may I abandon": it forks the whole menu.
-    g.set(
-        "PetCanBeAbandoned",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.pet_bar.can_be_abandoned))
-        })?,
-    )?;
+    lua.register_function("PetCanBeAbandoned", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(flag(model.pet_bar.can_be_abandoned))
+    })?;
 
     // PetCanBeRenamed() → 1/nil. Independent of the above; the rename row wants both.
-    g.set(
-        "PetCanBeRenamed",
-        lua.create_function(move |lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.pet_bar.can_be_renamed))
-        })?,
-    )?;
+    lua.register_function("PetCanBeRenamed", move |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(flag(model.pet_bar.can_be_renamed))
+    })?;
 
     // PetAbandon() — the ABANDON_PET popup's OnAccept, i.e. the confirmed permanent one.
-    g.set(
-        "PetAbandon",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pet_abandons += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("PetAbandon", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pet_abandons += 1;
+        Ok(())
+    })?;
 
     // PetDismiss() — the menu row itself, with NO confirm in front of it (`UnitPopup.lua:590`
     // calls it directly, unlike abandon). Nothing is lost when a summon is sent away.
-    g.set(
-        "PetDismiss",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pet_dismisses += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("PetDismiss", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pet_dismisses += 1;
+        Ok(())
+    })?;
 
     // PetRename(name) — the PETRENAMECONFIRM popup's OnAccept, carrying the text the RENAME_PET
     // edit box collected.
     //
-    // The argument reaches `lua_tostring`, so a NUMBER coerces (wow-re §11c) — `mlua::String`
-    // accepts one the same way. What the reference does with the RESULT is the app's business and
+    // The argument reaches `lua_tostring`, so a NUMBER coerces (wow-re §11c). What the reference
+    // does with the RESULT is the app's business and
     // is queued for it rather than dropped here: an empty name raises `ERR_NULL_PETNAME` and an
     // over-long one is truncated, both at the send. Only a missing or unconvertible argument dies
     // here, because there is nothing to queue.
-    g.set(
-        "PetRename",
-        lua.create_function(|lua, name: Option<mlua::String>| {
-            let Some(name) = name else {
-                return Ok(());
-            };
-            let name = name.to_str()?.to_string();
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pet_renames.push(name);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("PetRename", |lua, name: Option<Value>| {
+        let Some(name) = name.and_then(|value| match value {
+            Value::String(value) => value.as_str().ok().map(str::to_owned),
+            Value::Integer(value) => Some(value.to_string()),
+            Value::Number(value) => Some(super::binding_abi::lua_number_text(value)),
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pet_renames.push(name);
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -882,27 +816,27 @@ mod tests {
 
         // No pet pushed: every row is off, which is what keeps a menu of dead rows from opening.
         assert!(s
-            .eval::<bool>("return PetCanBeAbandoned() == nil and PetCanBeRenamed() == nil")
+            .eval_truthy("return PetCanBeAbandoned() == nil and PetCanBeRenamed() == nil")
             .unwrap());
 
         // A hunter's freshly tamed pet: abandon/rename/paperdoll show, dismiss hides.
         s.set_pet_menu(true, true);
         assert_eq!(s.eval::<i64>("return PetCanBeAbandoned()").unwrap(), 1);
         assert!(
-            s.eval::<bool>("return PetCanBeAbandoned() and PetCanBeRenamed()")
+            s.eval_truthy("return PetCanBeAbandoned() and PetCanBeRenamed()")
                 .unwrap(),
             "the rename row wants BOTH"
         );
-        assert!(!s.eval::<bool>("return not PetCanBeAbandoned()").unwrap());
+        assert!(!s.eval_truthy("return not PetCanBeAbandoned()").unwrap());
 
         // The same pet after one rename — the bit is one-shot, so only the rename row goes.
         s.set_pet_menu(true, false);
-        assert!(s.eval::<bool>("return PetCanBeAbandoned() ~= nil").unwrap());
-        assert!(s.eval::<bool>("return PetCanBeRenamed() == nil").unwrap());
+        assert!(s.eval_truthy("return PetCanBeAbandoned() ~= nil").unwrap());
+        assert!(s.eval_truthy("return PetCanBeRenamed() == nil").unwrap());
 
         // A warlock's demon: the fork flips whole. Dismiss is the row that shows.
         s.set_pet_menu(false, false);
-        assert!(s.eval::<bool>("return not PetCanBeAbandoned()").unwrap());
+        assert!(s.eval_truthy("return not PetCanBeAbandoned()").unwrap());
 
         // The verbs. Abandon and dismiss are counted apart; rename carries its text.
         assert_eq!(s.take_pet_gives_up(), (0, 0));
@@ -1138,7 +1072,7 @@ mod tests {
     /// — two returns on every path, never zero.
     #[test]
     fn no_pet_still_answers_two_values_from_has_pet_ui() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(s
             .eval::<bool>("local ui, hunter = HasPetUI() return ui == nil and hunter == nil")
             .unwrap());

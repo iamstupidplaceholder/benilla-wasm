@@ -53,7 +53,7 @@ fn resolve_service(
         None,
         &deps.items,
         &deps.commands,
-        &probe_strings,
+        &mut probe_strings,
     )
 }
 
@@ -82,7 +82,7 @@ fn snap(open: &TrainerOpen, spells: &SpellCatalog) -> Option<TrainerState> {
         None,
         &deps.items,
         &deps.commands,
-        &probe_strings,
+        &mut probe_strings,
     )
 }
 
@@ -758,14 +758,14 @@ fn the_group_header_keys_resolve_in_the_real_global_strings() {
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
-    let vm = benilla_ui::script::UiScript::new().expect("VM");
+    let mut vm = benilla_ui::script::UiScript::new().expect("VM");
     vm.run(&String::from_utf8_lossy(&src)).expect("runs clean");
     for key in [
         "TRADESKILL_SERVICE_STEP",
         "TRADESKILL_SERVICE_LEARN",
         "KNOWN_TALENTS_HEADER",
     ] {
-        let text = vm.lua().globals().get::<String>(key).unwrap_or_default();
+        let text = vm.global_string(key).unwrap_or_default();
         assert!(!text.is_empty(), "{key} missing");
     }
 }

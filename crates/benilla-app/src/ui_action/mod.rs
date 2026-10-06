@@ -31,8 +31,10 @@ use benilla_protocol::messages::ActionButton;
 
 use crate::ui_script::UiInput;
 use crate::ui_unit::UnitFeed;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 
+pub(crate) mod catalogs;
+
+mod autorepeat_qol;
 mod cast_fail;
 mod cast_send;
 pub(crate) mod cast_target;
@@ -340,30 +342,13 @@ pub(crate) struct SpellMechanics {
     pub(crate) catalog: benilla_formats::SpellMechanicCatalog,
 }
 
-fn load_spell_mechanics(mut commands: Commands, assets: Option<Res<benilla_assets::WorldAssets>>) {
-    let Some(assets) = assets else { return };
-    let loaded = {
-        let mut chain = benilla_assets::LockRecover::lock_recover(&*assets.chain);
-        benilla_formats::load_spell_mechanic_catalog(&mut chain)
-    };
-    match loaded {
-        Ok(catalog) => {
-            debug!("ui_action: {} spell-mechanic name(s)", catalog.len());
-            commands.insert_resource(SpellMechanics { catalog });
-        }
-        // Absent data is the strip fallback, not a failure: the refusal still appears, it just
-        // shows its bare stem instead of naming what is holding you.
-        Err(e) => warn!(
-            "ui_action: SpellMechanic.dbc failed to load — the crowd-control refusal drops the \
-             mechanic name: {e:#}"
-        ),
-    }
-}
-
 pub(crate) struct UiActionPlugin;
 
 impl Plugin for UiActionPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<catalogs::ActionCatalogsPlugin>() {
+            app.add_plugins(catalogs::ActionCatalogsPlugin);
+        }
         app.add_observer(on_cvar);
         app.init_resource::<PlayerActions>()
             .init_resource::<LearnedAbilities>()
@@ -379,8 +364,6 @@ impl Plugin for UiActionPlugin {
             .init_resource::<cast_target::AutoSelfCast>()
             .init_resource::<targeting::SpellTargeting>()
             .init_resource::<targeting::EnchantConfirmItem>()
-            .add_systems(Startup, load_spells.after(AssetSet::Open))
-            .add_systems(Startup, load_spell_mechanics.after(AssetSet::Open))
             .add_systems(
                 Update,
                 (
@@ -398,6 +381,11 @@ impl Plugin for UiActionPlugin {
                         .in_set(UnitFeed)
                         .before(feed::feed_actions),
                     feed::feed_actions.in_set(UnitFeed),
+                    // Intentional QoL: consume replicated target death before
+                    // publishing the repeat state and before the animation pass.
+                    autorepeat_qol::stop_on_dead_target
+                        .in_set(UnitFeed)
+                        .before(state::feed_action_state),
                     state::feed_action_state
                         .in_set(UnitFeed)
                         .in_set(CooldownEvents)
@@ -438,71 +426,5 @@ impl Plugin for UiActionPlugin {
                     targeting::commit_item_cast_on_pick.after(UiInput),
                 ),
             );
-    }
-}
-
-fn load_spells(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
-    let Some(assets) = assets else { return };
-    let loaded = {
-        let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_spell_catalog(&mut chain)
-    };
-    match loaded {
-        Ok(catalog) => {
-            let forms = {
-                let mut chain = assets.chain.lock_recover();
-                benilla_formats::load_shapeshift_forms(&mut chain).unwrap_or_else(|e| {
-                    warn!("ui_action: SpellShapeshiftForm.dbc failed — stance paging off: {e:#}");
-                    Default::default()
-                })
-            };
-            let ranges = {
-                let mut chain = assets.chain.lock_recover();
-                benilla_formats::load_spell_ranges(&mut chain).unwrap_or_else(|e| {
-                    warn!("ui_action: SpellRange.dbc failed — range indicator off: {e:#}");
-                    benilla_formats::SpellRangeCatalog::default()
-                })
-            };
-            let cast_times = {
-                let mut chain = assets.chain.lock_recover();
-                benilla_formats::load_spell_cast_times(&mut chain).unwrap_or_else(|e| {
-                    warn!("ui_action: SpellCastTimes.dbc failed — cast-time cell off: {e:#}");
-                    Default::default()
-                })
-            };
-            let durations = {
-                let mut chain = assets.chain.lock_recover();
-                benilla_formats::load_spell_durations(&mut chain).unwrap_or_else(|e| {
-                    warn!("ui_action: SpellDuration.dbc failed — $d/$o tokens off: {e:#}");
-                    Default::default()
-                })
-            };
-            let radii = {
-                let mut chain = assets.chain.lock_recover();
-                benilla_formats::load_spell_radii(&mut chain).unwrap_or_else(|e| {
-                    warn!("ui_action: SpellRadius.dbc failed — $a token off: {e:#}");
-                    Default::default()
-                })
-            };
-            info!(
-                "ui_action: {} spells in the display catalog, {} shapeshift forms, {} range rows, \
-                 {} cast times, {} durations, {} radii",
-                catalog.len(),
-                forms.len(),
-                ranges.len(),
-                cast_times.len(),
-                durations.len(),
-                radii.len()
-            );
-            commands.insert_resource(Spells {
-                catalog,
-                forms,
-                ranges,
-                cast_times,
-                durations,
-                radii,
-            });
-        }
-        Err(e) => warn!("ui_action: Spell.dbc failed to load — bar icons disabled: {e:#}"),
     }
 }

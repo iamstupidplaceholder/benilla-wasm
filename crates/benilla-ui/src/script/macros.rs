@@ -29,53 +29,15 @@
 //! parses it. Same split as everywhere else in this crate: data and layout here, game knowledge
 //! there.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::cursor::{queue_cursor_update, CursorMacro, CursorPayload};
 use super::Model;
+pub use crate::script_data::{MacroState, MacroView, MAX_MACROS, MAX_MACRO_BODY, MAX_MACRO_NAME};
 
 /// Macros per tab — the shipped `Blizzard_MacroUI.lua`'s own `MAX_MACROS = 18`, and the account
 /// tab's size *and* the character tab's base (`MacroFrame_SetCharacterMacros` sets
 /// `macroBase = MAX_MACROS`).
-pub const MAX_MACROS: usize = 18;
-
-/// The macro **name** length cap — `MacroPopupEditBox`'s `letters="16"` and its label
-/// `MACRO_POPUP_TEXT = "Enter Macro Name (Max 16 Characters):"`. Enforced here as well as in the
-/// box, because `CreateMacro`/`EditMacro` are callable from any script.
-pub const MAX_MACRO_NAME: usize = 16;
-
-/// The macro **body** length cap — `MacroFrameText`'s `letters="255"` and its counter
-/// `MACROFRAME_CHAR_LIMIT = "%d/255 Characters Used"`.
-pub const MAX_MACRO_BODY: usize = 255;
-
-/// One macro, as `GetMacroInfo` reports it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct MacroView {
-    /// The player's name for it (≤ [`MAX_MACRO_NAME`] characters).
-    pub name: String,
-    /// The chosen icon's **texture path** (`Interface\Icons\Ability_Ambush`). Stored resolved
-    /// rather than as an index into the chooser list: the reference's own save format writes the
-    /// icon by NAME (`MACRO %d "%s" %s`, byte-verified at `0x44cb60`), so a name is what survives
-    /// a restart — an index would silently re-point if the list ever changed.
-    pub texture: Option<String>,
-    /// The macro body: the lines run when the macro is used, `\n`-separated, ≤ [`MAX_MACRO_BODY`].
-    pub body: String,
-    /// `GetMacroInfo`'s fourth return (`isLocal`) and `CreateMacro`/`EditMacro`'s `local`
-    /// argument. The 1.12 client keeps a second file for these (`macros-local.txt` beside
-    /// `macros-cache.txt`, both byte-verified strings at `0x45de74`/`0x45de88`); the shipped macro
-    /// UI never passes the flag, so it is carried faithfully and is otherwise inert.
-    pub local_only: bool,
-}
-
-/// The whole macro table: the two dense lists behind the frame's two tabs (module docs).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct MacroState {
-    /// Indices 1..=18.
-    pub account: Vec<MacroView>,
-    /// Indices 19..=36.
-    pub character: Vec<MacroView>,
-}
-
 /// A 1-based Lua macro index resolved into `(which list, position in it)` — the one place the
 /// 1..36 space is split, so no binding re-derives the base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,7 +134,7 @@ impl super::UiScript {
 
     /// Read the live macro table — the app's save path, taken when [`Self::take_macros_dirty`]
     /// reports a change.
-    pub fn macros(&self) -> MacroState {
+    pub fn macros(&mut self) -> MacroState {
         self.model_mut().macros.clone()
     }
 
@@ -198,7 +160,7 @@ impl super::UiScript {
     /// Distinct from [`Self::take_macros_dirty`] on purpose — that one is a *drained* edge with
     /// exactly one owner (the save), and a second consumer draining it would silently eat the
     /// other's save.
-    pub fn macros_generation(&self) -> u64 {
+    pub fn macros_generation(&mut self) -> u64 {
         self.model_mut().macros_generation
     }
 }
@@ -322,7 +284,7 @@ fn pickup_macro(model: &mut Model, index: usize) -> bool {
 /// Coerce a Lua argument that the shipped UI passes as either a real value or `nil`/`false`.
 fn opt_string(v: Option<&Value>) -> Option<String> {
     match v {
-        Some(Value::String(s)) => Some(s.to_string_lossy()),
+        Some(Value::String(s)) => Some(s.to_string_lossy().into_owned()),
         _ => None,
     }
 }
@@ -330,157 +292,134 @@ fn opt_string(v: Option<&Value>) -> Option<String> {
 /// The reference's own truthiness for the `local`/`perCharacter` flags: `MacroPopupOkayButton_OnClick`
 /// passes the Lua boolean `(MacroFrame.macroBase > 0)`, and the shipped `local` argument is always
 /// `nil`. `0` reads falsy here (the numeric convention `UseAction`'s `checkCursor` established —
-/// `super::action::truthy_nonzero`'s law, shared so the two cannot drift).
+/// `super::action::truthy_nonzero`'s law, repeated over the backend-neutral value type until the
+/// action registrar moves to the same boundary.
 fn flag(v: Option<&Value>) -> bool {
-    v.is_some_and(super::action::truthy_nonzero)
+    match v {
+        None | Some(Value::Nil | Value::Boolean(false)) => false,
+        Some(Value::Integer(i)) => *i != 0,
+        Some(Value::Number(n)) => *n != 0.0,
+        Some(_) => true,
+    }
 }
 
 /// Register the macro globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumMacros() -> numAccountMacros, numCharacterMacros.
-    g.set(
-        "GetNumMacros",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok((
-                model.macros.account.len() as i64,
-                model.macros.character.len() as i64,
-            ))
-        })?,
-    )?;
+    lua.register_function("GetNumMacros", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok((
+            model.macros.account.len() as i64,
+            model.macros.character.len() as i64,
+        ))
+    })?;
 
     // GetMacroInfo(index) -> name, texture, body, isLocal. An empty/out-of-range slot answers a
     // single nil (the out-of-range shape every list binding in this crate uses).
-    g.set(
-        "GetMacroInfo",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(m) = model.macros.get(index) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let texture = match &m.texture {
-                Some(t) => Value::String(lua.create_string(t)?),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&m.name)?),
-                texture,
-                Value::String(lua.create_string(&m.body)?),
-                if m.local_only {
-                    Value::Integer(1)
-                } else {
-                    Value::Nil
-                },
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetMacroInfo", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(m) = model.macros.get(index) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let texture = match &m.texture {
+            Some(t) => Value::from(t.clone()),
+            None => Value::Nil,
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(m.name.clone()),
+            texture,
+            Value::from(m.body.clone()),
+            if m.local_only {
+                Value::Integer(1)
+            } else {
+                Value::Nil
+            },
+        ]))
+    })?;
 
     // GetMacroIndexByName(name) -> index (0 = no match).
-    g.set(
-        "GetMacroIndexByName",
-        lua.create_function(|lua, name: String| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.macros.index_by_name(&name) as i64)
-        })?,
-    )?;
+    lua.register_function("GetMacroIndexByName", |lua, name: String| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.macros.index_by_name(&name) as i64)
+    })?;
 
     // GetNumMacroIcons() -> the chooser list's length.
-    g.set(
-        "GetNumMacroIcons",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.macro_icons.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumMacroIcons", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.macro_icons.len() as i64)
+    })?;
 
     // GetMacroIconInfo(index) -> texture path; 1-based, out of range -> nil.
-    g.set(
-        "GetMacroIconInfo",
-        lua.create_function(|lua, index: usize| {
-            let path = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                index
-                    .checked_sub(1)
-                    .and_then(|i| model.macro_icons.get(i))
-                    .cloned()
-            };
-            match path {
-                Some(p) => Ok(Value::String(lua.create_string(&p)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetMacroIconInfo", |lua, index: usize| {
+        let path = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            index
+                .checked_sub(1)
+                .and_then(|i| model.macro_icons.get(i))
+                .cloned()
+        };
+        match path {
+            Some(p) => Ok(Value::from(p)),
+            None => Ok(Value::Nil),
+        }
+    })?;
 
     // CreateMacro(name, iconIndex, body, local, perCharacter) -> index | nil.
     // `iconIndex` is an index into the chooser list (the shipped popup passes
     // `MacroPopupFrame.selectedIcon`), resolved to a path HERE so the stored macro keeps a name
     // that survives a restart.
-    g.set(
-        "CreateMacro",
-        lua.create_function(|lua, args: MultiValue| {
-            let a: Vec<Value> = args.into_iter().collect();
-            let name = opt_string(a.first()).unwrap_or_default();
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let texture = icon_path(&model, a.get(1));
-            let body = opt_string(a.get(2)).unwrap_or_default();
-            let (local_only, per_character) = (flag(a.get(3)), flag(a.get(4)));
-            Ok(
-                match create_macro(&mut model, &name, texture, &body, local_only, per_character) {
-                    Some(i) => Value::Integer(i as i64),
-                    None => Value::Nil,
-                },
-            )
-        })?,
-    )?;
+    lua.register_function("CreateMacro", |lua, args: MultiValue| {
+        let a: Vec<Value> = args.into_iter().collect();
+        let name = opt_string(a.first()).unwrap_or_default();
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let texture = icon_path(&model, a.get(1));
+        let body = opt_string(a.get(2)).unwrap_or_default();
+        let (local_only, per_character) = (flag(a.get(3)), flag(a.get(4)));
+        Ok(
+            match create_macro(&mut model, &name, texture, &body, local_only, per_character) {
+                Some(i) => Value::Integer(i as i64),
+                None => Value::Nil,
+            },
+        )
+    })?;
 
     // EditMacro(index, name, icon, body, local) -> index | nil. Absent arguments leave their
     // field alone (see `edit_macro` — the shipped UI relies on it).
-    g.set(
-        "EditMacro",
-        lua.create_function(|lua, args: MultiValue| {
-            let a: Vec<Value> = args.into_iter().collect();
-            let Some(index) = a.first().and_then(|v| v.as_integer()).map(|i| i as usize) else {
-                return Ok(Value::Nil);
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // An icon argument that is present-and-resolvable replaces; an absent/nil one leaves
-            // the icon alone. (`MacroFrame_SaveMacro` passes nil here on every body-only save.)
-            let texture = match a.get(2) {
-                None | Some(Value::Nil) => None,
-                other => Some(icon_path(&model, other)),
-            };
-            let name = opt_string(a.get(1));
-            let body = opt_string(a.get(3));
-            let local_only = match a.get(4) {
-                None | Some(Value::Nil) => None,
-                other => Some(flag(other)),
-            };
-            Ok(
-                match edit_macro(&mut model, index, name, texture, body, local_only) {
-                    Some(i) => Value::Integer(i as i64),
-                    None => Value::Nil,
-                },
-            )
-        })?,
-    )?;
+    lua.register_function("EditMacro", |lua, args: MultiValue| {
+        let a: Vec<Value> = args.into_iter().collect();
+        let Some(index) = a.first().and_then(super::binding_abi::neutral_integer).and_then(|i| usize::try_from(i).ok()) else {
+            return Ok(Value::Nil);
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // An icon argument that is present-and-resolvable replaces; an absent/nil one leaves
+        // the icon alone. (`MacroFrame_SaveMacro` passes nil here on every body-only save.)
+        let texture = match a.get(2) {
+            None | Some(Value::Nil) => None,
+            other => Some(icon_path(&model, other)),
+        };
+        let name = opt_string(a.get(1));
+        let body = opt_string(a.get(3));
+        let local_only = match a.get(4) {
+            None | Some(Value::Nil) => None,
+            other => Some(flag(other)),
+        };
+        Ok(
+            match edit_macro(&mut model, index, name, texture, body, local_only) {
+                Some(i) => Value::Integer(i as i64),
+                None => Value::Nil,
+            },
+        )
+    })?;
 
-    g.set(
-        "DeleteMacro",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(delete_macro(&mut model, index))
-        })?,
-    )?;
+    lua.register_function("DeleteMacro", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(delete_macro(&mut model, index))
+    })?;
 
-    g.set(
-        "PickupMacro",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(pickup_macro(&mut model, index))
-        })?,
-    )?;
+    lua.register_function("PickupMacro", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(pickup_macro(&mut model, index))
+    })?;
 
     Ok(())
 }
@@ -489,9 +428,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 /// already (nothing shipped does that, but a script may, and the store holds paths anyway).
 fn icon_path(model: &Model, v: Option<&Value>) -> Option<String> {
     match v {
-        Some(Value::String(s)) => Some(s.to_string_lossy()),
+        Some(Value::String(s)) => Some(s.to_string_lossy().into_owned()),
         Some(v) => {
-            let i = v.as_integer()?;
+            let i = super::binding_abi::neutral_integer(v)?;
             let i = usize::try_from(i).ok()?.checked_sub(1)?;
             model.macro_icons.get(i).cloned()
         }
@@ -518,7 +457,7 @@ mod tests {
     /// including the index space's account/character split.
     #[test]
     fn the_macro_api_round_trip_over_the_two_tabs() {
-        let s = seeded();
+        let mut s = seeded();
         assert_eq!(
             s.eval::<(i64, i64)>("local a, c = GetNumMacros() return a, c")
                 .unwrap(),
@@ -543,7 +482,7 @@ mod tests {
 
         // GetMacroInfo's four returns, with the icon index resolved to a path at create time.
         let (name, tex, body, is_local) = s
-            .eval::<(String, String, String, Value)>(
+            .eval::<(String, String, String, Option<i64>)>(
                 "local n, t, b, l = GetMacroInfo(1) return n, t, b, l",
             )
             .unwrap();
@@ -551,7 +490,7 @@ mod tests {
             (name.as_str(), tex.as_str(), body.as_str()),
             ("Ambush", "Interface\\Icons\\Ability_Ambush", "/cast Ambush")
         );
-        assert_eq!(is_local, Value::Nil);
+        assert_eq!(is_local, None);
 
         // By-name is case-insensitive and searches the account list first; a miss is 0.
         assert_eq!(
@@ -585,7 +524,7 @@ mod tests {
     /// blank the body, and a body save must not blank the name or icon.
     #[test]
     fn edit_macro_leaves_omitted_fields_alone() {
-        let s = seeded();
+        let mut s = seeded();
         s.run(r#"CreateMacro("Old", 1, "/cast Ambush")"#).unwrap();
 
         // MacroPopupOkayButton_OnClick's edit form: name + icon, no body.
@@ -617,7 +556,7 @@ mod tests {
     /// The two refusals the client names in its own log lines, and the caps the edit boxes carry.
     #[test]
     fn create_refuses_a_blank_name_and_a_full_tab_and_clamps_the_caps() {
-        let s = seeded();
+        let mut s = seeded();
         assert!(s
             .eval::<bool>(r#"return CreateMacro("", 1, "x") == nil"#)
             .unwrap());
@@ -644,7 +583,7 @@ mod tests {
         );
 
         // The caps are the shipped boxes' own letters= values, enforced at the API too.
-        let s = seeded();
+        let mut s = seeded();
         s.run(&format!(
             r#"CreateMacro("{}", 1, "{}")"#,
             "N".repeat(40),
@@ -696,7 +635,7 @@ mod tests {
     fn pickup_macro_loads_the_cursor_and_refuses_while_holding() {
         use crate::script::cursor::CursorPayload;
 
-        let s = seeded();
+        let mut s = seeded();
         s.run(r#"CreateMacro("Ambush", 1, "/cast Ambush")"#)
             .unwrap();
 
@@ -728,7 +667,7 @@ mod tests {
     /// than an error (`MacroPopupFrame_Update` indexes past the end on the last row every time).
     #[test]
     fn the_icon_chooser_list_is_one_based_with_a_nil_tail() {
-        let s = seeded();
+        let mut s = seeded();
         assert_eq!(s.eval::<i64>("return GetNumMacroIcons()").unwrap(), 3);
         assert_eq!(
             s.eval::<String>("return GetMacroIconInfo(2)").unwrap(),

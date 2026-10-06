@@ -909,7 +909,7 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
 
         let g = GroupState::default();
@@ -926,7 +926,7 @@ mod tests {
             let msg = g
                 .apply_command_result(party_operation::INVITE, "Zed", r)
                 .unwrap();
-            let text: String = s.lua().globals().get(msg.key).expect(msg.key);
+            let text: String = s.global_string(msg.key).expect(msg.key);
             assert!(!text.is_empty(), "{} resolves empty", msg.key);
             // An `_S` key must actually carry the hole its fill expects.
             assert_eq!(
@@ -955,7 +955,7 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
 
         let mut g = GroupState::default();
@@ -999,7 +999,7 @@ mod tests {
         );
 
         for msg in &lines {
-            let text: String = s.lua().globals().get(msg.key).expect(msg.key);
+            let text: String = s.global_string(msg.key).expect(msg.key);
             assert!(!text.is_empty(), "{} resolves empty", msg.key);
             assert!(
                 benilla_ui::messages::by_key(msg.key).is_some(),

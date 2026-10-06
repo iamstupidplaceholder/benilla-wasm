@@ -88,8 +88,8 @@ fn seated() -> UiScript {
 ///
 /// Rank **17** is deliberately left unseated: it is the "the key exists in no locale" case the nil
 /// tests need, now that 19 is a real title here.
-fn seat_rank_globals(s: &UiScript) {
-    let g = s.lua().globals();
+fn seat_rank_globals(s: &mut UiScript) {
+    let vm = s.vm_mut();
     for (key, value) in [
         ("PVP_RANK_1_1", "Pariah"),
         ("PVP_RANK_4_1", "Dishonored"),
@@ -103,20 +103,20 @@ fn seat_rank_globals(s: &UiScript) {
         ("PVP_RANK_19_1", "Leader"),
         ("PVP_RANK_19_1_FEMALE", "Leader (f)"),
     ] {
-        g.set(key, value).expect("global string");
+        vm.set_global(key, value).expect("global string");
     }
 }
 
 /// The GlobalStrings `UnitPVPName`'s decoration reads — the enUS templates, which is what makes
 /// the two-`%s` substitution testable at all (see [`format_two_strings`]).
-fn seat_name_globals(s: &UiScript) {
-    let g = s.lua().globals();
+fn seat_name_globals(s: &mut UiScript) {
+    let vm = s.vm_mut();
     for (key, value) in [
         ("UNIT_PVP_NAME", "%s %s"),
         ("PVP_RANK_CIVILIAN", "Civilian"),
         ("PVP_MEDAL1", "Guardian of Stormwind"),
     ] {
-        g.set(key, value).expect("global string");
+        vm.set_global(key, value).expect("global string");
     }
 }
 
@@ -126,7 +126,7 @@ fn seat_name_globals(s: &UiScript) {
 /// shifts a whole pane by a column.
 #[test]
 fn the_reference_destructuring_lands_every_value_in_the_right_slot() {
-    let s = seated();
+    let mut s = seated();
 
     assert_eq!(
         s.eval::<(i64, i64)>("local hk, dk = GetPVPSessionStats() return hk, dk")
@@ -172,7 +172,7 @@ fn the_reference_destructuring_lands_every_value_in_the_right_slot() {
 #[test]
 fn a_lifetime_rank_below_five_is_reported_as_zero() {
     let mut s = seated();
-    let third = |s: &UiScript| {
+    let third = |s: &mut UiScript| {
         s.eval::<i64>("local _, _, highest = GetPVPLifetimeStats() return highest")
             .unwrap()
     };
@@ -181,7 +181,7 @@ fn a_lifetime_rank_below_five_is_reported_as_zero() {
             highest_rank: highest,
             ..honor_state()
         }));
-        assert_eq!(third(&s), reported, "highest lifetime rank {highest}");
+        assert_eq!(third(&mut s), reported, "highest lifetime rank {highest}");
     }
 
     // Suppressed to a NUMBER, not to nil: the pane feeds it straight to `GetPVPRankInfo`, which
@@ -202,7 +202,7 @@ fn a_lifetime_rank_below_five_is_reported_as_zero() {
 /// too many would still pass the destructuring test above; the count is what catches it.
 #[test]
 fn every_getter_returns_exactly_the_reference_arity() {
-    let s = seated();
+    let mut s = seated();
     for (call, width) in [
         ("GetPVPSessionStats()", 2),
         ("GetPVPYesterdayStats()", 3),
@@ -222,7 +222,7 @@ fn every_getter_returns_exactly_the_reference_arity() {
 /// reference feeds these straight into `format()`, so a nil would raise inside its pane.
 #[test]
 fn the_self_getters_answer_zeroed_before_the_first_push() {
-    let s = UiScript::new().expect("VM");
+    let mut s = UiScript::new().expect("VM");
     assert_eq!(
         s.eval::<(i64, i64, i64, i64)>("return GetPVPLastWeekStats()")
             .unwrap(),
@@ -244,19 +244,19 @@ fn the_rank_bar_multiplies_by_the_f32_reciprocal_and_never_clamps() {
     assert_ne!(RANK_BAR_SCALE, 1.0 / 255.0, "the f32 is NOT 1/255");
 
     let mut s = seated();
-    let bar = |s: &UiScript| s.eval::<f64>("return GetPVPRankProgress()").unwrap();
+    let bar = |s: &mut UiScript| s.eval::<f64>("return GetPVPRankProgress()").unwrap();
 
     // 51 is the fixture's byte, and 51/255 would be exactly 0.2. The multiply is not.
-    assert_eq!(bar(&s), 51.0 * RANK_BAR_SCALE);
-    assert_ne!(bar(&s), 0.2, "a divisor would land exactly on 0.2");
-    assert_ne!(bar(&s), 51.0 / 255.0);
+    assert_eq!(bar(&mut s), 51.0 * RANK_BAR_SCALE);
+    assert_ne!(bar(&mut s), 0.2, "a divisor would land exactly on 0.2");
+    assert_ne!(bar(&mut s), 51.0 / 255.0);
 
     for byte in [0u8, 1, 51, 128, 254, 255] {
         s.set_honor(Some(HonorState {
             rank_bar: byte,
             ..honor_state()
         }));
-        assert_eq!(bar(&s), f64::from(byte) * RANK_BAR_SCALE, "byte {byte}");
+        assert_eq!(bar(&mut s), f64::from(byte) * RANK_BAR_SCALE, "byte {byte}");
     }
 
     // The ends. Zero is the one input the two readings agree on; a full bar OVERSHOOTS, and
@@ -265,13 +265,13 @@ fn the_rank_bar_multiplies_by_the_f32_reciprocal_and_never_clamps() {
         rank_bar: 0,
         ..honor_state()
     }));
-    assert_eq!(bar(&s), 0.0);
+    assert_eq!(bar(&mut s), 0.0);
     s.set_honor(Some(HonorState {
         rank_bar: 255,
         ..honor_state()
     }));
-    assert!(bar(&s) > 1.0, "255 * K = 1.0000000091389835, unclamped");
-    assert_ne!(bar(&s), 1.0);
+    assert!(bar(&mut s) > 1.0, "255 * K = 1.0000000091389835, unclamped");
+    assert_ne!(bar(&mut s), 1.0);
 
     // The inspect twin runs the identical kernel over the reply's byte (`0x51ab04`).
     s.set_inspect_honor(Some(inspect_state())); // rank_bar 255
@@ -286,9 +286,9 @@ fn the_rank_bar_multiplies_by_the_f32_reciprocal_and_never_clamps() {
 /// writes it, not just the nil.
 #[test]
 fn rank_zero_names_nothing_and_the_pane_falls_back_to_none() {
-    let s = seated();
-    seat_rank_globals(&s);
-    s.lua().globals().set("NONE", "None").expect("NONE");
+    let mut s = seated();
+    seat_rank_globals(&mut s);
+    s.vm_mut().set_global("NONE", "None").expect("NONE");
 
     let (name, number) = s
         .eval::<(Option<String>, i64)>("local n, r = GetPVPRankInfo(0) return n, r")
@@ -315,7 +315,7 @@ fn rank_zero_names_nothing_and_the_pane_falls_back_to_none() {
 #[test]
 fn the_pane_title_is_keyed_by_team_and_is_never_gendered() {
     let mut s = seated();
-    seat_rank_globals(&s);
+    seat_rank_globals(&mut s);
 
     // Female Alliance → the BASE key, with `PVP_RANK_9_1_FEMALE` seated and ignored.
     assert_eq!(
@@ -363,8 +363,8 @@ fn the_pane_title_is_keyed_by_team_and_is_never_gendered() {
 /// names "Leader" here and `(nil, 0)` there.
 #[test]
 fn the_rust_side_title_lookup_is_gendered_where_the_binding_is_not() {
-    let s = seated();
-    seat_rank_globals(&s);
+    let mut s = seated();
+    seat_rank_globals(&mut s);
 
     // The app names a side and a sex outright — no player snapshot involved.
     assert_eq!(
@@ -400,7 +400,7 @@ fn the_rust_side_title_lookup_is_gendered_where_the_binding_is_not() {
     // Same nil semantics either side: rank 0, an absent key, and an empty one.
     assert_eq!(s.pvp_rank_title(0, 1, false), None);
     assert_eq!(s.pvp_rank_title(17, 1, false), None, "no PVP_RANK_17_1");
-    s.lua().globals().set("PVP_RANK_17_1", "").expect("global");
+    s.vm_mut().set_global("PVP_RANK_17_1", "").expect("global");
     assert_eq!(
         s.pvp_rank_title(17, 1, false),
         None,
@@ -413,10 +413,10 @@ fn the_rust_side_title_lookup_is_gendered_where_the_binding_is_not() {
 /// thing standing between that and a blank title.
 #[test]
 fn a_missing_rank_global_reads_nil_not_empty() {
-    let s = seated(); // no rank globals seated at all
+    let mut s = seated(); // no rank globals seated at all
     assert!(s.eval::<bool>("return GetPVPRankInfo(9) == nil").unwrap());
     // …and so does an empty one.
-    s.lua().globals().set("PVP_RANK_9_1", "").expect("global");
+    s.vm_mut().set_global("PVP_RANK_9_1", "").expect("global");
     assert!(s.eval::<bool>("return GetPVPRankInfo(9) == nil").unwrap());
     // A player with no side names nothing either, rather than picking a list.
     let mut s = s;
@@ -427,7 +427,7 @@ fn a_missing_rank_global_reads_nil_not_empty() {
             ..player()
         }),
     );
-    seat_rank_globals(&s);
+    seat_rank_globals(&mut s);
     assert!(s.eval::<bool>("return GetPVPRankInfo(9) == nil").unwrap());
 }
 
@@ -440,10 +440,8 @@ fn a_missing_rank_global_reads_nil_not_empty() {
 #[test]
 fn a_sideless_player_still_has_a_team_digit_because_his_race_has_one() {
     let mut s = seated();
-    seat_rank_globals(&s);
-    s.lua()
-        .globals()
-        .set("UNIT_PVP_NAME", "%s %s")
+    seat_rank_globals(&mut s);
+    s.vm_mut().set_global("UNIT_PVP_NAME", "%s %s")
         .expect("global");
     s.set_unit(
         "player",
@@ -516,8 +514,8 @@ fn the_visual_rank_arithmetic_runs_backwards_through_the_dishonorable_ranks() {
 
     // …and the binding reports the same number, which is what indexes the badge texture: only a
     // positive one is drawn, so all four dishonorable ranks hide it.
-    let s = seated();
-    seat_rank_globals(&s);
+    let mut s = seated();
+    seat_rank_globals(&mut s);
     for (internal, visual) in [(1i64, -4i64), (4, -1), (5, 1), (18, 14)] {
         assert_eq!(
             s.eval::<i64>(&format!(
@@ -540,8 +538,8 @@ fn the_visual_rank_arithmetic_runs_backwards_through_the_dishonorable_ranks() {
 /// a pair and then branch on the nil.
 #[test]
 fn the_range_gate_refuses_rank_zero_and_rank_nineteen_alike() {
-    let s = seated();
-    seat_rank_globals(&s);
+    let mut s = seated();
+    seat_rank_globals(&mut s);
 
     for rank in [0i64, 19, 20, -1, 255] {
         let (name, number) = s
@@ -571,7 +569,7 @@ fn the_range_gate_refuses_rank_zero_and_rank_nineteen_alike() {
 #[test]
 fn get_pvp_rank_info_takes_a_second_argument_three_different_ways() {
     let mut s = seated(); // an ALLIANCE player
-    seat_rank_globals(&s);
+    seat_rank_globals(&mut s);
     s.set_unit(
         "target",
         Some(UnitState {
@@ -671,7 +669,7 @@ fn get_pvp_rank_info_takes_a_second_argument_three_different_ways() {
 /// the caller's statement. It is not a `(nil, 0)` edge, and the two are not interchangeable.
 #[test]
 fn get_pvp_rank_info_raises_without_a_numeric_first_argument() {
-    let s = seated();
+    let mut s = seated();
     for call in [
         "GetPVPRankInfo()",
         "GetPVPRankInfo({})",
@@ -750,8 +748,8 @@ fn unit_pvp_rank_answers_for_a_foreign_unit() {
 #[test]
 fn unit_pvp_name_decorates_a_ranked_player_and_falls_back_three_ways() {
     let mut s = seated();
-    seat_rank_globals(&s);
-    seat_name_globals(&s);
+    seat_rank_globals(&mut s);
+    seat_name_globals(&mut s);
 
     // Leg A — the seated player is a female Alliance rank 9, so the FEMALE twin wins here.
     assert_eq!(
@@ -878,15 +876,13 @@ fn unit_pvp_name_decorates_a_ranked_player_and_falls_back_three_ways() {
 /// back an empty string — a stated divergence, not an oversight.)
 #[test]
 fn unit_pvp_name_without_the_globalstrings_answers_the_plain_name() {
-    let s = seated(); // nothing seated on _G
+    let mut s = seated(); // nothing seated on _G
     assert_eq!(
         s.eval::<String>(r#"return UnitPVPName("player")"#).unwrap(),
         "Benilla"
     );
     // The template alone is not enough — the title has to resolve too.
-    s.lua()
-        .globals()
-        .set("UNIT_PVP_NAME", "%s %s")
+    s.vm_mut().set_global("UNIT_PVP_NAME", "%s %s")
         .expect("global");
     assert_eq!(
         s.eval::<String>(r#"return UnitPVPName("player")"#).unwrap(),
@@ -911,12 +907,10 @@ fn the_two_string_template_is_substituted_not_hardcoded() {
     assert_eq!(format_two_strings("%d %s %s", "R", "N"), "%d R N");
     assert_eq!(format_two_strings("trailing %", "R", "N"), "trailing %");
 
-    let s = seated();
-    seat_rank_globals(&s);
-    seat_name_globals(&s);
-    s.lua()
-        .globals()
-        .set("UNIT_PVP_NAME", "<%s> %s")
+    let mut s = seated();
+    seat_rank_globals(&mut s);
+    seat_name_globals(&mut s);
+    s.vm_mut().set_global("UNIT_PVP_NAME", "<%s> %s")
         .expect("global");
     assert_eq!(
         s.eval::<String>(r#"return UnitPVPName("player")"#).unwrap(),
@@ -961,7 +955,7 @@ fn get_inspect_honor_data_returns_the_twelve_in_the_reference_order() {
 
     assert_eq!(s.arity("GetInspectHonorData()").unwrap(), 12);
     let got = s
-        .eval::<Vec<i64>>(
+        .eval_sequence::<i64>(
             "local sessionHK, sessionDK, yesterdayHK, yesterdayHonor, thisweekHK, \
              thisweekHonor, lastweekHK, lastweekHonor, lastweekStanding, lifetimeHK, \
              lifetimeDK, lifetimeRank = GetInspectHonorData() \
@@ -992,7 +986,7 @@ fn get_inspect_honor_data_answers_twelve_zeros_when_no_reply_is_held() {
         "ungated: twelve on every path"
     );
     assert_eq!(
-        s.eval::<Vec<i64>>("return {GetInspectHonorData()}")
+        s.eval_sequence::<i64>("return {GetInspectHonorData()}")
             .unwrap(),
         vec![0; 12]
     );
@@ -1011,7 +1005,7 @@ fn get_inspect_honor_data_answers_twelve_zeros_when_no_reply_is_held() {
     s.set_inspect_honor(Some(inspect_state()));
     s.set_inspect_honor(None);
     assert_eq!(
-        s.eval::<Vec<i64>>("return {GetInspectHonorData()}")
+        s.eval_sequence::<i64>("return {GetInspectHonorData()}")
             .unwrap(),
         vec![0; 12]
     );

@@ -19,6 +19,8 @@
 //! wrapped-row measure round-trip, the band emit, and the font/justification read are one code path
 //! over [`KindState::message_lines`]. Everything that actually differs stays on the two states.
 
+use benilla_lua::{CallbackContext, LuaContext, Table as LuaTable, Value as LuaValue, Vm};
+
 use crate::layout::Rect;
 use crate::order::ZTarget;
 use crate::widget::{FrameHandle, InsertMode, KindState, MessageLine};
@@ -74,8 +76,8 @@ pub(super) use scrolling::REG_SCROLLINGMESSAGEFRAME_METHODS;
 ///
 /// A **number** is accepted and rendered as its decimal text — `0x6f7c80` retags the slot in
 /// place — which is exactly [`super::binding_abi::optional_string`]'s coercion.
-pub(super) fn message_text(lua: &mlua::Lua, v: &mlua::Value) -> Option<String> {
-    super::binding_abi::optional_string(lua, v).filter(|s| !s.is_empty())
+pub(super) fn message_text_context(value: &LuaValue) -> Option<String> {
+    super::binding_abi::neutral_optional_string(value).filter(|text| !text.is_empty())
 }
 
 /// Install `SetJustifyH`/`GetJustifyH`/`SetJustifyV`/`GetJustifyV` on a message-frame method
@@ -92,26 +94,25 @@ pub(super) fn message_text(lua: &mlua::Lua, v: &mlua::Value) -> Option<String> {
 /// `GetJustify*` reports the EFFECTIVE value — the frame's own once set, else the font object's —
 /// so an untouched frame answers what it actually draws with rather than a ctor constant its
 /// `<FontString>` may have overridden.
-use crate::script::object::frame_handle_of;
-
-pub(super) fn install_justify(
-    lua: &mlua::Lua,
-    m: &mlua::Table,
+pub(super) fn install_justify_context(
+    lua: &mut Vm,
+    methods: &LuaTable,
     widget: &'static str,
-) -> mlua::Result<()> {
+) -> benilla_lua::Result<()> {
     use crate::justify::{self, Justify};
+    use crate::script::object::frame_handle_of_context;
 
     fn slot(ks: &mut KindState) -> Option<&mut Option<Justify>> {
         match ks {
-            KindState::ScrollingMessage(s) => Some(&mut s.justify),
-            KindState::Message(s) => Some(&mut s.justify),
+            KindState::ScrollingMessage(state) => Some(&mut state.justify),
+            KindState::Message(state) => Some(&mut state.justify),
             _ => None,
         }
     }
     fn own(ks: &KindState) -> Option<Justify> {
         match ks {
-            KindState::ScrollingMessage(s) => s.justify,
-            KindState::Message(s) => s.justify,
+            KindState::ScrollingMessage(state) => state.justify,
+            KindState::Message(state) => state.justify,
             _ => None,
         }
     }
@@ -120,73 +121,76 @@ pub(super) fn install_justify(
         ("SetJustifyH", justify::H_MASK, true),
         ("SetJustifyV", justify::V_MASK, false),
     ] {
-        m.set(
-            name,
-            lua.create_function(move |lua, (this, token): (mlua::Table, mlua::Value)| {
-                let parsed = token
-                    .as_string()
-                    .and_then(|t| t.to_str().ok().and_then(|t| justify::parse_bits(&t)))
-                    .ok_or_else(|| {
-                        if horizontal {
-                            justify::usage_h(widget)
-                        } else {
-                            justify::usage_v(widget)
-                        }
-                    })?;
-                let h = frame_handle_of(lua, &this)?;
+        let function = lua.create_function(
+            if horizontal {
+                "MessageFrame:SetJustifyH"
+            } else {
+                "MessageFrame:SetJustifyV"
+            },
+            move |lua, (this, token): (LuaTable, LuaValue)| {
+                let parsed = match &token {
+                    LuaValue::String(token) => token.as_str().ok().and_then(justify::parse_bits),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    benilla_lua::Error::runtime(if horizontal {
+                        justify::usage_h_message(widget)
+                    } else {
+                        justify::usage_v_message(widget)
+                    })
+                })?;
+                let frame = frame_handle_of_context(lua, &this)?;
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                 let frame = model
                     .arena
-                    .frame_mut(h)
-                    .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
-                let cur = own(&frame.kind_state).unwrap_or_default();
-                let next = Justify(justify::set_axis(cur.0, mask, parsed));
+                    .frame_mut(frame)
+                    .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
+                let current = own(&frame.kind_state).unwrap_or_default();
+                let next = Justify(justify::set_axis(current.0, mask, parsed));
                 *slot(&mut frame.kind_state)
-                    .ok_or_else(|| mlua::Error::runtime("not a message frame"))? = Some(next);
+                    .ok_or_else(|| benilla_lua::Error::runtime("not a message frame"))? =
+                    Some(next);
                 Ok(())
-            })?,
+            },
         )?;
+        lua.table_set(methods, name, function)?;
     }
 
-    // The two getters differ ONLY in what an untouched frame falls back to, and the asymmetry is
-    // real rather than an oversight: horizontally there IS another source — the font object the
-    // lines actually draw with — so reporting anything else would have `GetJustifyH` disagree with
-    // the glyphs on our own chat window, which declares `justifyH="LEFT"` on its `<FontString>`.
-    // Vertically there is no such source: `emit_message_lines` pins each line to the top of its own
-    // band deliberately (the band, not a FontString rect, owns the vertical rhythm), so an untouched
-    // frame reports the ctor default rather than a value invented from our band math.
-    m.set(
-        "GetJustifyH",
-        lua.create_function(move |lua, this: mlua::Table| {
-            let h = frame_handle_of(lua, &this)?;
+    let get_horizontal =
+        lua.create_function("MessageFrame:GetJustifyH", move |lua, this: LuaTable| {
+            let frame = frame_handle_of_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let bits = match model.arena.frame(h).and_then(|f| own(&f.kind_state)) {
-                Some(j) => j.0,
+            let bits = match model
+                .arena
+                .frame(frame)
+                .and_then(|frame| own(&frame.kind_state))
+            {
+                Some(justify) => justify.0,
                 None => {
-                    let font = UiScript::message_frame_font(&model, h);
+                    let font = UiScript::message_frame_font(&model, frame);
                     justify::parse_bits(justify::name_h(font.justify_h)).unwrap_or(0)
                 }
             };
             Ok(justify::name_of(bits, justify::H_MASK).to_string())
-        })?,
-    )?;
-    m.set(
-        "GetJustifyV",
-        lua.create_function(move |lua, this: mlua::Table| {
-            let h = frame_handle_of(lua, &this)?;
+        })?;
+    lua.table_set(methods, "GetJustifyH", get_horizontal)?;
+
+    let get_vertical =
+        lua.create_function("MessageFrame:GetJustifyV", move |lua, this: LuaTable| {
+            let frame = frame_handle_of_context(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let j = model
+            let value = model
                 .arena
-                .frame(h)
-                .and_then(|f| own(&f.kind_state))
+                .frame(frame)
+                .and_then(|frame| own(&frame.kind_state))
                 .unwrap_or_default();
-            Ok(justify::name_of(j.0, justify::V_MASK).to_string())
-        })?,
-    )?;
+            Ok(justify::name_of(value.0, justify::V_MASK).to_string())
+        })?;
+    lua.table_set(methods, "GetJustifyV", get_vertical)?;
     Ok(())
 }
 
-pub(super) fn install(lua: &mlua::Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut benilla_lua::Vm) -> benilla_lua::Result<()> {
     scrolling::install(lua)?;
     plain::install(lua)
 }
@@ -224,11 +228,18 @@ pub(super) struct MessageFont {
 /// to the *FontString* default of CENTER. Creating the region at the default would silently
 /// re-justify a frame the moment an addon touched its font, which is a visible change nobody
 /// asked for.
-pub(super) fn ensure_font_region(
-    lua: &mlua::Lua,
+fn ensure_font_region_context(
+    lua: &impl LuaContext,
     fh: FrameHandle,
 ) -> Option<crate::widget::RegionHandle> {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    ensure_font_region_model(&mut *model, fh)
+}
+
+fn ensure_font_region_model(
+    model: &mut Model,
+    fh: FrameHandle,
+) -> Option<crate::widget::RegionHandle> {
     let existing = model.arena.frame(fh).and_then(|frame| {
         frame
             .regions
@@ -255,6 +266,24 @@ pub(super) fn ensure_font_region(
     model.region_data.insert(rh, data);
     model.touch_layout();
     Some(rh)
+}
+
+pub(super) fn plain_font_region_callback(
+    lua: &mut CallbackContext<'_>,
+    this: &LuaTable,
+) -> benilla_lua::Result<crate::widget::RegionHandle> {
+    let frame = super::object::frame_handle_of_context(lua, this)?;
+    ensure_font_region_context(lua, frame)
+        .ok_or_else(|| benilla_lua::Error::runtime("not a MessageFrame"))
+}
+
+pub(super) fn scrolling_font_region_callback(
+    lua: &mut CallbackContext<'_>,
+    this: &LuaTable,
+) -> benilla_lua::Result<crate::widget::RegionHandle> {
+    let frame = super::object::frame_handle_of_context(lua, this)?;
+    ensure_font_region_context(lua, frame)
+        .ok_or_else(|| benilla_lua::Error::runtime("not a ScrollingMessageFrame"))
 }
 
 impl UiScript {

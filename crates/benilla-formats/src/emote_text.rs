@@ -42,7 +42,9 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
+#[cfg(test)]
 use crate::Chain;
+use crate::FileSource;
 
 const EMOTES_TEXT: &str = "DBFilesClient\\EmotesText.dbc";
 const EMOTES_TEXT_DATA: &str = "DBFilesClient\\EmotesTextData.dbc";
@@ -207,7 +209,7 @@ fn emotes_text_data_schema() -> Schema {
 }
 
 /// Read and join both tables off the patch chain.
-pub fn load_emote_text_catalog(chain: &mut Chain) -> Result<EmoteTextCatalog> {
+pub fn load_emote_text_catalog(chain: &mut impl FileSource) -> Result<EmoteTextCatalog> {
     let bytes = chain
         .read_file(EMOTES_TEXT)
         .with_context(|| format!("reading {EMOTES_TEXT}"))?;

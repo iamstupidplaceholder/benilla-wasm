@@ -146,16 +146,15 @@ pub(in crate::entities) fn redress_player_looks(
         if net.kind != EntityKind::Player || !live.settled || *live == applied.0 {
             continue;
         }
-        // Stamp first, unconditionally: a player whose display resolved to no model at all (the
-        // cube fallback) has nothing to re-dress, and must not re-enter this arm every frame.
-        applied.0 = *live;
         let Some(dm) = net
             .display_id
             .and_then(|disp| creatures.as_deref()?.models.get(&disp))
         else {
+            applied.0 = *live;
             continue;
         };
         let Some(parts) = dm.parts.as_deref() else {
+            applied.0 = *live;
             continue;
         };
 
@@ -187,12 +186,24 @@ pub(in crate::entities) fn redress_player_looks(
                 world_assets.as_deref(),
                 parts,
                 &mut images,
-                &mut skin_composites.0,
+                &mut skin_composites,
                 &asset_server,
                 &mut mats,
             ),
             None => (None, None, None, (None, None)),
         };
+        // A cache miss without a synchronous host source has requested the exact
+        // atlas above. Keep the current dress intact until delivery publishes it;
+        // do not commit a textureless body or memoize Pending as AppliedEquipment.
+        if world_assets.is_none()
+            && look
+                .as_ref()
+                .is_some_and(|l| matches!(l.body, super::char_skin::BodySkin::Composite { .. }))
+            && char_mats.0.is_none()
+        {
+            continue;
+        }
+        applied.0 = *live;
         // No look (a druid form, a GM morph — a Player-kind entity on a beast display) means no
         // geoset filter, exactly as at build: every batch the model authors draws.
         let shows = |geoset: u16| visible.as_ref().is_none_or(|v| v.contains(&geoset));

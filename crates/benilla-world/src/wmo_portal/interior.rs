@@ -27,6 +27,7 @@ use bevy::prelude::*;
 #[derive(Resource)]
 pub(crate) struct WmoAreas(pub(crate) benilla_formats::WmoAreaCatalog);
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn load_wmo_areas(
     mut commands: Commands,
     assets: Option<Res<benilla_assets::WorldAssets>>,
@@ -35,7 +36,7 @@ pub(super) fn load_wmo_areas(
     let loaded = {
         use benilla_assets::LockRecover;
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_wmo_area_catalog(&mut chain)
+        benilla_formats::load_wmo_area_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -44,6 +45,52 @@ pub(super) fn load_wmo_areas(
         }
         Err(e) => warn!("wmo: WMOAreaTable failed to load: {e:#}"),
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn browser_catalogs(app: &mut App) {
+    app.add_systems(Startup, request_wmo_areas)
+        .add_systems(Update, publish_wmo_areas.before(super::WmoPvsSet));
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource)]
+struct WmoAreaDelivery(Handle<benilla_assets::RawFile>);
+
+#[cfg(target_arch = "wasm32")]
+fn request_wmo_areas(mut commands: Commands, server: Res<AssetServer>) {
+    commands.insert_resource(WmoAreaDelivery(
+        server.load("mpq://DBFilesClient/WMOAreaTable.dbc"),
+    ));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn publish_wmo_areas(
+    mut commands: Commands,
+    delivery: Option<Res<WmoAreaDelivery>>,
+    files: Res<Assets<benilla_assets::RawFile>>,
+    server: Res<AssetServer>,
+) {
+    let Some(delivery) = delivery else { return };
+    if let Some(file) = files.get(&delivery.0) {
+        let mut source = benilla_formats::MemoryFileSource::new([(
+            "DBFilesClient/WMOAreaTable.dbc",
+            file.0.clone(),
+        )]);
+        match benilla_formats::load_wmo_area_catalog(&mut source) {
+            Ok(catalog) => {
+                commands.insert_resource(WmoAreas(catalog));
+            }
+            Err(error) => warn!("wmo: WMOAreaTable decode failed: {error:#}"),
+        }
+    } else if let Some(bevy::asset::LoadState::Failed(error)) =
+        server.get_load_state(delivery.0.id())
+    {
+        warn!("wmo: WMOAreaTable delivery failed: {error}");
+    } else {
+        return;
+    }
+    commands.remove_resource::<WmoAreaDelivery>();
 }
 
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};

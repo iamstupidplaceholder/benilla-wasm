@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -57,7 +58,7 @@ fn schema() -> Schema {
 }
 
 /// Load GameObjectDisplayInfo.dbc from the patch chain into a [`GameObjectCatalog`].
-pub fn load_gameobject_catalog(chain: &mut Chain) -> Result<GameObjectCatalog> {
+pub fn load_gameobject_catalog(chain: &mut impl FileSource) -> Result<GameObjectCatalog> {
     let bytes = chain
         .read_file(GAMEOBJECT_DISPLAY_INFO)
         .with_context(|| format!("reading {GAMEOBJECT_DISPLAY_INFO}"))?;
@@ -102,7 +103,7 @@ impl GameObjectSounds {
 }
 
 /// Load the sound slots off GameObjectDisplayInfo.dbc.
-pub fn load_gameobject_sounds(chain: &mut Chain) -> Result<GameObjectSounds> {
+pub fn load_gameobject_sounds(chain: &mut impl crate::FileSource) -> Result<GameObjectSounds> {
     let bytes = chain
         .read_file(GAMEOBJECT_DISPLAY_INFO)
         .with_context(|| format!("reading {GAMEOBJECT_DISPLAY_INFO}"))?;

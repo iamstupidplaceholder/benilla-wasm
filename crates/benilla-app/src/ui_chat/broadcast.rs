@@ -121,7 +121,7 @@ pub(super) fn load_server_messages(mut commands: Commands, assets: Option<Res<Wo
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_server_messages_catalog(&mut chain)
+        benilla_formats::load_server_messages_catalog(&mut *chain)
     };
     match loaded {
         // Logged like its two neighbours, and for their reason: a silently-empty load is the exact
@@ -204,7 +204,7 @@ pub(super) fn feed_broadcasts(
     // The `ZONE_UNDER_ATTACK` format string is FrameXML's, read out of the VM's own globals — so
     // there is nothing to resolve until the VM exists. Park rather than drop: the queue is cleared
     // at session end like the rest of the log.
-    let Some(script) = script else { return };
+    let Some(mut script) = script else { return };
     // The zone under the player — the reference's `[0xb6e5d0]`. `top_zone` is `crate::area`'s and
     // `channels`' own answer to "which zone am I in", and equals the single-hop parent on 5875 data.
     let player_zone = areas
@@ -216,7 +216,7 @@ pub(super) fn feed_broadcasts(
                 // No catalog and no row are the same refusal here: with no name there is no line.
                 let Some((areas, fmt)) = areas
                     .as_ref()
-                    .zip(super::combat::global_string(&script, "ZONE_UNDER_ATTACK"))
+                    .zip(super::combat::global_string(&mut script, "ZONE_UNDER_ATTACK"))
                 else {
                     continue;
                 };
@@ -253,7 +253,7 @@ pub(super) fn feed_broadcasts(
                 // reference print an EMPTY line here rather than none. Showing nothing is what every
                 // other tenant of this route does; diverging in one module would be the
                 // inconsistency.
-                if let Some(text) = super::combat::global_string(&script, "ERR_CHAT_RESTRICTED") {
+                if let Some(text) = super::combat::global_string(&mut script, "ERR_CHAT_RESTRICTED") {
                     log.push_event(ChatEvent::text_only(ChatEventKind::System, text));
                 }
             }

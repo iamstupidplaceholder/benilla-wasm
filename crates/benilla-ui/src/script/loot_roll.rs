@@ -28,7 +28,7 @@
 //! An unknown `rollID` answers the reference's own miss values — `nil` for the strings, `0` for
 //! `GetLootRollTimeLeft`, and `GetLootRollItemInfo`'s five-value tail (`0x4c31a3`).
 
-use mlua::Lua;
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -125,69 +125,54 @@ fn find(model: &Model, roll_id: u32) -> Option<&LootRollEntry> {
 }
 
 /// Register the group-loot-roll globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetLootRollItemInfo(rollID) → texture, name, count, quality, bindOnPickUp, itemID (`0x4c3050`;
     // the sixth is ours). An unknown id — the frame is mid-teardown, or an addon asked for a stale
     // roll — is the reference's own miss leg, and it does not return *nothing*: `0x4c31a3` pushes
     // `nil, nil, 1.0, 1.0, nil`. So does a roll whose item template has not landed, because the
     // reference reads every one of these off the item-template cache record and takes the same tail
     // when it is absent. See [`CACHE_MISS_QUALITY`] — the quality is the one a stock caller indexes.
-    g.set(
-        "GetLootRollItemInfo",
-        lua.create_function(|lua, roll_id: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(r) = find(&model, roll_id) else {
-                return lua.pack_multi((
-                    mlua::Value::Nil,
-                    mlua::Value::Nil,
-                    1,
-                    CACHE_MISS_QUALITY,
-                    mlua::Value::Nil,
-                    mlua::Value::Nil,
-                ));
-            };
-            let vals = (
-                r.texture.clone(),
-                r.name.clone(),
-                r.quantity,
-                r.quality.map_or(CACHE_MISS_QUALITY, i64::from),
-                r.bind_on_pickup,
-                r.item_id,
-            );
-            lua.pack_multi(vals)
-        })?,
-    )?;
+    lua.register_function("GetLootRollItemInfo", |lua, roll_id: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(r) = find(&model, roll_id) else {
+            return Ok(MultiValue::from([
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(1),
+                Value::Integer(CACHE_MISS_QUALITY),
+                Value::Nil,
+                Value::Nil,
+            ]));
+        };
+        Ok(MultiValue::from([
+            r.texture.clone().map_or(Value::Nil, Value::from),
+            r.name.clone().map_or(Value::Nil, Value::from),
+            Value::Integer(i64::from(r.quantity)),
+            Value::Integer(r.quality.map_or(CACHE_MISS_QUALITY, i64::from)),
+            Value::Boolean(r.bind_on_pickup),
+            Value::Integer(i64::from(r.item_id)),
+        ]))
+    })?;
 
     // GetLootRollItemLink(rollID) → the rolled item's full escaped link | nil. Unknown id → nil, and
     // nil while the item template is in flight (the link embeds the name). The reference's icon
     // button reads it for both modifier arms — `DressUpItemLink(GetLootRollItemLink(...))` and
     // `ChatFrameEditBox:Insert(...)`, `LootFrame.xml:353-361`; ours routes the second through
     // `BenillaChatEdit_InsertLink`, whose whole job is the nil this getter can answer. Decision 1059.
-    g.set(
-        "GetLootRollItemLink",
-        lua.create_function(|lua, roll_id: u32| {
-            let link = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                find(&model, roll_id).and_then(|r| r.link.clone())
-            };
-            match link {
-                Some(link) => Ok(mlua::Value::String(lua.create_string(&link)?)),
-                None => Ok(mlua::Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetLootRollItemLink", |lua, roll_id: u32| {
+        let link = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            find(&model, roll_id).and_then(|r| r.link.clone())
+        };
+        Ok(link.map_or(Value::Nil, Value::from))
+    })?;
 
     // GetLootRollTimeLeft(rollID) → milliseconds remaining; 0 for an unknown id (the reference
     // OnUpdate clamps anything outside the bar's range to its minimum anyway, LootFrame.lua:290-293).
-    g.set(
-        "GetLootRollTimeLeft",
-        lua.create_function(|lua, roll_id: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(find(&model, roll_id).map_or(0, |r| r.time_left_ms))
-        })?,
-    )?;
+    lua.register_function("GetLootRollTimeLeft", |lua, roll_id: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(find(&model, roll_id).map_or(0, |r| r.time_left_ms))
+    })?;
 
     // RollOnLoot(rollID, rollType) — queue the vote. rollType is 0 Pass / 1 Need / 2 Greed; the
     // server hard-rejects anything >= 3 (MAX_ROLL_FROM_CLIENT), so out-of-range votes are dropped
@@ -201,37 +186,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // nothing. This gate lives here, in the seam, because that is where the real client puts it —
     // in the C function, not in the Lua — so a stock addon calling RollOnLoot on a BoP item gets
     // the confirm rather than silently binding the item.
-    g.set(
-        "RollOnLoot",
-        lua.create_function(|lua, (roll_id, roll_type): (u32, u8)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let Some(entry) = find(&model, roll_id) else {
-                return Ok(());
-            };
-            if roll_type > 2 {
-                return Ok(());
-            }
-            if entry.bind_on_pickup && roll_type != PASS {
-                model.loot_roll_confirms.push((roll_id, roll_type));
-            } else {
-                model.loot_roll_votes.push((roll_id, roll_type));
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RollOnLoot", |lua, (roll_id, roll_type): (u32, u8)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let Some(entry) = find(&model, roll_id) else {
+            return Ok(());
+        };
+        if roll_type > 2 {
+            return Ok(());
+        }
+        if entry.bind_on_pickup && roll_type != PASS {
+            model.loot_roll_confirms.push((roll_id, roll_type));
+        } else {
+            model.loot_roll_votes.push((roll_id, roll_type));
+        }
+        Ok(())
+    })?;
 
     // ConfirmLootRoll(rollID, rollType) — the BoP gate's bypass (`0x4c33e0`, which re-enters
     // `0x61bdf0` with the third argument `1`). Same validation as RollOnLoot minus the bind check.
-    g.set(
-        "ConfirmLootRoll",
-        lua.create_function(|lua, (roll_id, roll_type): (u32, u8)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if roll_type <= 2 && find(&model, roll_id).is_some() {
-                model.loot_roll_votes.push((roll_id, roll_type));
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConfirmLootRoll", |lua, (roll_id, roll_type): (u32, u8)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if roll_type <= 2 && find(&model, roll_id).is_some() {
+            model.loot_roll_votes.push((roll_id, roll_type));
+        }
+        Ok(())
+    })?;
 
     Ok(())
 }

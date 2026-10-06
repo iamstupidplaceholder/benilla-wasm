@@ -32,13 +32,37 @@ use crate::net::{Guid, GuidIndex, NetCommands, ObjectStore, SelfPlayer};
 pub(crate) struct Subject {
     pub name: String,
     /// `UNIT_FIELD_BYTES_0` byte 0 / byte 1 — indices into the `ChrRaces`/`ChrClasses` tables the
-    /// reference reads by locale column. Ours are [`crate::ui_unit`]'s hardcoded English rows, which
-    /// were checked character-for-character against the shipped DBCs.
+    /// reference reads by locale column. Display labels are resolved from the
+    /// active original catalogs; English rows are only an unavailable-catalog fallback.
     pub race: u8,
     pub class: u8,
     /// `UNIT_FIELD_BYTES_0` byte 2. The `$G`/`$T` branch test is `== 0` → the *first* arm, anything
     /// else → the second — the reference compares against zero, so this is not "1 = female".
     pub gender: u8,
+    pub race_label: Option<String>,
+    pub class_label: Option<String>,
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct MacroNames<'w> {
+    classes: Option<Res<'w, crate::chr_classes::ChrClassTable>>,
+    races: Option<Res<'w, crate::ui_unit::UnitNamesRes>>,
+}
+
+impl MacroNames<'_> {
+    fn localize(&self, mut subject: Subject) -> Subject {
+        subject.class_label = self
+            .classes
+            .as_ref()
+            .and_then(|t| t.0.name(u32::from(subject.class)))
+            .map(str::to_string);
+        subject.race_label = self
+            .races
+            .as_ref()
+            .and_then(|t| t.0.race(u32::from(subject.race)))
+            .map(str::to_string);
+        subject
+    }
 }
 
 /// Everything a `$`-token can read: the [`Subject`] the person-tokens expand against, and the
@@ -130,12 +154,16 @@ pub(crate) fn substitute_checked(text: &str, ctx: &MacroContext) -> (String, boo
                     // An id outside the table is where the reference dereferences near-NULL and
                     // faults outright; we emit nothing.
                     let name = if matches!(tok, 'R' | 'r') {
-                        crate::ui_unit::race_names(s.race).map_or("", |(display, _)| display)
+                        s.race_label.as_deref().unwrap_or_else(|| {
+                            crate::ui_unit::race_names(s.race).map_or("", |(display, _)| display)
+                        })
                     } else {
-                        crate::ui_unit::class_names(s.class).map_or("", |(display, _)| display)
+                        s.class_label.as_deref().unwrap_or_else(|| {
+                            crate::ui_unit::class_names(s.class).map_or("", |(display, _)| display)
+                        })
                     };
                     if tok.is_ascii_lowercase() {
-                        out.push_str(&name.to_ascii_lowercase());
+                        out.push_str(&name.to_lowercase());
                     } else {
                         out.push_str(name);
                     }
@@ -211,14 +239,17 @@ pub(crate) fn player_identity(
     self_q: &Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
     names: &NameCache,
     commands: &NetCommands,
+    labels: &MacroNames,
 ) -> Option<Subject> {
     let (store, guid) = self_q.iter().next()?;
-    Some(Subject {
+    Some(labels.localize(Subject {
         name: names.resolve(guid.0, commands)?.to_string(),
         race: store.0.unit_race().unwrap_or(0),
         class: store.0.unit_class().unwrap_or(0),
         gender: store.0.unit_gender().unwrap_or(0),
-    })
+        race_label: None,
+        class_label: None,
+    }))
 }
 
 /// A macro [`Subject`] for an **arbitrary** guid — the chat feed's subject, where every other seam
@@ -235,29 +266,34 @@ pub(crate) fn subject_for_guid(
     stores: &Query<&ObjectStore>,
     names: &NameCache,
     commands: &NetCommands,
+    labels: &MacroNames,
 ) -> Option<Subject> {
     if guid == 0 {
         return None;
     }
     let name = names.resolve(guid, commands)?.to_string();
     if let Some(store) = index.0.get(&guid).and_then(|e| stores.get(*e).ok()) {
-        return Some(Subject {
+        return Some(labels.localize(Subject {
             name,
             race: store.0.unit_race().unwrap_or(0),
             class: store.0.unit_class().unwrap_or(0),
             gender: store.0.unit_gender().unwrap_or(0),
-        });
+            race_label: None,
+            class_label: None,
+        }));
     }
     // Not streamed: the name answer's own race/class/gender. A creature guid has no such record and
     // lands on zeros — which is right, because the reference's non-player arm never reads a
     // race/class for `$R`/`$C` either; it emits the unit's name instead (§3, orchestrator ruling).
     let (race, class, gender) = names.player_traits(guid).unwrap_or((0, 0, 0));
-    Some(Subject {
+    Some(labels.localize(Subject {
         name,
         race,
         class,
         gender,
-    })
+        race_label: None,
+        class_label: None,
+    }))
 }
 
 #[cfg(test)]
@@ -272,6 +308,8 @@ mod tests {
             race: 4,
             class: 5,
             gender,
+            race_label: None,
+            class_label: None,
         }
     }
 

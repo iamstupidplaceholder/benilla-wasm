@@ -3,8 +3,10 @@
 //! lag-free on this same machine). Which cursor shows is the targeting classifier's call
 //! ([`crate::target::WorldCursor`], the wow-re cursor RE's decision tree): Point by default, the sword over an
 //! attackable unit, the speech bubble / pouch / trainer / taxi over service NPCs, loot/skin over
-//! corpses — each with its grayed `Unable*` twin out of range. The whole set preloads at startup
-//! (18 tiny BLPs); a stem missing from the archives falls back toward the base cursor, then Point.
+//! corpses — each with its grayed `Unable*` twin out of range. The whole set preloads
+//! (31 tiny BLPs); a stem missing from the archives falls back toward the base cursor, then Point.
+//! Browser bytes arrive through the existing asynchronous mpq:// source; output uses
+//! a predecoded CSS cursor output adapter on web, not a drawn UI quad.
 //!
 //! macOS needs native AppKit. winit drives the cursor through the legacy cursor-rect API
 //! (`addCursorRect`/`resetCursorRects`), which a continuously-redrawing Metal view doesn't honor on
@@ -28,8 +30,72 @@
 //! the pointer sits at the icon's top-left corner, the icon hangs down-right, matching the
 //! reference look (and `ui_script::extract::cursor_icon_quad`'s capture-only stand-in).
 
+#[cfg(target_os = "macos")]
 use benilla_assets::AssetSet;
 use bevy::prelude::*;
+
+/// Original consumers share one pointer-position boundary. The experimental
+/// browser host supplies a virtual pointer while locked; native stays unchanged.
+pub(crate) fn position(window: &bevy::window::Window) -> Option<Vec2> {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(point) = browser::virtual_position(window) {
+        return Some(point);
+    }
+    window.cursor_position()
+}
+
+pub(crate) fn persistent_lock_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        browser::persistent_enabled()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
+    }
+}
+
+pub(crate) fn set_visible(options: &mut Mut<'_, bevy::window::CursorOptions>, visible: bool) {
+    if cfg!(target_arch = "wasm32") {
+        options.bypass_change_detection().visible = visible;
+    } else {
+        options.visible = visible;
+    }
+}
+
+pub(crate) fn ui_pointer_hidden(options: &bevy::window::CursorOptions) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    if browser::persistent_enabled() {
+        return !options.visible;
+    }
+    #[cfg(target_arch = "wasm32")]
+    if !options.visible {
+        // Logical look starts on press; physical browser lock may wait until
+        // actual motion. Neither phase is an active UI pointer.
+        return true;
+    }
+    options.grab_mode == bevy::window::CursorGrabMode::Locked
+}
+
+pub(crate) fn set_grab_mode(
+    options: &mut bevy::window::CursorOptions,
+    mode: bevy::window::CursorGrabMode,
+) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        browser::set_pointer_grab(mode == bevy::window::CursorGrabMode::Locked);
+        if browser::persistent_enabled() {
+            options.grab_mode = bevy::window::CursorGrabMode::None;
+            return;
+        }
+    }
+    options.grab_mode = mode;
+}
+
+#[cfg(target_arch = "wasm32")]
+mod browser;
+#[cfg(not(target_os = "macos"))]
+mod host;
 
 /// The held cursor payload's icon path (`Interface\Icons\…`, extensionless — the DBC/FrameXML
 /// convention), any arm — `None` if nothing is held or that arm's icon hasn't resolved yet
@@ -108,7 +174,7 @@ fn box_downsample_32(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 /// (byte-verified, wow-re cursor-dragdrop-payload.md: 64×64 → 2×2 box filter → 32×32, alpha
 /// written 0xFF; folded back by 0218). `None` on a missing/undecodable icon.
 fn decode_payload_cursor_rgba(
-    assets: &mut benilla_assets::WorldAssets,
+    assets: &mut impl benilla_assets::SpriteAssets,
     path: &str,
 ) -> Option<Vec<u8>> {
     let (w, h, rgba) = assets.decode_rgba(path)?;
@@ -334,6 +400,8 @@ pub(crate) struct CursorPlugin;
 impl Plugin for CursorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DisplayedCursor>();
+        #[cfg(target_arch = "wasm32")]
+        browser::register(app);
         #[cfg(target_os = "macos")]
         app.add_systems(Startup, macos::setup.after(AssetSet::Open))
             .add_systems(
@@ -345,13 +413,16 @@ impl Plugin for CursorPlugin {
             );
         #[cfg(not(target_os = "macos"))]
         app.init_resource::<other::PayloadCursorImages>()
-            .add_systems(Startup, other::setup.after(AssetSet::Open))
+            .init_resource::<other::CursorImages>()
             .add_systems(
                 Update,
-                (drive_displayed_cursor, other::drive)
+                (other::setup, drive_displayed_cursor, other::drive)
                     .chain()
                     // After the tick: a FrameXML `SetCursor` made this frame is read here.
-                    .after(crate::ui_script::UiInput),
+                    .after(crate::ui_script::UiInput)
+                    // Read this frame's classifier/targeting verdict, not an
+                    // ambiguously ordered previous-frame WorldCursor.
+                    .after(crate::target::TargetUpdate),
             );
     }
 }
@@ -361,40 +432,46 @@ impl Plugin for CursorPlugin {
 /// driven by `player::control`.
 #[cfg(not(target_os = "macos"))]
 mod other {
+    use super::host::CursorAssets;
     use super::{cursor_path, payload_icon, CURSOR_STEMS};
-    use benilla_assets::{cursor_texture, WorldAssets};
+    use benilla_assets::cursor_texture;
     use bevy::platform::collections::{HashMap, HashSet};
     use bevy::prelude::*;
-    use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage, PrimaryWindow};
+    use bevy::window::PrimaryWindow;
+    #[cfg(not(target_arch = "wasm32"))]
+    use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
 
     /// stem → decoded cursor image, preloaded at startup.
     #[derive(Resource, Default)]
-    pub(super) struct CursorImages(HashMap<String, Handle<Image>>);
+    pub(super) struct CursorImages(pub(super) HashMap<String, Handle<Image>>);
 
     /// Held-payload icon path → its decoded 32×32 hardware cursor (decision 0216 §5), built
     /// lazily on first use (unlike [`CursorImages`]'s fixed startup preload — the icon set is far
     /// too large to preload) and cached so a repeated pickup never re-decodes.
     #[derive(Resource, Default)]
-    pub(super) struct PayloadCursorImages(HashMap<String, Handle<Image>>);
+    pub(super) struct PayloadCursorImages(pub(super) HashMap<String, Handle<Image>>);
 
     pub(super) fn setup(
-        mut commands: Commands,
-        world_assets: Option<ResMut<WorldAssets>>,
+        mut source: CursorAssets,
+        mut cursors: ResMut<CursorImages>,
+        mut failed: Local<HashSet<String>>,
         mut images: ResMut<Assets<Image>>,
     ) {
-        let Some(mut world_assets) = world_assets else {
-            return;
-        };
-        let mut map = HashMap::default();
         for stem in CURSOR_STEMS {
-            match world_assets.decode_cursor(&cursor_path(stem), &mut images) {
-                Some(handle) => {
-                    map.insert(stem.to_string(), handle);
+            if cursors.0.contains_key(*stem) || failed.contains(*stem) {
+                continue;
+            }
+            match source.mode(&cursor_path(stem), &mut images) {
+                Some(Some(handle)) => {
+                    cursors.0.insert(stem.to_string(), handle);
                 }
-                None => warn!("cursor {stem}.blp missing/undecodable — mode falls back"),
+                Some(None) => {
+                    warn!("cursor {stem}.blp missing/undecodable — mode falls back");
+                    failed.insert(stem.to_string());
+                }
+                None => {} // Pending is neither a failed stem nor a fallback verdict.
             }
         }
-        commands.insert_resource(CursorImages(map));
     }
 
     /// Each frame: while a cursor payload with a resolved icon is held, show ITS 32×32 hardware
@@ -404,8 +481,8 @@ mod other {
         mut commands: Commands,
         cursor: Res<super::DisplayedCursor>,
         cursors: Option<Res<CursorImages>>,
-        script: Option<NonSend<benilla_ui::script::UiScript>>,
-        world_assets: Option<ResMut<WorldAssets>>,
+        script: Option<NonSendMut<benilla_ui::script::UiScript>>,
+        mut source: CursorAssets,
         mut images: ResMut<Assets<Image>>,
         mut payload_cursors: ResMut<PayloadCursorImages>,
         // The loading cover drops the payload overlay — see [`payload_icon`].
@@ -428,18 +505,17 @@ mod other {
                 return; // already showing this icon
             }
             if !payload_cursors.0.contains_key(&icon) && !decode_failed.contains(&icon) {
-                let built = world_assets.and_then(|mut a| {
-                    let rgba = super::decode_payload_cursor_rgba(&mut a, &icon)?;
-                    Some(images.add(cursor_texture(32, 32, rgba)))
-                });
+                let built = source.payload(&icon);
                 match built {
-                    Some(handle) => {
+                    Some(Some(rgba)) => {
+                        let handle = images.add(cursor_texture(32, 32, rgba));
                         payload_cursors.0.insert(icon.clone(), handle);
                     }
-                    None => {
+                    Some(None) => {
                         warn!("cursor payload icon {icon} missing/undecodable — mode cursor kept");
                         decode_failed.insert(icon.clone());
                     }
+                    None => {} // Retry async payload delivery without caching failure.
                 }
             }
             if let Some(handle) = payload_cursors.0.get(&icon) {
@@ -454,24 +530,29 @@ mod other {
             return;
         };
         let stem = cursor.0.stem();
-        if last_set.as_deref() == Some(stem.as_str()) {
-            return;
-        }
-        let handle = cursors
-            .0
-            .get(&stem)
-            .or_else(|| cursors.0.get(stem.trim_start_matches("Unable")))
-            .or_else(|| cursors.0.get("Point"));
-        if let Some(handle) = handle {
+        let selected = [&*stem, stem.trim_start_matches("Unable"), "Point"]
+            .into_iter()
+            .find_map(|key| cursors.0.get(key).map(|handle| (key, handle)));
+        if let Some((key, handle)) = selected {
+            if last_set.as_deref() == Some(key) {
+                return;
+            }
             set_custom_cursor(&mut commands, *window, handle.clone());
+            *last_set = Some(key.to_owned());
         }
-        *last_set = Some(stem);
     }
 
     /// The shared `CustomCursor::Image` insert — hotspot `(0, 0)`: the vanilla mode cursors' active
     /// tip is their top-left pixel, and the held-payload icon is downsampled to match that same
     /// top-left hotspot convention (decision 0216 §5).
     fn set_custom_cursor(commands: &mut Commands, window: Entity, handle: Handle<Image>) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            commands
+                .entity(window)
+                .insert(super::browser::BrowserCursor(handle));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         commands
             .entity(window)
             .insert(CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
@@ -557,7 +638,7 @@ mod macos {
     pub(super) fn drive(
         cursors: Option<NonSend<NativeCursors>>,
         mut payload_cursors: NonSendMut<PayloadCursors>,
-        script: Option<NonSend<benilla_ui::script::UiScript>>,
+        script: Option<NonSendMut<benilla_ui::script::UiScript>>,
         world_assets: Option<ResMut<WorldAssets>>,
         mode: Res<super::DisplayedCursor>,
         // The loading cover drops the payload overlay — see [`super::payload_icon`].
@@ -599,7 +680,7 @@ mod macos {
         if let Some(icon) = &held_icon {
             if !payload_cursors.0.contains_key(icon) && !decode_failed.contains(icon) {
                 let built = world_assets.and_then(|mut a| {
-                    let rgba = super::decode_payload_cursor_rgba(&mut a, icon)?;
+                    let rgba = super::decode_payload_cursor_rgba(&mut *a, icon)?;
                     build_cursor(32, 32, &rgba)
                 });
                 match built {
@@ -762,7 +843,7 @@ mod tests {
         covered: bool,
     ) -> WorldCursor {
         let mut app = App::new();
-        let script = benilla_ui::script::UiScript::new().unwrap();
+        let mut script = benilla_ui::script::UiScript::new().unwrap();
         script.run(lua).unwrap();
         app.insert_non_send_resource(script);
         app.insert_resource(if covered {

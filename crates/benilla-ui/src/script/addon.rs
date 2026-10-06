@@ -38,10 +38,10 @@
 
 use std::path::PathBuf;
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::addon_gate::{can_load, GateRow, Verdict};
-use super::binding_abi::flag;
+use super::binding_abi::neutral_flag;
 use super::Model;
 
 /// A reader for a chain-sourced addon's files, by chain-internal path — what the host seats
@@ -168,9 +168,9 @@ enum AddonKey {
 }
 
 /// The prologue itself. `usage` is the verb's own `.data` literal, verbatim.
-fn addon_key(lua: &Lua, model: &Model, key: &Value, usage: &'static str) -> mlua::Result<AddonKey> {
+fn addon_key(model: &Model, key: &Value, usage: &'static str) -> benilla_lua::Result<AddonKey> {
     // `lua_isnumber 0x6f34d0` — and `coerce_number` is its exact analogue, numeric strings and all.
-    if let Some(n) = lua.coerce_number(key.clone())? {
+    if let Some(n) = <f64 as benilla_lua::FromLua>::from_lua(key.clone()).ok() {
         // `_ftol 0x40a2b0` truncates toward zero (not `floor`), then `dec eax`, then an unsigned
         // compare — so the whole out-of-range family collapses onto one `u32` bound test.
         let index0 = (n as i64 as i32).wrapping_sub(1) as u32 as usize;
@@ -180,7 +180,7 @@ fn addon_key(lua: &Lua, model: &Model, key: &Value, usage: &'static str) -> mlua
         // The registry list is a different order over a different set.
         return match model.addon_index.get(index0) {
             Some(&row) => Ok(AddonKey::Index(row)),
-            None => Err(mlua::Error::RuntimeError(format!(
+            None => Err(benilla_lua::Error::runtime(format!(
                 "AddOn index must be in the range of 1 to {}",
                 model.addon_index.len()
             ))),
@@ -189,8 +189,8 @@ fn addon_key(lua: &Lua, model: &Model, key: &Value, usage: &'static str) -> mlua
     // `lua_isstring 0x6f3510` → `lua_tostring 0x6f3690`. Lossy for the reason 1193/2138 give: a
     // 5.0 string is bytes, and a stray one costs a glyph, not the call.
     match key {
-        Value::String(s) => Ok(AddonKey::Name(s.to_string_lossy())),
-        _ => Err(mlua::Error::RuntimeError(usage.into())),
+        Value::String(s) => Ok(AddonKey::Name(s.to_string_lossy().into_owned())),
+        _ => Err(benilla_lua::Error::runtime(usage)),
     }
 }
 
@@ -288,32 +288,27 @@ fn verdict(model: &Model, i: usize) -> Verdict {
     can_load(&gate_rows(model), i, true, version_check(model))
 }
 
-fn lua_str(lua: &Lua, s: &str) -> mlua::Result<Value> {
-    Ok(Value::String(lua.create_string(s)?))
+fn lua_str(s: &str) -> Value {
+    Value::from(s)
 }
 
-fn opt_str(lua: &Lua, s: &Option<String>) -> mlua::Result<Value> {
+fn opt_str(s: &Option<String>) -> Value {
     match s {
-        Some(s) => lua_str(lua, s),
-        None => Ok(Value::Nil),
+        Some(s) => lua_str(s),
+        None => Value::Nil,
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    g.set(
-        "GetNumAddOns",
-        lua.create_function(|lua, ()| {
-            // `0x51def0` is six bytes: `return [0xbe1b90]` — the count of the SORTED array, not the
-            // registry size (decision 2175).
-            Ok(lua
-                .app_data_ref::<Model>()
-                .expect("model")
-                .addon_index
-                .len())
-        })?,
-    )?;
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    vm.register_function("GetNumAddOns", |lua, ()| {
+        // `0x51def0` is six bytes: `return [0xbe1b90]` — the count of the SORTED array, not the
+        // registry size (decision 2175).
+        Ok(lua
+            .app_data_ref::<Model>()
+            .expect("model")
+            .addon_index
+            .len())
+    })?;
 
     // `name, title, notes, enabled, loadable, reason, security` — SEVEN values, and slot 4 is
     // **`enabled`**, not `url`.
@@ -341,122 +336,107 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // `url` is not lost, it moves to where the client keeps it in-game: `GetAddOnMetadata(name,
     // "URL")`.
-    g.set(
-        "GetAddOnInfo",
-        lua.create_function(|lua, key: Value| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            // **The two argument forms miss differently** (decision 1845). The numeric one cannot
-            // reach here at all — [`addon_key`] has already raised the range error for it.
-            let i = match addon_key(lua, &model, &key, USAGE_INFO)? {
-                AddonKey::Index(i) => i,
-                AddonKey::Name(name) => match by_name(&model, &name) {
-                    Some(i) => i,
-                    // The STRING form is not existence-checked: it answers seven placeholders, two
-                    // of which are not nil — and **slot 1 is the caller's own string echoed back**
-                    // (`0x48e401`, non-NULL by `lua_isstring`). We used to answer the literal
-                    // `"NoSuchAddon"`, which is the wow-re note's *example call*, not a constant
-                    // the image contains. Slot 4 is `enabled` in-game (the glue table's fourth is
-                    // `url`, and its eighth is an appended `newVersion` — nothing shifts).
-                    None => {
-                        return Ok(MultiValue::from_vec(vec![
-                            lua_str(lua, &name)?,
-                            Value::Nil,
-                            Value::Nil,
-                            Value::Nil,
-                            Value::Nil,
-                            lua_str(lua, "MISSING")?,
-                            lua_str(lua, "INSECURE")?,
-                        ]))
-                    }
-                },
-            };
-            // The one arbiter (decision 1292): loaded short-circuit, then `AddOn_CanLoad` in the
-            // in-game flavour — so NOT_DEMAND_LOADED and INTERFACE_VERSION are reachable here,
-            // exactly as `0x48e390` reports them.
-            let reason = verdict(&model, i).token();
-            let a = &model.addons[i];
-            Ok(MultiValue::from_vec(vec![
-                lua_str(lua, &a.name)?,
-                opt_str(lua, &a.title)?,
-                opt_str(lua, &a.notes)?,
-                flag(a.enabled),
-                flag(reason.is_none()),
-                match &reason {
-                    Some(r) => lua_str(lua, r)?,
-                    None => Value::Nil,
-                },
-                lua_str(lua, if a.secure { "SECURE" } else { "INSECURE" })?,
-            ]))
-        })?,
-    )?;
+    vm.register_function("GetAddOnInfo", |lua, key: Value| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        // **The two argument forms miss differently** (decision 1845). The numeric one cannot
+        // reach here at all — [`addon_key`] has already raised the range error for it.
+        let i = match addon_key(&model, &key, USAGE_INFO)? {
+            AddonKey::Index(i) => i,
+            AddonKey::Name(name) => match by_name(&model, &name) {
+                Some(i) => i,
+                // The STRING form is not existence-checked: it answers seven placeholders, two
+                // of which are not nil — and **slot 1 is the caller's own string echoed back**
+                // (`0x48e401`, non-NULL by `lua_isstring`). We used to answer the literal
+                // `"NoSuchAddon"`, which is the wow-re note's *example call*, not a constant
+                // the image contains. Slot 4 is `enabled` in-game (the glue table's fourth is
+                // `url`, and its eighth is an appended `newVersion` — nothing shifts).
+                None => {
+                    return Ok(MultiValue::from(vec![
+                        lua_str(&name),
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Nil,
+                        lua_str("MISSING"),
+                        lua_str("INSECURE"),
+                    ]))
+                }
+            },
+        };
+        // The one arbiter (decision 1292): loaded short-circuit, then `AddOn_CanLoad` in the
+        // in-game flavour — so NOT_DEMAND_LOADED and INTERFACE_VERSION are reachable here,
+        // exactly as `0x48e390` reports them.
+        let reason = verdict(&model, i).token();
+        let a = &model.addons[i];
+        Ok(MultiValue::from(vec![
+            lua_str(&a.name),
+            opt_str(&a.title),
+            opt_str(&a.notes),
+            neutral_flag(a.enabled),
+            neutral_flag(reason.is_none()),
+            match &reason {
+                Some(r) => lua_str(r),
+                None => Value::Nil,
+            },
+            lua_str(if a.secure { "SECURE" } else { "INSECURE" }),
+        ]))
+    })?;
 
-    g.set(
-        "IsAddOnLoaded",
-        lua.create_function(|lua, key: Value| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let key = addon_key(lua, &model, &key, USAGE_LOADED)?;
-            // `0x51e6f0` takes the resolved NAME and answers `[rec+0x18]`; a miss pushes nil
-            // (`0x48e95b`), so an unknown name is one value, not a raise.
-            Ok(flag(
-                row_of(&model, &key).is_some_and(|i| model.addons[i].loaded),
-            ))
-        })?,
-    )?;
+    vm.register_function("IsAddOnLoaded", |lua, key: Value| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let key = addon_key(&model, &key, USAGE_LOADED)?;
+        // `0x51e6f0` takes the resolved NAME and answers `[rec+0x18]`; a miss pushes nil
+        // (`0x48e95b`), so an unknown name is one value, not a raise.
+        Ok(neutral_flag(
+            row_of(&model, &key).is_some_and(|i| model.addons[i].loaded),
+        ))
+    })?;
 
-    g.set(
-        "IsAddOnLoadOnDemand",
-        lua.create_function(|lua, key: Value| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let key = addon_key(lua, &model, &key, USAGE_LOAD_ON_DEMAND)?;
-            Ok(flag(
-                row_of(&model, &key).is_some_and(|i| model.addons[i].load_on_demand),
-            ))
-        })?,
-    )?;
+    vm.register_function("IsAddOnLoadOnDemand", |lua, key: Value| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let key = addon_key(&model, &key, USAGE_LOAD_ON_DEMAND)?;
+        Ok(neutral_flag(
+            row_of(&model, &key).is_some_and(|i| model.addons[i].load_on_demand),
+        ))
+    })?;
 
     // Varargs of dependency names — the glue folds them into a tooltip line with `AddonTooltip_
     // BuildDeps(GetAddOnDependencies(id))`, so "none" is zero returns, not an empty string.
-    g.set(
-        "GetAddOnDependencies",
-        lua.create_function(|lua, key: Value| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let key = addon_key(lua, &model, &key, USAGE_DEPENDENCIES)?;
-            // A name the registry does not hold reaches `0x51e350` and comes back NULL, which
-            // takes `0x48e68a` — zero values, no raise.
-            let Some(i) = row_of(&model, &key) else {
-                return Ok(MultiValue::new());
-            };
-            let mut out = Vec::new();
-            for dep in &model.addons[i].dependencies {
-                out.push(lua_str(lua, dep)?);
-            }
-            Ok(MultiValue::from_iter(out))
-        })?,
-    )?;
+    vm.register_function("GetAddOnDependencies", |lua, key: Value| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let key = addon_key(&model, &key, USAGE_DEPENDENCIES)?;
+        // A name the registry does not hold reaches `0x51e350` and comes back NULL, which
+        // takes `0x48e68a` — zero values, no raise.
+        let Some(i) = row_of(&model, &key) else {
+            return Ok(MultiValue::new());
+        };
+        let mut out = Vec::new();
+        for dep in &model.addons[i].dependencies {
+            out.push(lua_str(dep));
+        }
+        Ok(MultiValue::from_iter(out))
+    })?;
 
     // The raw `## Key: Value`, by key — how an addon reads its own `## Version`.
-    g.set(
-        "GetAddOnMetadata",
-        lua.create_function(|lua, (key, field): (Value, Value)| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let key = addon_key(lua, &model, &key, USAGE_METADATA)?;
-            // Argument 2 is gated by its own `lua_isstring` (`0x48e59c`, edx=2) onto the SAME
-            // usage raise (`0x48e5cb`) — so `GetAddOnMetadata("Foo")` raises rather than
-            // answering nil.
-            let field = super::binding_abi::string_arg(lua, field, USAGE_METADATA)?;
-            let Some(i) = row_of(&model, &key) else {
-                return Ok(Value::Nil);
-            };
-            match model.addons[i]
-                .directives
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(&field))
-            {
-                Some((_, v)) => lua_str(lua, v),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    vm.register_function("GetAddOnMetadata", |lua, (key, field): (Value, Value)| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let key = addon_key(&model, &key, USAGE_METADATA)?;
+        // Argument 2 is gated by its own `lua_isstring` (`0x48e59c`, edx=2) onto the SAME
+        // usage raise (`0x48e5cb`) — so `GetAddOnMetadata("Foo")` raises rather than
+        // answering nil.
+        let field = super::binding_abi::neutral_string_arg(field, USAGE_METADATA)?;
+        let Some(i) = row_of(&model, &key) else {
+            return Ok(Value::Nil);
+        };
+        match model.addons[i]
+            .directives
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(&field))
+        {
+            Some((_, v)) => Ok(lua_str(v)),
+            None => Ok(Value::Nil),
+        }
+    })?;
 
     // **One argument, index or name — the `(character, index)` form is GLUE-ONLY** (byte-carved,
     // wow-re `addon-enable-store.md`: in-game `0x48e690`/`0x48e760` read arg1 alone and key the
@@ -470,32 +450,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("EnableAddOn", true, USAGE_ENABLE),
         ("DisableAddOn", false, USAGE_DISABLE),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, key: Value| {
-                let mut model = lua.app_data_mut::<Model>().expect("model");
-                let key = addon_key(lua, &model, &key, usage)?;
-                if let Some(i) = row_of(&model, &key) {
-                    model.addons[i].enabled = on;
-                }
-                Ok(())
-            })?,
-        )?;
+        vm.register_function(name, move |lua, key: Value| {
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            let key = addon_key(&model, &key, usage)?;
+            if let Some(i) = row_of(&model, &key) {
+                model.addons[i].enabled = on;
+            }
+            Ok(())
+        })?;
     }
 
     // No arguments read at all (`0x48e720`/`0x48e7f0` — the loop re-evaluates the bound and the
     // current character each iteration; ours is one pass over the same store).
     for (name, on) in [("EnableAllAddOns", true), ("DisableAllAddOns", false)] {
-        g.set(
-            name,
-            lua.create_function(move |lua, _: MultiValue| {
-                let mut model = lua.app_data_mut::<Model>().expect("model");
-                for a in &mut model.addons {
-                    a.enabled = on;
-                }
-                Ok(())
-            })?,
-        )?;
+        vm.register_function(name, move |lua, _: MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            for a in &mut model.addons {
+                a.enabled = on;
+            }
+            Ok(())
+        })?;
     }
 
     // `ResetDisabledAddOns 0x48e830` — **revert-to-last-saved**, byte-carved (wow-re
@@ -505,41 +479,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // file is immutable until the shutdown tail writes it (the glue can only edit it with no
     // session up), so the registration-time `enabled` — read from that very file — IS the
     // last-saved state, and reverting to it is the same operation without re-reading disk.
-    g.set(
-        "ResetDisabledAddOns",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            for a in &mut model.addons {
-                a.enabled = a.saved_enabled;
-            }
-            Ok(())
-        })?,
-    )?;
+    vm.register_function("ResetDisabledAddOns", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        for a in &mut model.addons {
+            a.enabled = a.saved_enabled;
+        }
+        Ok(())
+    })?;
 
     // loaded, reason — see `load_addon`.
-    g.set(
-        "LoadAddOn",
-        lua.create_function(|lua, key: Value| {
-            let index = {
-                let model = lua.app_data_ref::<Model>().expect("model");
-                let key = addon_key(lua, &model, &key, USAGE_LOAD)?;
-                row_of(&model, &key)
-            };
-            let Some(i) = index else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    lua_str(lua, "MISSING")?,
-                ]));
-            };
-            match load_addon(lua, i) {
-                Ok(()) => Ok(MultiValue::from_vec(vec![Value::Integer(1), Value::Nil])),
-                Err(reason) => Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    lua_str(lua, &reason)?,
-                ])),
-            }
-        })?,
-    )?;
+    vm.register_function("LoadAddOn", |lua, key: Value| {
+        let index = {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let key = addon_key(&model, &key, USAGE_LOAD)?;
+            row_of(&model, &key)
+        };
+        let Some(i) = index else {
+            return Ok(MultiValue::from(vec![Value::Nil, lua_str("MISSING")]));
+        };
+        match load_addon(lua, i) {
+            Ok(()) => Ok(MultiValue::from(vec![Value::Integer(1), Value::Nil])),
+            Err(reason) => Ok(MultiValue::from(vec![Value::Nil, lua_str(&reason)])),
+        }
+    })?;
 
     Ok(())
 }
@@ -553,8 +515,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 /// load would be a different function wearing the same name.
 ///
 /// `Err` carries the reference's own reason token.
-fn load_addon(lua: &Lua, i: usize) -> Result<(), String> {
-    let (name, root, files, deps, already, chain, chain_reader) = {
+fn load_addon(lua: &mut impl LuaContext, i: usize) -> Result<(), String> {
+    let (name, root, files, deps, already, chain, chain_reader, loose_reader) = {
         let model = lua.app_data_ref::<Model>().expect("model");
         let a = &model.addons[i];
         (
@@ -565,6 +527,7 @@ fn load_addon(lua: &Lua, i: usize) -> Result<(), String> {
             a.loaded,
             a.chain,
             model.addons_chain_reader.clone(),
+            model.addons_loose_reader.clone(),
         )
     };
     if already {
@@ -588,6 +551,8 @@ fn load_addon(lua: &Lua, i: usize) -> Result<(), String> {
             return Err("MISSING".into());
         };
         Box::new(move |req: &str| reader(&format!("Interface/AddOns/{req}")))
+    } else if let Some(reader) = loose_reader {
+        Box::new(move |req: &str| reader(&crate::loader::join_ref("Interface/AddOns", req)))
     } else {
         let Some(root) = root else {
             return Err("MISSING".into());
@@ -659,7 +624,8 @@ fn load_addon(lua: &Lua, i: usize) -> Result<(), String> {
     load_bindings(lua, &name, &read);
     load_saved_variables(lua, i);
     // The verified position: after the files, at the end of this addon's load (`0x51f5ad`).
-    super::event::fire_global(lua, "ADDON_LOADED", &[super::ScriptValue::Str(name)]);
+    let event_args = [super::ScriptValue::Str(name)];
+    super::event::fire_global_context(lua, "ADDON_LOADED", &event_args);
     Ok(())
 }
 
@@ -674,7 +640,7 @@ fn load_addon(lua: &Lua, i: usize) -> Result<(), String> {
 /// A missing file is the normal case and silent — most addons declare no bindings. `Bindings.xml`
 /// is the reference's own spelling and the only one probed; the sandbox is [`read_under`]'s, so
 /// this reads exactly what the addon's other files may read and nothing else.
-fn load_bindings(lua: &Lua, name: &str, read: &Reader) {
+fn load_bindings(lua: &mut impl LuaContext, name: &str, read: &Reader) {
     let path = crate::loader::join_ref(name, "Bindings.xml");
     let Some(bytes) = read(&path) else {
         return;
@@ -699,7 +665,7 @@ fn load_bindings(lua: &Lua, name: &str, read: &Reader) {
 /// **Position is the mechanism**: this runs after the addon's own files (which assign the
 /// file-scope defaults) and before `ADDON_LOADED` (whose handlers are specified to see the
 /// restored value). Reverse either and the saved value can never win.
-fn load_saved_variables(lua: &Lua, i: usize) {
+fn load_saved_variables(lua: &mut impl LuaContext, i: usize) {
     let (name, account, character, has_account, has_character) = {
         let model = lua.app_data_ref::<Model>().expect("model");
         let a = &model.addons[i];
@@ -717,8 +683,14 @@ fn load_saved_variables(lua: &Lua, i: usize) {
         }
         let Some(dir) = dir else { continue };
         let path = dir.join(format!("{name}.lua"));
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue; // absent is the first-run case
+        let bytes = match benilla_settings::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log_error(lua, &format!("{}: {error}", path.display()));
+                }
+                continue; // absent is first-run; actual storage failures are reported
+            }
         };
         if let Err(e) = run_chunk(
             lua,
@@ -740,7 +712,7 @@ fn load_saved_variables(lua: &Lua, i: usize) {
 /// reader for a player's addon, the chain reader for a Blizzard LoadOnDemand one.
 type Reader = Box<dyn Fn(&str) -> Option<Vec<u8>>>;
 
-fn run_files(lua: &Lua, name: &str, read: &Reader, files: &[String]) {
+fn run_files(lua: &mut impl LuaContext, name: &str, read: &Reader, files: &[String]) {
     let provider = |req: &str| -> Option<Vec<u8>> { read(req) };
     for file in files {
         let path = crate::loader::join_ref(name, file);
@@ -775,7 +747,7 @@ fn run_files(lua: &Lua, name: &str, read: &Reader, files: &[String]) {
                 continue;
             }
         };
-        let report = crate::loader::load_into(lua, &doc, &path, &provider);
+        let report = crate::loader::load_into_context(lua, &doc, &path, &provider);
         // The warnings were dropped on the floor here until 2135 — an unresolved `inherits=`, a
         // template of the wrong kind, an attribute nobody reads: the addon loads "clean", paints
         // nothing, and the one thing that knew why was a `LoadReport` that went out of scope.
@@ -797,7 +769,7 @@ fn run_files(lua: &Lua, name: &str, read: &Reader, files: &[String]) {
 /// `report_load_failure`, and this pairs the host warning channel — which the app drains at
 /// `warn!` — with the same retention call. What it deliberately does **not** touch is
 /// [`Model::errors`], the instruments' script-error channel: nothing raised.
-fn load_miss(lua: &Lua, name: &str, file: &str) {
+fn load_miss(lua: &mut impl LuaContext, name: &str, file: &str) {
     load_failure(lua, &format!("{name}/{file}: not found"));
 }
 
@@ -805,7 +777,7 @@ fn load_miss(lua: &Lua, name: &str, file: &str) {
 /// **raised**. `benilla-ui` has no logger of its own, so the second half goes on the host's
 /// non-fatal warning channel, which the app drains at `warn!` — the walk's own severity for the
 /// same failure.
-fn load_failure(lua: &Lua, msg: &str) {
+fn load_failure(lua: &mut impl LuaContext, msg: &str) {
     let msg = format!("LoadAddOn: {msg}");
     crate::script::diagnostics::record_load_failure(lua, &msg);
     // `warn_host_only`, not `record_warning`: `record_load_failure` above has already retained
@@ -832,16 +804,13 @@ fn read_under(root: &std::path::Path, rel: &str) -> Option<Vec<u8>> {
 /// Run a chunk that came off disk, from `&Lua` — [`crate::script::UiScript::run_chunk`]'s body for
 /// the demand-load path, which never holds a `UiScript` (1191 §4). Bytes and a BOM strip, for the
 /// reasons in [`crate::source`].
-fn run_chunk(lua: &Lua, bytes: &[u8], name: &str) -> mlua::Result<()> {
-    lua.load(crate::source::chunk(bytes))
-        .set_name(name)
-        .set_mode(mlua::ChunkMode::Text)
-        .exec()
+fn run_chunk(lua: &mut impl LuaContext, bytes: &[u8], name: &str) -> benilla_lua::Result<()> {
+    lua.exec_named_text(crate::source::chunk(bytes), name)
 }
 
 /// Record a load error where the host drains it — the same channel a handler error uses, so a
 /// demand-load failure surfaces the way every other script error does rather than vanishing.
-fn log_error(lua: &Lua, msg: &str) {
+fn log_error(lua: &mut impl LuaContext, msg: &str) {
     lua.app_data_mut::<Model>()
         .expect("model")
         .errors
@@ -852,8 +821,14 @@ fn log_error(lua: &Lua, msg: &str) {
 impl super::UiScript {
     /// Seat the host's chain reader — what a chain-sourced addon (`AddOnInfo::chain`) is read
     /// through, by chain-internal path (1957).
-    pub fn set_addon_chain_reader(&self, reader: AddonChainReader) {
+    pub fn set_addon_chain_reader(&mut self, reader: AddonChainReader) {
         self.model_mut().addons_chain_reader = Some(std::rc::Rc::from(reader));
+    }
+    /// Host byte adapter for loose addons, in the install-relative namespace.
+    /// The same synchronous LoadAddOn walk is used; absent callback retains
+    /// native folder IO. Browser hosts must admit the complete closure first.
+    pub fn set_addon_loose_reader(&mut self, reader: AddonChainReader) {
+        self.model_mut().addons_loose_reader = Some(std::rc::Rc::from(reader));
     }
     /// Replace the AddOn registry — called once at world entry, after discovery
     /// ([`crate::script`]'s `register_bindings` is the same shape: the host owns the facts, the
@@ -908,7 +883,7 @@ impl super::UiScript {
             .iter()
             .position(|a| a.name.eq_ignore_ascii_case(name));
         if let Some(i) = i {
-            load_saved_variables(self.lua(), i);
+            load_saved_variables(&mut self.lua, i);
         }
     }
 

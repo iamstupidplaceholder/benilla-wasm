@@ -76,6 +76,7 @@ pub(super) fn publish_view_focus(
     mut player: Option<ResMut<Player>>,
     roster: Option<Res<crate::char_select::Roster>>,
     cinematic: Option<Res<crate::cinematic::Cinematic>>,
+    time: Res<Time>,
     mut was_flying: Local<bool>,
 ) {
     let entry = roster
@@ -118,6 +119,14 @@ pub(super) fn publish_view_focus(
             info!("cinematic: body held — the stream follows the camera off its ground");
         }
     }
+    if !flying && *was_flying {
+        if let Some(p) = player.as_deref_mut().filter(|p| p.active && p.settling) {
+            // A cinematic intentionally streams away from the body. The load
+            // budget starts when focus returns, not while the shot is playing.
+            p.settle_since = time.elapsed_secs();
+            p.settle_deadline = p.settle_since + SETTLE_TIMEOUT;
+        }
+    }
     *was_flying = flying;
     // The pacing bit: spawn caps apply only to a live avatar standing in a settled world. Through
     // entry, a teleport and a world swap the loading cover is absorbing the burst, and a cap there
@@ -150,16 +159,18 @@ pub(super) fn release_post_snap_hold(
     mut player: ResMut<Player>,
     progress: Option<Res<WorldLoadProgress>>,
     time: Res<Time>,
-    mut last_counters: Local<Option<[usize; 6]>>,
+    mut aborted_hold: Local<Option<f32>>,
+    mut network_wait: Local<(Option<f32>, f32)>,
     net_cmds: Option<Res<crate::net::NetCommands>>,
+    cinematic: Option<Res<crate::cinematic::Cinematic>>,
 ) {
     let Some(p) = progress else { return };
     // **The facts must be about the ground under our own feet** (decision 1336, B263 round 3).
     // `WorldLoadProgress` names the tile it describes; a mismatch means the streamer's focus and
     // the avatar diverged — the stale-focus snap frame this guard exists for, or a detached
     // free-fly eye — and residency published for another tile must never unfreeze this body. On a
-    // mismatch the resident release and the stale-clear below are both refused; the stall backstop
-    // still runs, so a genuinely wedged mismatch costs a logged 6 s timeout, never a silent fall.
+    // mismatch the resident release and the stale-clear below are both refused;
+    // the absolute load limit still aborts a genuinely wedged session.
     let focus_matches = p.focus_tile.is_some_and(|t| {
         let wow = benilla_assets::coords::bevy_to_wow(player.pos);
         let (tx, ty) = benilla_formats::world_to_tile(wow[0], wow[1]);
@@ -171,44 +182,63 @@ pub(super) fn release_post_snap_hold(
     if p.focus_resident && p.total > 0 && focus_matches {
         player.world_stale = false;
     }
-    // Did the stream move since last frame? Any counter changing — a tile spawned, a placement
-    // up, a collider queued or attached, a retained region baked — is the destination still
-    // arriving. Tracked every frame
-    // (not just while settling) so the first settling frame compares against a real baseline.
-    let counters = [
-        p.ready,
-        p.total,
-        p.colliders_pending,
-        p.merge_pending,
-        p.placements_pending,
-        p.gx_pending,
-    ];
-    let progressed = last_counters.replace(counters) != Some(counters);
     if !player.settling {
+        *aborted_hold = None;
         return;
     }
-    // The release ends on scene AND colliders, never on ground contact — feet-on-ground dragged
-    // the whole mover-mode matrix into a loading decision, and a flyer or swimmer never touched
-    // it. The timeout is a STALL budget, twice over (0710's fail-closed law, extended by B263 /
-    // decision 1303): the deadline is pushed while the resident colliders still belong to the map
-    // we just left, AND while the destination's own stream is visibly advancing. As a fixed load
-    // budget it was 0.01 s from firing on a fast machine (a Stormwind arrival used 5.99 s of the
-    // 6.00), and on a slower one it fired mid-stream — gravity on, the city's collider still in
-    // the build queue, and the body fell to the canyon under the Valley of Heroes with the cover
-    // still up. Only a stream that has made NO progress for the whole budget — missing data, dead
-    // IO — can time out now, which is the case the backstop was always for.
+    if *aborted_hold == Some(player.settle_since) {
+        return; // Waiting for transport teardown; never ack this failed entry.
+    }
+    // Release only on scene AND collider residency. Missing progress-counter
+    // changes do not prove a stall: the browser can still be fetching/decoding
+    // the last building. The hard load limit aborts instead of enabling gravity.
     let now = time.elapsed_secs();
+    if network_wait.0 != Some(player.settle_since) {
+        *network_wait = (Some(player.settle_since), 0.0);
+    }
+    let delivery_pending = browser_delivery_pending();
+    if delivery_pending {
+        network_wait.1 += time.delta_secs();
+    }
     if p.presentable() && !player.world_stale && focus_matches {
         player.end_settle(true, now);
-    } else if player.world_stale || progressed {
-        player.settle_deadline = now + SETTLE_TIMEOUT;
-    } else if now >= player.settle_deadline {
-        player.end_settle(false, now);
+    } else if !delivery_pending
+        && !player.detached
+        && !cinematic.as_deref().is_some_and(|c| c.is_playing())
+        && now - player.settle_since - network_wait.1 >= SETTLE_TIMEOUT
+        && *aborted_hold != Some(player.settle_since)
+    {
+        // Report the residency gate that failed before aborting the transport.
+        let wow = benilla_assets::coords::bevy_to_wow(player.pos);
+        let tile = benilla_formats::world_to_tile(wow[0], wow[1]);
+        warn!(
+            "settle residency: wow={wow:?} body_tile={tile:?} stream_tile={:?} focus_matches={focus_matches} focus_resident={} scene_ready={} ready={}/{} colliders_pending={} merge_pending={} placements_pending={} gx_pending={}",
+            p.focus_tile,
+            p.focus_resident,
+            p.scene_ready,
+            p.ready,
+            p.total,
+            p.colliders_pending,
+            p.merge_pending,
+            p.placements_pending,
+            p.gx_pending,
+        );
+        if let Some(net) = net_cmds.as_deref() {
+            let reason =
+                format!("World scene did not become ready within {SETTLE_TIMEOUT:.0} seconds");
+            if net
+                .0
+                .send(crate::net::ClientCommand::Disconnect { reason })
+                .is_ok()
+            {
+                *aborted_hold = Some(player.settle_since);
+            }
+        }
+        // Never release gravity or send a worldport ack for an incomplete scene.
+        // Keep the body held until the real disconnect tears down the session.
     }
-    // **Pay the worldport ack the moment the hold ends** (decision 1340) — on either end, the
-    // resident release or the stall timeout (a dead stream must still complete the transfer, or
-    // the server holds us out-of-world until logout). This is the real client's post-load `0xDC`,
-    // re-expressed: its blocking load's "done" is our release.
+    // Pay the worldport ack only after the resident release. A failed load
+    // closes the session instead of pretending the transfer completed.
     if !player.settling && player.owes_worldport_ack {
         if let Some(net) = net_cmds.as_deref() {
             player.owes_worldport_ack = false;
@@ -218,9 +248,20 @@ pub(super) fn release_post_snap_hold(
     }
 }
 
+fn browser_delivery_pending() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        benilla_assets::delivery_pending()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use benilla_time::Duration;
 
     use super::*;
 

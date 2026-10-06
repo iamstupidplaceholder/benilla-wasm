@@ -2,8 +2,8 @@
 //! goes with it ([`ground_clamp_creatures`]) — the creature half of [`super`]'s motion model
 //! (decisions 0052/0059/0097).
 
+use benilla_time::{Duration, Instant};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
 
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_protocol::{CreateSpline, EntityKind};
@@ -732,7 +732,7 @@ pub(in crate::net) fn ground_clamp_creatures(
 ) {
     let cost = clamp_cost_enabled();
     let legacy = clamp_seat_disabled();
-    let t0 = cost.then(std::time::Instant::now);
+    let t0 = cost.then(benilla_time::Instant::now);
     let (mut visited, mut skipped, mut held, mut cast, mut swept, mut hit_n, mut moved) =
         (0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
     // **The walker arm's two ground numbers** (decision 2174).
@@ -1043,7 +1043,11 @@ pub(in crate::net) fn ground_clamp_creatures(
         // units it is ~8 µs. Only `ms` justifies the slice — quote it, not the counts.
         eprintln!(
             "[clamp-cost] visited={visited} skipped={skipped} held={held} cast={cast} swept={swept} reseat={reseat} armed={armed} hit={hit_n} moved={moved} noflr={noflr} ratchet={ratchet} deepest={} worst={} ms={:.3}",
-            if deepest.is_finite() { format!("{deepest:+.2}") } else { "-".to_string() },
+            if deepest.is_finite() {
+                format!("{deepest:+.2}")
+            } else {
+                "-".to_string()
+            },
             worst.map_or_else(
                 || "-".to_string(),
                 |(d, xz, y)| format!("display={d}@({:.0},{:.0}) y={y:.2}", xz[0], xz[1])
@@ -1873,7 +1877,7 @@ mod swim_gate {
 /// move.
 #[cfg(test)]
 mod server_moved_players {
-    use std::time::{Duration, Instant};
+    use benilla_time::{Duration, Instant};
 
     use avian3d::prelude::*;
     use benilla_assets::coords::wow_to_bevy;
@@ -2244,7 +2248,7 @@ mod server_moved_players {
 /// that STARTS above it — which is exactly what the clamp did before this record.
 #[cfg(test)]
 mod inside_a_hull {
-    use std::time::{Duration, Instant};
+    use benilla_time::{Duration, Instant};
 
     use avian3d::prelude::*;
     use benilla_protocol::EntityKind;

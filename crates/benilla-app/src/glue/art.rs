@@ -8,10 +8,28 @@
 
 use bevy::prelude::*;
 
-use benilla_assets::WorldAssets;
+use benilla_assets::SpriteAssets;
 
 use super::add_material::AddUiMaterial;
 use super::backdrop::BackdropEdges;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use crate::web_glue_art::deliver_glue_art as load_glue_art;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn load_glue_art(
+    mut source: Option<ResMut<benilla_assets::WorldAssets>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<AddUiMaterial>>,
+    mut art: ResMut<GlueArt>,
+) {
+    if art.ready() {
+        return;
+    }
+    if let Some(source) = source.as_deref_mut() {
+        art.ensure_loaded(source, &mut images, &mut materials);
+    }
+}
 
 // ── The authored glue palette ────────────────────────────────────────────────────────────────────
 
@@ -201,19 +219,39 @@ pub(crate) struct CloseBtnArt {
 }
 
 impl GlueArt {
-    /// Load the art set once (idempotent; failures stay `None` — the graceful-absence posture).
+    /// Assemble the original art set. Completed fields survive retries; Pending
+    /// never becomes a terminal missing field. Actual failures retain the original
+    /// graceful-absence posture, and `ready` means the full assembly is terminal.
     pub(crate) fn ensure_loaded(
         &mut self,
-        assets: &mut WorldAssets,
+        assets: &mut impl SpriteAssets,
         images: &mut Assets<Image>,
         add_mats: &mut Assets<AddUiMaterial>,
     ) {
         if self.tried {
             return;
         }
-        self.tried = true;
+        // Retain completed fields across async passes, but publish only after
+        // every read attempted by the original assembler is terminal.
+        let mut load_pending = false;
+        macro_rules! load {
+            ($field:ident, $value:expr) => {
+                if self.$field.is_none() {
+                    if assets.should_yield() {
+                        load_pending = true;
+                    } else {
+                        let value = $value;
+                        let pending = assets.take_pending();
+                        load_pending |= pending;
+                        if !pending {
+                            self.$field = value;
+                        }
+                    }
+                }
+            };
+        }
         fn sized(
-            assets: &mut WorldAssets,
+            assets: &mut impl SpriteAssets,
             path: &str,
             images: &mut Assets<Image>,
         ) -> Option<(Handle<Image>, Vec2)> {
@@ -222,7 +260,7 @@ impl GlueArt {
             Some((h, size))
         }
         fn arrow(
-            assets: &mut WorldAssets,
+            assets: &mut impl SpriteAssets,
             side: &str,
             images: &mut Assets<Image>,
             add_mats: &mut Assets<AddUiMaterial>,
@@ -242,70 +280,69 @@ impl GlueArt {
         }
         const CC: &str = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-";
         const GB: &str = "Interface\\Glues\\Common\\Glue-Panel-Button-";
-        self.races = sized(assets, &format!("{CC}Races"), images);
-        self.classes = sized(assets, &format!("{CC}Classes"), images);
-        self.gender = sized(assets, &format!("{CC}Gender"), images);
-        self.factions = sized(assets, &format!("{CC}Factions"), images);
-        self.banners = assets.sprite_texture(&format!("{CC}Banners"), images);
+        load!(races, sized(assets, &format!("{CC}Races"), images));
+        load!(classes, sized(assets, &format!("{CC}Classes"), images));
+        load!(gender, sized(assets, &format!("{CC}Gender"), images));
+        load!(factions, sized(assets, &format!("{CC}Factions"), images));
+        load!(banners, assets.sprite_texture(&format!("{CC}Banners"), images));
         // (`CheckButtonHilight` stays unloaded — the template's `CheckedTexture` is commented out
         // in the shipped 1.12 GlueXML; the selected visual is the *locked* highlight alone.)
-        self.hilight = add_overlay(
+        load!(hilight, add_overlay(
             assets,
             "Interface\\Buttons\\ButtonHilight-Square",
             FULL_TC,
             images,
             add_mats,
-        );
-        self.logo = assets.sprite_texture("Interface\\Glues\\Common\\Glues-WoW-Logo", images);
-        self.arrow_left = arrow(assets, "Left", images, add_mats);
-        self.arrow_right = arrow(assets, "Right", images, add_mats);
-        self.button_up = sized(assets, &format!("{GB}Up"), images);
-        self.button_down = sized(assets, &format!("{GB}Down"), images);
-        self.button_dis = sized(assets, &format!("{GB}Disabled"), images);
-        self.button_hi = add_overlay(
+        ));
+        load!(logo, assets.sprite_texture("Interface\\Glues\\Common\\Glues-WoW-Logo", images));
+        load!(arrow_left, arrow(assets, "Left", images, add_mats));
+        load!(arrow_right, arrow(assets, "Right", images, add_mats));
+        load!(button_up, sized(assets, &format!("{GB}Up"), images));
+        load!(button_down, sized(assets, &format!("{GB}Down"), images));
+        load!(button_dis, sized(assets, &format!("{GB}Disabled"), images));
+        load!(button_hi, add_overlay(
             assets,
             &format!("{GB}Highlight"),
             BUTTON_HI_TC,
             images,
             add_mats,
-        );
-        self.tower_bg = assets.sprite_texture(&format!("{CC}Background"), images);
-        self.tower_border = sized(assets, &format!("{CC}OuterBorder"), images);
-        self.icon_shadow = assets.sprite_texture(&format!("{CC}IconShadow"), images);
-        self.label_frame = sized(
+        ));
+        load!(tower_bg, assets.sprite_texture(&format!("{CC}Background"), images));
+        load!(tower_border, sized(assets, &format!("{CC}OuterBorder"), images));
+        load!(icon_shadow, assets.sprite_texture(&format!("{CC}IconShadow"), images));
+        load!(label_frame, sized(
             assets,
             "Interface\\Glues\\CharacterCreate\\CharacterCreate-LabelFrame",
             images,
-        );
-        self.rotate_up = assets.sprite_texture(
+        ));
+        load!(rotate_up, assets.sprite_texture(
             "Interface\\Glues\\CharacterCreate\\UI-RotationRight-Big-Up",
             images,
-        );
-        self.rotate_down = assets.sprite_texture(
+        ));
+        load!(rotate_down, assets.sprite_texture(
             "Interface\\Glues\\CharacterCreate\\UI-RotationRight-Big-Down",
             images,
-        );
-        self.mouse_hilight = add_overlay(
+        ));
+        load!(mouse_hilight, add_overlay(
             assets,
             "Interface\\Buttons\\UI-Common-MouseHilight",
             FULL_TC,
             images,
             add_mats,
-        );
-        self.panel_border = super::backdrop::backdrop_edges(
+        ));
+        load!(panel_border, super::backdrop::backdrop_edges(
             assets,
             "Interface\\Glues\\Common\\TextPanel-Border",
             images,
-        );
-        self.name_border = super::backdrop::backdrop_edges(
+        ));
+        load!(name_border, super::backdrop::backdrop_edges(
             assets,
             "Interface\\Glues\\Common\\Glue-Tooltip-Border",
             images,
-        );
-        self.tooltip_bg =
-            assets.sprite_texture("Interface\\Tooltips\\UI-Tooltip-Background", images);
+        ));
+        load!(tooltip_bg, assets.sprite_texture("Interface\\Tooltips\\UI-Tooltip-Background", images));
         fn scroll_btn(
-            assets: &mut WorldAssets,
+            assets: &mut impl SpriteAssets,
             dir: &str,
             images: &mut Assets<Image>,
             add_mats: &mut Assets<AddUiMaterial>,
@@ -327,7 +364,7 @@ impl GlueArt {
                 size,
             })
         }
-        self.scroll = (|| {
+        load!(scroll, (|| {
             Some(ScrollArt {
                 up_btn: scroll_btn(assets, "Up", images, add_mats)?,
                 down_btn: scroll_btn(assets, "Down", images, add_mats)?,
@@ -339,38 +376,35 @@ impl GlueArt {
                     images,
                 ),
             })
-        })();
+        })());
         // The select screen's set (decision 0465): the row highlight + the delete dialog's box.
-        self.select_highlight = add_overlay(
+        load!(select_highlight, add_overlay(
             assets,
             "Interface\\Glues\\CharacterSelect\\Glue-CharacterSelect-Highlight",
             FULL_TC,
             images,
             add_mats,
-        );
-        self.dialog_border = super::backdrop::backdrop_edges(
+        ));
+        load!(dialog_border, super::backdrop::backdrop_edges(
             assets,
             "Interface\\DialogFrame\\UI-DialogBox-Border",
             images,
-        );
-        self.dialog_bg =
-            assets.sprite_texture("Interface\\DialogFrame\\UI-DialogBox-Background", images);
-        self.dialog_alert =
-            assets.sprite_texture("Interface\\DialogFrame\\DialogAlertIcon", images);
-        self.chat_input_left = sized(
+        ));
+        load!(dialog_bg, assets.sprite_texture("Interface\\DialogFrame\\UI-DialogBox-Background", images));
+        load!(dialog_alert, assets.sprite_texture("Interface\\DialogFrame\\DialogAlertIcon", images));
+        load!(chat_input_left, sized(
             assets,
             "Interface\\ChatFrame\\UI-ChatInputBorder-Left",
             images,
-        );
-        self.chat_input_right = sized(
+        ));
+        load!(chat_input_right, sized(
             assets,
             "Interface\\ChatFrame\\UI-ChatInputBorder-Right",
             images,
-        );
+        ));
         // The login screen's set (decision 0539).
-        self.blizzard_logo =
-            assets.sprite_texture("Interface\\Glues\\Mainmenu\\Glues-BlizzardLogo", images);
-        self.checkbox = (|| {
+        load!(blizzard_logo, assets.sprite_texture("Interface\\Glues\\Mainmenu\\Glues-BlizzardLogo", images));
+        load!(checkbox, (|| {
             Some(CheckboxArt {
                 up: assets.sprite_texture("Interface\\Buttons\\UI-CheckBox-Up", images)?,
                 down: assets.sprite_texture("Interface\\Buttons\\UI-CheckBox-Down", images)?,
@@ -383,10 +417,10 @@ impl GlueArt {
                     add_mats,
                 ),
             })
-        })();
+        })());
         // The AddOn List screen's set (reference `GlueXML/AddonList.xml` off the patch chain).
         const HF: &str = "Interface\\HelpFrame\\HelpFrame-";
-        self.help_frame = (|| {
+        load!(help_frame, (|| {
             let tl = sized(assets, &format!("{HF}TopLeft"), images)?;
             let top = sized(assets, &format!("{HF}Top"), images)?;
             let tr = sized(assets, &format!("{HF}TopRight"), images)?;
@@ -399,58 +433,55 @@ impl GlueArt {
                 bottom: assets.sprite_texture(&format!("{HF}Bottom"), images)?,
                 br: assets.sprite_texture(&format!("{HF}BotRight"), images)?,
             })
-        })();
-        self.dialog_header = sized(
+        })());
+        load!(dialog_header, sized(
             assets,
             "Interface\\DialogFrame\\UI-DialogBox-Header",
             images,
-        );
-        self.close_btn = (|| {
+        ));
+        load!(close_btn, (|| {
             const MB: &str = "Interface\\Buttons\\UI-Panel-MinimizeButton-";
             Some(CloseBtnArt {
                 up: assets.sprite_texture(&format!("{MB}Up"), images)?,
                 down: assets.sprite_texture(&format!("{MB}Down"), images)?,
                 hi: add_overlay(assets, &format!("{MB}Highlight"), FULL_TC, images, add_mats),
             })
-        })();
-        self.dropdown_arrow_up =
-            assets.sprite_texture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up", images);
-        self.dropdown_arrow_down =
-            assets.sprite_texture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Down", images);
-        self.quest_hilight = add_overlay(
+        })());
+        load!(dropdown_arrow_up, assets.sprite_texture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up", images));
+        load!(dropdown_arrow_down, assets.sprite_texture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Down", images));
+        load!(quest_hilight, add_overlay(
             assets,
             "Interface\\QuestFrame\\UI-QuestTitleHighlight",
             FULL_TC,
             images,
             add_mats,
-        );
-        self.title_highlight =
-            assets.sprite_texture("Interface\\QuestFrame\\UI-QuestLogTitleHighlight", images);
-        self.check_disabled =
-            assets.sprite_texture("Interface\\Buttons\\UI-CheckBox-Check-Disabled", images);
-        self.tooltip_border = super::backdrop::backdrop_edges(
+        ));
+        load!(title_highlight, assets.sprite_texture("Interface\\QuestFrame\\UI-QuestLogTitleHighlight", images));
+        load!(check_disabled, assets.sprite_texture("Interface\\Buttons\\UI-CheckBox-Check-Disabled", images));
+        load!(tooltip_border, super::backdrop::backdrop_edges(
             assets,
             "Interface\\Tooltips\\UI-Tooltip-Border",
             images,
-        );
-        self.char_scrollbar = sized(
+        ));
+        load!(char_scrollbar, sized(
             assets,
             "Interface\\PaperDollInfoFrame\\UI-Character-ScrollBar",
             images,
-        );
-        self.column_tabs = sized(
+        ));
+        load!(column_tabs, sized(
             assets,
             "Interface\\FriendsFrame\\WhoFrame-ColumnTabs",
             images,
-        );
-        self.tab_highlight = add_overlay(
+        ));
+        load!(tab_highlight, add_overlay(
             assets,
             "Interface\\PaperDollInfoFrame\\UI-Character-Tab-Highlight",
             FULL_TC,
             images,
             add_mats,
-        );
-        self.sort_arrow = sized(assets, "Interface\\Buttons\\UI-SortArrow", images);
+        ));
+        load!(sort_arrow, sized(assets, "Interface\\Buttons\\UI-SortArrow", images));
+        self.tried = !load_pending;
         debug!(
             "glue art: addonlist set — helpframe {} header {} close {} droparrow {}/{} \
              questhl {} titlehl {} greycheck {} tipborder {} scrolltrack {} \
@@ -508,6 +539,10 @@ impl GlueArt {
             self.checkbox.is_some(),
         );
     }
+
+    pub(crate) fn ready(&self) -> bool {
+        self.tried
+    }
 }
 
 // ── WoW `alphaMode="ADD"` overlays ───────────────────────────────────────────────────────────────
@@ -520,7 +555,7 @@ const FULL_TC: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 /// module docs for why an alpha-encode approximation was retired). `tc` is the authored
 /// `[left, right, top, bottom]` texcoord region (the sheets store the button in a sub-rect).
 fn add_overlay(
-    assets: &mut WorldAssets,
+    assets: &mut impl SpriteAssets,
     path: &str,
     tc: [f32; 4],
     images: &mut Assets<Image>,

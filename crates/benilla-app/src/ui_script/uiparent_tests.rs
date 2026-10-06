@@ -15,7 +15,7 @@ fn ui_parent() -> UiScript {
         "Interface\\FrameXML\\Fonts.xml",
         r"Interface\FrameXML\UIParent.xml",
     ] {
-        crate::ui_script::test_ui::load_ui(&s, file);
+        crate::ui_script::test_ui::load_ui(&mut s, file);
     }
     s.set_screen_size(1024.0, 768.0);
     s.run(
@@ -100,7 +100,7 @@ fn mouse_is_over_is_the_references_own_box_test() {
 /// so repeated calls accumulate.
 #[test]
 fn raise_and_lower_frame_level_step_the_frames_own_level() {
-    let s = ui_parent();
+    let mut s = ui_parent();
     let base: i64 = s.eval("return Box:GetFrameLevel()").unwrap();
 
     s.run("RaiseFrameLevel(Box) RaiseFrameLevel(Box)").unwrap();
@@ -121,7 +121,7 @@ fn raise_and_lower_frame_level_step_the_frames_own_level() {
 /// `IgniteStatus` calls it at file scope and dies on `attempt to call global`.
 #[test]
 fn randomseed_is_a_bare_global_like_random() {
-    let s = ui_parent();
+    let mut s = ui_parent();
     // Seeding twice with the same value must produce the same first draw; that is the whole
     // contract an addon wants from it.
     let a: i64 = s
@@ -164,7 +164,7 @@ fn mouse_is_over_survives_a_frame_with_no_resolved_rect() {
 fn raid_class_colors_is_the_references_own_nine() {
     let mut s = UiScript::new().unwrap();
     // RAID_CLASS_COLORS comes off the chain with the font registry since 1888.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
     s.set_screen_size(1024.0, 768.0);
 
     // PaintChips-2.0's own line, verbatim in shape — the one that was raising.
@@ -218,7 +218,7 @@ fn raid_class_colors_is_the_references_own_nine() {
 fn the_font_path_globals_are_the_references_own_four() {
     let mut s = UiScript::new().unwrap();
     // The four font-path globals come off the chain with the registry since 1888.
-    super::test_ui::load_ui(&s, "Interface\\FrameXML\\Fonts.xml");
+    super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\Fonts.xml");
     s.set_screen_size(1024.0, 768.0);
 
     for name in [

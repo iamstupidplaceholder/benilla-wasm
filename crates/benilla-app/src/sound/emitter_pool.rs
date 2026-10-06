@@ -56,7 +56,8 @@ use std::collections::HashSet;
 use bevy::ecs::entity::EntityHashMap;
 use bevy::prelude::*;
 
-use benilla_assets::WorldAssets;
+#[cfg(not(target_arch="wasm32"))] use benilla_assets::WorldAssets;
+#[cfg(target_arch="wasm32")] use super::HostAssets as WorldAssets;
 use benilla_world::schedule::WorldStage;
 
 use super::kit::{

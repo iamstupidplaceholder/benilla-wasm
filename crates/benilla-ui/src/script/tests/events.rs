@@ -138,18 +138,18 @@ fn events_fire_in_registration_order_fifo() {
 /// true for a Button-only kind. Exact for the base kinds, which is what the corpus asks about.
 #[test]
 fn has_script_reports_the_kind_is_supported_not_that_one_is_set() {
-    let s = script();
+    let mut s = script();
     s.run(r#"f = CreateFrame("Frame", "HasScriptProbe")"#)
         .unwrap();
 
     // True with NOTHING set — the case every caller is actually in.
     assert!(
-        s.eval::<bool>(r#"return f:HasScript("OnMouseDown")"#)
+        s.eval_truthy(r#"return f:HasScript("OnMouseDown")"#)
             .unwrap(),
         "a frame must report it can carry OnMouseDown before one is set"
     );
     assert!(
-        !s.eval::<bool>(r#"return f:HasScript("OnNotARealScript")"#)
+        !s.eval_truthy(r#"return f:HasScript("OnNotARealScript")"#)
             .unwrap(),
         "an unknown kind is false, not true"
     );
@@ -173,7 +173,7 @@ fn has_script_reports_the_kind_is_supported_not_that_one_is_set() {
     // The recorded divergence: flat table, so a Frame says true for a Button-only kind. The
     // reference says false. Pinned so making SCRIPT_KINDS per-type has to come here and decide.
     assert!(
-        s.eval::<bool>(r#"return f:HasScript("OnClick")"#).unwrap(),
+        s.eval_truthy(r#"return f:HasScript("OnClick")"#).unwrap(),
         "over-permissive by design today — see the comment at the binding"
     );
 }
@@ -202,7 +202,7 @@ fn a_self_unregistering_handler_does_not_rob_its_successor() {
     .unwrap();
     s.fire_event("E", vec![]);
     assert!(s.errors().is_empty(), "{:?}", s.errors());
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(
         log,
         vec!["WalkA", "WalkB", "WalkC"],
@@ -210,7 +210,7 @@ fn a_self_unregistering_handler_does_not_rob_its_successor() {
     );
     // The removal held: a second fire reaches only A and C.
     s.fire_event("E", vec![]);
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(log, vec!["WalkA", "WalkB", "WalkC", "WalkA", "WalkC"]);
 }
 
@@ -238,7 +238,7 @@ fn mid_dispatch_removal_of_the_next_stops_and_append_is_visited() {
     )
     .unwrap();
     s.fire_event("E2", vec![]);
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(
         log,
         vec!["NxA"],
@@ -263,7 +263,7 @@ fn mid_dispatch_removal_of_the_next_stops_and_append_is_visited() {
     )
     .unwrap();
     s.fire_event("E3", vec![]);
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(
         log,
         vec!["ApA", "ApB", "ApLate"],

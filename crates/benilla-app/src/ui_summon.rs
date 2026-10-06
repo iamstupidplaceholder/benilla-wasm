@@ -233,15 +233,17 @@ fn drain_summon(
 
 /// The latch is the session's, and dies with it (module doc, deviation 1).
 ///
-/// `DisconnectedMessage` is the one total edge — a socket death, a kick and a `/logout` all reach
-/// it — which is the same edge [`crate::death`]'s world-scoped memory resets on, so the two stay in
-/// lockstep by construction. A `/reload` must NOT clear this: the summon window is the engine's,
+/// Both socket loss and confirmed logout clear it, even when the browser retains
+/// the authenticated socket. A `/reload` must NOT clear this: the summon window is the engine's,
 /// and the reference's survives one.
 fn end_session_summon(
     mut msgs: MessageReader<crate::net::DisconnectedMessage>,
+    mut logouts: MessageReader<crate::net::LoggedOutMessage>,
     mut summon: ResMut<SummonState>,
 ) {
-    if msgs.read().next().is_some() {
+    let disconnected = msgs.read().count() != 0;
+    let logged_out = logouts.read().count() != 0;
+    if disconnected || logged_out {
         *summon = SummonState::default();
     }
 }

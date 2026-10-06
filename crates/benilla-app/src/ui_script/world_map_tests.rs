@@ -42,7 +42,7 @@ fn harness() -> UiScript {
         // `assets/ui/Interface/FrameXML/...` and fails. The shared loader resolves both shapes, and
         // its own doc already records this consolidation happening once before. Hand-rolling it
         // here is what made this kit break the moment a file it loads migrated (1751).
-        super::test_ui::load_ui(&s, file);
+        super::test_ui::load_ui(&mut s, file);
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s
@@ -250,7 +250,7 @@ fn the_landmark_getter_returns_the_references_five_values() {
 #[test]
 fn no_landmarks_draws_nothing() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run("WorldMapFrame_Update()").unwrap();
     assert_eq!(s.eval::<i64>("return GetNumMapLandmarks()").unwrap(), 0);
     assert_eq!(s.eval::<i64>("return NUM_WORLDMAP_POIS").unwrap(), 0);
@@ -270,7 +270,7 @@ fn party_blips_sit_at_their_map_positions_and_hide_when_absent() {
     let mut s = harness();
     // `IsShown`, not `IsVisible`: the map itself is closed in this harness (the POI test's own
     // idiom), so every child would read invisible through its hidden ancestor.
-    let shown = |s: &UiScript, i: u32| -> bool {
+    let shown = |s: &mut UiScript, i: u32| -> bool {
         s.eval::<bool>(&format!("return WorldMapParty{i}:IsShown()"))
             .unwrap()
     };
@@ -278,7 +278,7 @@ fn party_blips_sit_at_their_map_positions_and_hide_when_absent() {
     // Nobody in the party: every slot answers the hide sentinel.
     update(&mut s);
     for i in 1..=4 {
-        assert!(!shown(&s, i), "slot {i} hides while the party is empty");
+        assert!(!shown(&mut s, i), "slot {i} hides while the party is empty");
     }
 
     // Two members on the displayed map, one of them off it (the None the app pushes for a member
@@ -298,11 +298,11 @@ fn party_blips_sit_at_their_map_positions_and_hide_when_absent() {
         )
         .unwrap();
     assert!(
-        shown(&s, 1) && shown(&s, 3),
+        shown(&mut s, 1) && shown(&mut s, 3),
         "the two placed members show ({diag})"
     );
-    assert!(!shown(&s, 2), "a member with no position stays hidden");
-    assert!(!shown(&s, 4), "a slot past the roster's end stays hidden");
+    assert!(!shown(&mut s, 2), "a member with no position stays hidden");
+    assert!(!shown(&mut s, 4), "a slot past the roster's end stays hidden");
 
     // The seating, read back against the detail frame's own box.
     let (w, h) = s
@@ -329,7 +329,7 @@ fn party_blips_sit_at_their_map_positions_and_hide_when_absent() {
     s.set_world_map_feed(None, Some((0.5, 0.5)), 0.0, None, Vec::new(), Vec::new());
     update(&mut s);
     for i in 1..=4 {
-        assert!(!shown(&s, i), "slot {i} hides when the party is gone");
+        assert!(!shown(&mut s, i), "slot {i} hides when the party is gone");
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
@@ -356,7 +356,7 @@ fn the_player_arrow_is_the_stock_model_pane_seated_and_turned_by_the_update() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     arrow_facts(&mut s);
     s.resolve();
@@ -521,11 +521,11 @@ fn the_maps_own_furniture_survives_the_hide_that_showing_it_performs() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
 
-    let visible = |s: &UiScript, f: &str| {
+    let visible = |s: &mut UiScript, f: &str| {
         s.eval::<i64>(&format!(
             "local x = getglobal('{f}') if not x then return -1 end return x:IsVisible() and 1 or 0"
         ))
@@ -535,14 +535,14 @@ fn the_maps_own_furniture_survives_the_hide_that_showing_it_performs() {
     s.run("ShowUIPanel(WorldMapFrame)").unwrap();
     s.resolve();
 
-    assert_eq!(visible(&s, "WorldMapFrame"), 1, "the map itself is up");
+    assert_eq!(visible(&mut s, "WorldMapFrame"), 1, "the map itself is up");
     assert_eq!(
-        visible(&s, "UIParent"),
+        visible(&mut s, "UIParent"),
         0,
         "and it took the screen from the HUD"
     );
     assert_eq!(
-        visible(&s, "BlackoutWorld"),
+        visible(&mut s, "BlackoutWorld"),
         1,
         "the blackout is up WITH it — it is what stops the 3D world showing through the margins \
          beside the 4:3 sheet, and a blackout that hides when the map opens is no blackout"
@@ -558,7 +558,7 @@ fn the_maps_own_furniture_survives_the_hide_that_showing_it_performs() {
     s.run("DropDownList1:Show()").unwrap();
     s.resolve();
     assert_eq!(
-        visible(&s, "DropDownList1"),
+        visible(&mut s, "DropDownList1"),
         1,
         "the shared dropdown list can open over a full-screen panel — the continent and zone \
          pickers in the map's own header have no other seat"
@@ -567,8 +567,8 @@ fn the_maps_own_furniture_survives_the_hide_that_showing_it_performs() {
     s.run("CloseDropDownMenus()").unwrap();
     s.run("HideUIPanel(WorldMapFrame)").unwrap();
     s.resolve();
-    assert_eq!(visible(&s, "UIParent"), 1, "and the HUD comes back after");
-    assert_eq!(visible(&s, "BlackoutWorld"), 0, "with the blackout down");
+    assert_eq!(visible(&mut s, "UIParent"), 1, "and the HUD comes back after");
+    assert_eq!(visible(&mut s, "BlackoutWorld"), 0, "with the blackout down");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -591,7 +591,7 @@ fn hovering_the_player_blip_on_a_scaled_map_names_the_player() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
     s.run("ShowUIPanel(WorldMapFrame)").unwrap();
@@ -647,7 +647,7 @@ fn the_player_arrow_draws_over_the_zones_explored_overlays() {
             ..Default::default()
         }),
     );
-    assert!(super::load_default_ui(&s).is_empty());
+    assert!(super::load_default_ui(&mut s).is_empty());
     s.resolve();
     arrow_facts(&mut s);
     s.run("ShowUIPanel(WorldMapFrame)").unwrap();
@@ -711,7 +711,7 @@ fn a_click_over_a_blip_still_answers_the_maps_uv() {
             ..Default::default()
         }),
     );
-    assert!(super::load_default_ui(&s).is_empty());
+    assert!(super::load_default_ui(&mut s).is_empty());
     s.resolve();
     s.run("ShowUIPanel(WorldMapFrame)").unwrap();
     s.resolve();
@@ -846,7 +846,7 @@ fn a_stale_layout_row_cannot_seat_a_stock_frame() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
 

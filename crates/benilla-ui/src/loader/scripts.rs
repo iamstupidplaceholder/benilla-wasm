@@ -1,10 +1,10 @@
-use mlua::{Function, ObjectLike, Table, Value};
+use benilla_lua::{Function, IntoLuaMulti, LuaContext, Table, Value};
 
 use crate::framexml::Element;
 
 use super::{children_named, Loader};
 
-impl Loader<'_> {
+impl<C: LuaContext> Loader<'_, C> {
     /// `<Scripts>` → SetScript each handler (rf24 `0x769ef0`). Handler source comes from the element
     /// body (`<OnClick>lua…</OnClick>`) or a `function="Global"` attribute. Returns the compiled
     /// `OnLoad` handle (if any) so the caller can fire it bottom-up. A body that fails to *compile* is
@@ -28,8 +28,9 @@ impl Loader<'_> {
         // every template-inherited handler's errors and `debugstack` frames read as one, and an
         // unnamed element wrote `<Button>` where the image writes `<unnamed>`.
         for scripts in children_named(el, "Scripts") {
-            let owner = wrapper
-                .call_method::<Option<String>>("GetName", ())
+            let owner = self
+                .lua
+                .call_method::<_, Option<String>>(wrapper, "GetName", ())
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| "<unnamed>".to_string());
@@ -71,8 +72,12 @@ impl Loader<'_> {
                     }
                 };
                 // SetScript stores it; an unsupported name errors — surface as a gap, don't drop hard.
-                if let Err(e) = wrapper.call_method::<()>("SetScript", (name.clone(), func.clone()))
-                {
+                let set_script = self.lua.call_method::<_, ()>(
+                    wrapper,
+                    "SetScript",
+                    (name.clone(), func.clone()),
+                );
+                if let Err(e) = set_script {
                     self.warn_once(
                         &format!("script:{name}"),
                         format!("{dbg}: SetScript(\"{name}\") unsupported in v1: {e}"),
@@ -189,13 +194,12 @@ impl Loader<'_> {
             let src = format!(
                 "return function(self, ...) if self == nil then self = this end {body}\nend"
             );
-            match self
-                .lua()
-                .load(&src)
-                .set_name(format!("{owner}:{name}"))
-                .set_mode(mlua::ChunkMode::Text)
-                .eval::<Function>()
-            {
+            let chunk_name = format!("{owner}:{name}");
+            let compiled = self
+                .lua
+                .load_function(src.as_bytes(), &chunk_name)
+                .and_then(|chunk| LuaContext::call_function::<_, Function>(self.lua, &chunk, ()));
+            match compiled {
                 Ok(f) => return Some(f),
                 Err(e) => {
                     self.report
@@ -206,7 +210,7 @@ impl Loader<'_> {
             }
         }
         if let Some(global) = handler.attr("function") {
-            match self.lua().globals().get::<Value>(global) {
+            match self.lua.global_value(global) {
                 Ok(Value::Function(f)) => return Some(f),
                 _ => {
                     self.warn_once(
@@ -229,36 +233,80 @@ impl Loader<'_> {
     pub(super) fn fire_onload(&mut self, wrapper: &Table, func: &Function, dbg: &str) {
         // The RF-0025 `this`/`self` convention lives in one home (`UiScript::invoke_handler`); the
         // loader doesn't re-implement the set/restore, it just supplies the wrapper + captured func.
-        if let Err(e) = self.invoke_handler(wrapper, func) {
+        let outcome = crate::script::event::invoke_with_globals_context(
+            self.lua,
+            wrapper.clone(),
+            func,
+            None,
+            Vec::new(),
+        );
+        if let Err(e) = outcome {
             self.report.errors.push(format!("{dbg}: OnLoad: {e}"));
         }
     }
 
     /// Call a frame-wrapper method, recording (not propagating) any error.
-    pub(super) fn call(
+    pub(super) fn call<A: IntoLuaMulti>(
         &mut self,
         wrapper: &Table,
         method: &str,
-        args: impl mlua::IntoLuaMulti,
+        args: A,
         dbg: &str,
     ) {
-        if let Err(e) = wrapper.call_method::<()>(method, args) {
+        let outcome = self.try_call(wrapper, method, args);
+        if let Err(e) = outcome {
             self.report.errors.push(format!("{dbg}: {method}: {e}"));
         }
     }
 
     /// Call a region-wrapper method, recording (not propagating) any error.
-    pub(super) fn call_region(
+    pub(super) fn call_region<A: IntoLuaMulti>(
         &mut self,
         region: &Table,
         method: &str,
-        args: impl mlua::IntoLuaMulti,
+        args: A,
         dbg: &str,
     ) {
-        if let Err(e) = region.call_method::<()>(method, args) {
+        let outcome = self.try_call(region, method, args);
+        if let Err(e) = outcome {
             self.report
                 .errors
                 .push(format!("{dbg}: region {method}: {e}"));
         }
+    }
+
+    /// Invoke one wrapper method without choosing how the loader reports a failure. Most callers
+    /// use [`Self::call`] or [`Self::call_region`]; the few reference paths that classify a miss as
+    /// a warning use this directly and keep that classification intact.
+    pub(super) fn try_call<A: IntoLuaMulti>(
+        &mut self,
+        wrapper: &Table,
+        method: &str,
+        args: A,
+    ) -> benilla_lua::Result<()> {
+        LuaContext::call_method::<_, ()>(self.lua, wrapper, method, args)
+    }
+
+    /// Call a wrapper method whose result is another rooted FrameScript object. Creation and
+    /// getter paths keep that neutral handle inside the loader instead of exporting it to a
+    /// backend table between calls.
+    pub(super) fn call_table<A: IntoLuaMulti>(
+        &mut self,
+        wrapper: &Table,
+        method: &str,
+        args: A,
+    ) -> benilla_lua::Result<Table> {
+        LuaContext::call_method(self.lua, wrapper, method, args)
+    }
+
+    /// Publish a loader-created named region through both namespaces the runtime maintains: the
+    /// FrameScript global table and the region-name registry used by XML anchors.
+    pub(super) fn publish_region(&mut self, region: &Table, name: &str) -> benilla_lua::Result<()> {
+        crate::script::region::publish_region_name_context(self.lua, name, region);
+        self.lua.put_global(name, region.clone())
+    }
+
+    pub(super) fn implicit_region_anchor(&mut self, region: &Table) -> benilla_lua::Result<()> {
+        crate::script::region::implicit_creation_anchor_context(self.lua, region)
     }
 }

@@ -24,7 +24,6 @@ use crate::glue::widgets::{
 };
 use crate::glue_strings::GlueStrings;
 use crate::portrait::{GluePreview, PortraitImages, PortraitSource, GLUE_SLOT};
-use benilla_assets::WorldAssets;
 
 use super::wow_font;
 
@@ -103,17 +102,11 @@ pub(super) fn materialize_screen(
     existing: Query<(Entity, &CharSelectUi)>,
     assets: Res<AssetServer>,
     portraits: Res<PortraitImages>,
-    mut art: ResMut<GlueArt>,
-    world_assets: Option<ResMut<WorldAssets>>,
-    mut images: ResMut<Assets<Image>>,
-    mut add_mats: ResMut<Assets<crate::glue::add_material::AddUiMaterial>>,
+    art: Res<GlueArt>,
     strings: Option<Res<GlueStrings>>,
     window: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
 ) {
-    if let Some(mut wa) = world_assets {
-        art.ensure_loaded(&mut wa, &mut images, &mut add_mats);
-    }
     let with_art = art.button_up.is_some();
     let s = crate::glue::screen_scale(window.single().ok());
     match existing.single() {
@@ -400,27 +393,29 @@ fn character_frame(
             // Change Realm (below the banner) — live. It was drawn permanently disabled for as
             // long as there was no realm list behind it to go back to; there is now, and it
             // costs a world dial rather than a re-login (`crate::realm_select`).
-            frame
-                .spawn((Node {
-                    position_type: PositionType::Absolute,
-                    top: px(26.0),
-                    width: Val::Percent(100.0),
-                    justify_content: JustifyContent::Center,
-                    ..default()
-                },))
-                .with_children(|c| {
-                    glue_button(
-                        c,
-                        art,
-                        font,
-                        SelectAction::ChangeRealm,
-                        strings.text("CHANGE_REALM", "Change Realm"),
-                        135.0,
-                        33.0,
-                        GlueBtnKind::Small,
-                        s,
-                    );
-                });
+            if crate::realm_select::change_realm_available() {
+                frame
+                    .spawn((Node {
+                        position_type: PositionType::Absolute,
+                        top: px(26.0),
+                        width: Val::Percent(100.0),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },))
+                    .with_children(|c| {
+                        glue_button(
+                            c,
+                            art,
+                            font,
+                            SelectAction::ChangeRealm,
+                            strings.text("CHANGE_REALM", "Change Realm"),
+                            135.0,
+                            33.0,
+                            GlueBtnKind::Small,
+                            s,
+                        );
+                    });
+            }
             // The ten row buttons (256×70 from TOPLEFT (24,−65), net pitch 57 — the 13 px overlap
             // is the hit-rect's dropped bottom 15; our nodes ARE the hit shape, 55 tall).
             for row in 0..MAX_ROWS {

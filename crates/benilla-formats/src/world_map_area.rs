@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const WORLD_MAP_AREA: &str = "DBFilesClient\\WorldMapArea.dbc";
 
@@ -99,7 +99,7 @@ fn schema() -> Schema {
 }
 
 /// Read `WorldMapArea.dbc` off the patch chain into a [`WorldMapAreaCatalog`].
-pub fn load_world_map_area_catalog(chain: &mut Chain) -> Result<WorldMapAreaCatalog> {
+pub fn load_world_map_area_catalog(chain: &mut impl FileSource) -> Result<WorldMapAreaCatalog> {
     let bytes = chain
         .read_file(WORLD_MAP_AREA)
         .context("reading WorldMapArea.dbc")?;

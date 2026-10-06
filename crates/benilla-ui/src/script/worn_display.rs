@@ -22,19 +22,11 @@
 //! truthiness would make `"0"` mean "show" and the reference's own Options panel could never turn
 //! a helm off. See [`shown_arg`].
 
-use mlua::{Lua, Value};
+use benilla_lua::{Value, Vm};
 
 use super::Model;
 
-/// Which of the two worn-display preferences a queued flip is for. One entry per
-/// `CMSG_TOGGLE_HELM`/`CMSG_TOGGLE_CLOAK` the app should send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WornDisplay {
-    /// The head slot — `PLAYER_FLAGS_HIDE_HELM`.
-    Helm,
-    /// The back slot — `PLAYER_FLAGS_HIDE_CLOAK`.
-    Cloak,
-}
+pub use crate::script_data::WornDisplay;
 
 impl super::UiScript {
     /// Drain the worn-display flips queued since the last call — one `CMSG_TOGGLE_HELM` /
@@ -77,7 +69,7 @@ fn shown_arg(v: &Value) -> bool {
         // A numeric string coerces like Lua's own arithmetic does; a non-numeric one is not a
         // value this API is ever handed, and reads as "show" rather than silently hiding gear.
         Value::String(s) => s
-            .to_str()
+            .as_str()
             .ok()
             .and_then(|t| t.trim().parse::<f64>().ok())
             .is_none_or(|n| n != 0.0),
@@ -99,21 +91,16 @@ fn want(model: &mut Model, which: WornDisplay, show: bool) {
 }
 
 /// Register the equipment-display globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     for (name, which) in [
         ("ShowHelm", WornDisplay::Helm),
         ("ShowCloak", WornDisplay::Cloak),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, v: Value| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                want(&mut model, which, shown_arg(&v));
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, v: Value| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            want(&mut model, which, shown_arg(&v));
+            Ok(())
+        })?;
     }
 
     // The getters the Options row reads its checked state from — `1`/`nil`, the 1.12 boolean
@@ -122,17 +109,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("ShowingHelm", WornDisplay::Helm),
         ("ShowingCloak", WornDisplay::Cloak),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let shown = match which {
-                    WornDisplay::Helm => model.helm_shown,
-                    WornDisplay::Cloak => model.cloak_shown,
-                };
-                Ok(shown.then_some(1u32))
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let shown = match which {
+                WornDisplay::Helm => model.helm_shown,
+                WornDisplay::Cloak => model.cloak_shown,
+            };
+            Ok(shown.then_some(1u32))
+        })?;
     }
     Ok(())
 }

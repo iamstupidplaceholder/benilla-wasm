@@ -54,6 +54,12 @@ use benilla_world::world_map::CurrentMap;
 /// it is a different mechanism (a source cut in `PreUpdate`) from the state machine below, and one
 /// file should not have to explain both.
 mod input;
+#[cfg(target_arch = "wasm32")]
+mod startup;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use startup::presented as startup_presented;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn startup_presented(_world: &World) -> bool { true }
 pub(crate) use input::CoverInput;
 
 // Bar layout — VERIFIED THREE ways (build 5875): the `WoW.exe` `LoadingScreen.cpp` bar descriptor
@@ -169,7 +175,7 @@ impl EntryCover {
 }
 
 /// `First`: advance (or reset) the covered-frame count. One writer, read by every consumer.
-fn count_entry_cover(
+pub(crate) fn count_entry_cover(
     screen: Res<LoadingScreen>,
     state: Res<State<crate::char_select::ClientState>>,
     mut cover: ResMut<EntryCover>,
@@ -181,7 +187,7 @@ fn count_entry_cover(
 /// Bevy resource wrapper around the format-crate [`LoadingScreenCatalog`] (the `LoadingScreenID` → BLP
 /// path table). Paired with [`MapCatalogRes`] (the `mapId` → `LoadingScreenID` FK) to resolve art.
 #[derive(Resource)]
-struct LoadingScreenCatalogRes(LoadingScreenCatalog);
+pub(crate) struct LoadingScreenCatalogRes(pub(crate) LoadingScreenCatalog);
 
 /// What a raise means for the tip of the day (decision 2077).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -411,6 +417,8 @@ impl Plugin for LoadingScreenPlugin {
         // (`input`). Wired here rather than as a plugin of its own so the cover and its input rule
         // can never be registered apart.
         input::build(app);
+        #[cfg(target_arch = "wasm32")]
+        startup::build(app);
     }
 }
 
@@ -418,8 +426,9 @@ impl Plugin for LoadingScreenPlugin {
 /// the (initially hidden, then activated on the first `drive` frame) UI tree.
 fn setup_loading_screen(
     mut commands: Commands,
-    world_assets: Option<ResMut<WorldAssets>>,
+    mut world_assets: Option<ResMut<WorldAssets>>,
     mut images: ResMut<Assets<Image>>,
+    server: Res<AssetServer>,
 ) {
     // Root: fullscreen black — this IS the pillarbox letterbox, and it spawns UNCONDITIONALLY.
     // Every `covering()` consumer (the world camera stays active to warm pipelines, the warm
@@ -445,24 +454,27 @@ fn setup_loading_screen(
         ))
         .id();
 
-    let Some(mut assets) = world_assets else {
-        return;
-    };
-
     // Catalog (LoadingScreenID → BLP path).
-    match load_loading_screens(&mut assets.chain.lock_recover()) {
-        Ok(c) => {
-            info!("LoadingScreens.dbc: {} screens catalogued", c.len());
-            commands.insert_resource(LoadingScreenCatalogRes(c));
-        }
-        Err(e) => {
-            error!("LoadingScreens.dbc unavailable — plain black cover, no art: {e:#}");
-            return;
+    // Browser host delivery publishes this same catalog asynchronously; the
+    // original UI tree must not be skipped merely because there is no Chain.
+    if let Some(assets) = world_assets.as_mut() {
+        match load_loading_screens(&mut *assets.chain.lock_recover()) {
+            Ok(c) => {
+                info!("LoadingScreens.dbc: {} screens catalogued", c.len());
+                commands.insert_resource(LoadingScreenCatalogRes(c));
+            }
+            Err(e) => {
+                error!("LoadingScreens.dbc unavailable — plain black cover, no art: {e:#}");
+                return;
+            }
         }
     }
 
     // The two layers 1.12 actually draws (sRGB clamp sprites — UI art, not tiling world art).
-    let mut tex = |path: &str| assets.sprite_texture(path, &mut images);
+    let mut tex = |path: &str| match world_assets.as_mut() {
+        Some(assets) => assets.sprite_texture(path, &mut images),
+        None => Some(load_screen_sprite(&server, path)),
+    };
     let Some(border) = tex("Interface\\Glues\\LoadingBar\\Loading-BarBorder.blp") else {
         error!("loading bar textures missing — plain black cover, no art");
         return;
@@ -547,6 +559,16 @@ fn setup_loading_screen(
     });
 }
 
+/// Host byte delivery through the existing BLP loader and original sprite lane.
+fn load_screen_sprite(server: &AssetServer, path: &str) -> Handle<Image> {
+    server.load_with_settings(
+        format!("mpq://{}", path.replace('\\', "/")),
+        |settings: &mut benilla_assets::BlpLoaderSettings| {
+            settings.variant = benilla_assets::BlpVariant::Sprite;
+        },
+    )
+}
+
 /// Per-frame: observe the lifecycle edges, run the trigger/clear state machine, resolve backdrop
 /// art, and push the progress fraction into the bar.
 #[allow(clippy::type_complexity)]
@@ -558,6 +580,7 @@ fn drive_loading_screen(
     stream: (
         Res<WorldLoadProgress>,
         Res<benilla_world::terrain_stream::ViewFocus>,
+        Res<AssetServer>,
     ),
     current_map: Option<Res<CurrentMap>>,
     maps: Option<Res<MapCatalogRes>>,
@@ -853,8 +876,8 @@ fn drive_loading_screen(
                 img.color = Color::BLACK;
             }
         }
-        if let (Some(map_id), Some(maps), Some(screens), Some(assets)) =
-            (screen.map, maps.as_ref(), screens.as_ref(), assets.as_mut())
+        if let (Some(map_id), Some(maps), Some(screens)) =
+            (screen.map, maps.as_ref(), screens.as_ref())
         {
             let path = maps
                 .0
@@ -863,11 +886,25 @@ fn drive_loading_screen(
                 .map(str::to_string);
             let handle = path.and_then(|path| match screen.art_cache.get(&path) {
                 Some(h) => Some(h.clone()),
-                None => assets.sprite_texture(&path, &mut images).inspect(|h| {
+                None => match assets.as_mut() {
+                    Some(assets) => assets.sprite_texture(&path, &mut images),
+                    None => Some(load_screen_sprite(&stream.2, &path)),
+                }
+                .inspect(|h| {
                     screen.art_cache.insert(path.clone(), h.clone());
                 }),
             });
             match (handle, backdrop.single_mut()) {
+                (Some(handle), _) if assets.is_none() && images.get(&handle).is_none() => {
+                    // Pending is not a failed lookup or a resolved backdrop. Keep
+                    // the real cover black until the original sprite is resident.
+                    if let Some(bevy::asset::LoadState::Failed(error)) =
+                        stream.2.get_load_state(handle.id())
+                    {
+                        warn!("loading screen: backdrop for map {map_id} failed: {error}");
+                        screen.map = None;
+                    }
+                }
                 (Some(handle), Ok((mut img, _))) => {
                     img.image = handle;
                     img.color = Color::WHITE; // reveal the art (was tinted black)

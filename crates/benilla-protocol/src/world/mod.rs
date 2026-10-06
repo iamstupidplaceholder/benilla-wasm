@@ -22,7 +22,7 @@ use benilla_srp::vanilla_header::{DecrypterHalf, EncrypterHalf};
 
 use crate::messages::{self, ServerPacket};
 
-mod movement;
+pub mod movement;
 mod reader;
 mod session;
 mod writer;

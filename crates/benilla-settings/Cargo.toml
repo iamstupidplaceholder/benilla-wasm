@@ -1,0 +1,13 @@
+[package]
+name = "benilla-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform boundary for Benilla's local text state"
+
+[lints]
+workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.122"
+web-sys = { version = "0.3", features = ["Window", "Storage"] }

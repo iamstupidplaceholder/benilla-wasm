@@ -50,7 +50,7 @@ fn an_autofocus_box_self_acquires_on_the_first_event() {
 /// Gated on nothing else holding focus, and the gate is the whole of it — no topmost/best choice.
 #[test]
 fn an_autofocus_box_takes_the_keyboard_when_it_is_shown() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         E = CreateFrame("EditBox", "E")
@@ -82,7 +82,7 @@ fn an_autofocus_box_takes_the_keyboard_when_it_is_shown() {
 /// `if ([0xcf4dc8] == 0 && (flags & 1))`, both halves.
 #[test]
 fn the_show_focus_is_refused_without_autofocus_or_with_the_keyboard_taken() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         OPTED_OUT = CreateFrame("EditBox", "OptedOut")
@@ -170,7 +170,7 @@ fn focused_box_consumes_everything() {
 
 #[test]
 fn set_focus_on_hidden_box_is_a_noop() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         gained = 0
@@ -220,7 +220,7 @@ fn click_focuses_regardless_of_autofocus_and_transition_order_is_lost_then_gaine
     s.mouse_button(50.0, 110.0, "LeftButton", false);
     assert_eq!(s.focused_editbox_name().as_deref(), Some("B"));
 
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(log, vec!["gainedA", "lostA", "gainedB"]);
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
@@ -286,18 +286,18 @@ fn set_text_fires_ontextset_at_once_and_ontextchanged_at_the_drain() {
     "#,
     )
     .unwrap();
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(log, vec!["set", "set"], "no drain has run yet");
 
     s.tick(0.0);
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(log, vec!["set", "set", "changed"]);
     assert_eq!(s.eval::<String>("return E:GetText()").unwrap(), "bye");
 }
 
 #[test]
 fn numeric_aborts_a_mixed_insert_wholesale() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         E = CreateFrame("EditBox", "E")
@@ -312,7 +312,7 @@ fn numeric_aborts_a_mixed_insert_wholesale() {
 
 #[test]
 fn max_letters_trims_from_the_end() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         E = CreateFrame("EditBox", "E")
@@ -483,7 +483,7 @@ fn enter_escape_tab_space_fire_their_slots() {
     assert!(s.key_input("TAB"));
     assert!(s.char_input(" ")); // a literal space fires OnSpacePressed
 
-    let log: Vec<String> = s.eval("return log").unwrap();
+    let log: Vec<String> = s.eval_sequence("return log").unwrap();
     assert_eq!(log, vec!["enter", "escape", "tab", "space"]);
     // ENTER on a single-line box must NOT insert; only the space landed.
     assert_eq!(s.eval::<String>("return E:GetText()").unwrap(), " ");
@@ -604,7 +604,7 @@ fn alt_arrow_key_mode_is_the_flag_and_the_engine_core_no_longer_swallows_moves()
 /// image, at `0x879b78`, with one xref: the attribute push at `0x77a13a`).
 #[test]
 fn the_ignore_arrows_xml_attribute_is_alt_arrow_key_mode() {
-    let s = script();
+    let mut s = script();
     s.run(r#"E = CreateFrame("EditBox", "E")"#).unwrap();
     s.run("E:SetAltArrowKeyMode(1)").unwrap();
     assert_eq!(
@@ -618,7 +618,7 @@ fn the_ignore_arrows_xml_attribute_is_alt_arrow_key_mode() {
 
 #[test]
 fn password_masks_the_display_but_gettext_returns_the_real_text() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         E = CreateFrame("EditBox", "E")
@@ -637,7 +637,7 @@ fn password_masks_the_display_but_gettext_returns_the_real_text() {
 
 #[test]
 fn get_number_parses_the_text() {
-    let s = script();
+    let mut s = script();
     s.run(r#"E = CreateFrame("EditBox", "E"); E:SetText("12.5")"#)
         .unwrap();
     assert_eq!(s.eval::<f64>("return E:GetNumber()").unwrap(), 12.5);
@@ -1225,14 +1225,14 @@ fn caret_blinks_on_tick_and_resets_on_edit() {
 const LINK: &str = "|cffa335ee|Hitem:11684:0:0:0|h[Ironfoe]|h|r";
 
 fn box_with_link(suffix: &str) -> UiScript {
-    let s = script();
+    let mut s = script();
     s.run(r#"E = CreateFrame("EditBox", "E"); E:SetFocus()"#)
         .unwrap();
     s.run(&format!("E:Insert(\"{LINK}{suffix}\")")).unwrap();
     s
 }
 
-fn text_of(s: &UiScript) -> String {
+fn text_of(s: &mut UiScript) -> String {
     s.eval::<String>("return E:GetText()").unwrap()
 }
 
@@ -1243,7 +1243,7 @@ fn one_backspace_deletes_a_whole_item_link() {
         unit: EditUnit::Char,
         back: true
     }));
-    assert_eq!(text_of(&s), "", "colour prefix and trailing |r go with it");
+    assert_eq!(text_of(&mut s), "", "colour prefix and trailing |r go with it");
 
     // And from the far side of following text: the link survives until the text is gone, then goes
     // whole — never half-eaten, which is what left a dangling `|c` colouring the rest of the line.
@@ -1253,7 +1253,7 @@ fn one_backspace_deletes_a_whole_item_link() {
             unit: EditUnit::Char,
             back: true,
         });
-        assert_eq!(text_of(&s), expected);
+        assert_eq!(text_of(&mut s), expected);
     }
 }
 
@@ -1276,7 +1276,7 @@ fn one_arrow_crosses_a_whole_item_link() {
     // One RIGHT from the start lands past the entire link — so typing there appends, and does not
     // land between the `]` and its `|h`.
     s.char_input("x");
-    assert_eq!(text_of(&s), format!("{LINK}x"));
+    assert_eq!(text_of(&mut s), format!("{LINK}x"));
 }
 
 #[test]
@@ -1293,7 +1293,7 @@ fn shift_arrow_selects_the_whole_link_and_typing_replaces_it() {
         "one Shift+LEFT takes the whole unit"
     );
     s.char_input("x");
-    assert_eq!(text_of(&s), "x");
+    assert_eq!(text_of(&mut s), "x");
 }
 
 #[test]
@@ -1303,7 +1303,7 @@ fn typing_strictly_inside_a_link_is_refused() {
     s.run("E:HighlightText(35, 35)").unwrap(); // mid-"Ironfoe"
     s.char_input("x");
     assert_eq!(
-        text_of(&s),
+        text_of(&mut s),
         LINK,
         "the client swallows it rather than splitting the link"
     );
@@ -1311,7 +1311,7 @@ fn typing_strictly_inside_a_link_is_refused() {
     // token too, which is what keeps the boundary usable.
     s.run("E:HighlightText(0, 0)").unwrap();
     s.char_input("x");
-    assert_eq!(text_of(&s), format!("x{LINK}"));
+    assert_eq!(text_of(&mut s), format!("x{LINK}"));
 }
 
 #[test]
@@ -1321,7 +1321,7 @@ fn a_typed_pipe_is_doubled_and_costs_one_letter() {
         .unwrap();
     s.char_input("|");
     assert_eq!(
-        text_of(&s),
+        text_of(&mut s),
         "||",
         "OnChar 0x77c200 inserts the literal at 0x879cac"
     );
@@ -1330,13 +1330,13 @@ fn a_typed_pipe_is_doubled_and_costs_one_letter() {
 
 #[test]
 fn max_letters_counts_visible_letters_not_escape_bytes() {
-    let s = script();
+    let mut s = script();
     s.run(r#"E = CreateFrame("EditBox", "E"); E:SetFocus(); E:SetMaxLetters(20)"#)
         .unwrap();
     s.run(&format!("E:Insert(\"{LINK}\")")).unwrap();
     // 43 bytes, but "[Ironfoe]" is 9 letters — comfortably under a 20-letter cap that a raw char
     // count would have blown through, trimming the link's own tail off.
-    assert_eq!(text_of(&s), LINK);
+    assert_eq!(text_of(&mut s), LINK);
     assert_eq!(s.eval::<i64>("return E:GetNumLetters()").unwrap(), 9);
 }
 
@@ -1350,7 +1350,7 @@ fn max_letters_counts_visible_letters_not_escape_bytes() {
 /// so the day frame construction starts firing OnShow, this is the test that says what it costs.
 #[test]
 fn creating_a_box_does_not_focus_it_the_way_showing_one_does() {
-    let s = script();
+    let mut s = script();
     s.run(r#"E = CreateFrame("EditBox", "E")"#).unwrap();
     assert!(
         !s.has_keyboard_focus(),
@@ -1373,17 +1373,17 @@ fn creating_a_box_does_not_focus_it_the_way_showing_one_does() {
 /// And `0` is **no limit**, not "no letters".
 #[test]
 fn set_max_letters_gates_the_argument_count_and_coerces_the_value() {
-    let s = script();
+    let mut s = script();
     s.run(r#"E = CreateFrame("EditBox", "E") E:SetFocus()"#)
         .unwrap();
-    let max = |s: &UiScript| s.eval::<i64>("return E:GetMaxLetters()").unwrap();
+    let max = |s: &mut UiScript| s.eval::<i64>("return E:GetMaxLetters()").unwrap();
 
     s.run("E:SetMaxLetters(12)").unwrap();
-    assert_eq!(max(&s), 12);
+    assert_eq!(max(&mut s), 12);
 
     // nil is 0 is UNLIMITED — the call completes, which is the whole point.
     s.run("E:SetMaxLetters(nil)").unwrap();
-    assert_eq!(max(&s), 0);
+    assert_eq!(max(&mut s), 0);
     s.run(r#"E:SetMaxLetters(5) E:SetText("abcdefgh")"#)
         .unwrap();
     assert_eq!(s.eval::<String>("return E:GetText()").unwrap().len(), 5);
@@ -1397,9 +1397,9 @@ fn set_max_letters_gates_the_argument_count_and_coerces_the_value() {
 
     // A numeric string coerces; anything else is 0.
     s.run(r#"E:SetMaxLetters("12")"#).unwrap();
-    assert_eq!(max(&s), 12);
+    assert_eq!(max(&mut s), 12);
     s.run("E:SetMaxLetters({})").unwrap();
-    assert_eq!(max(&s), 0);
+    assert_eq!(max(&mut s), 0);
 
     // The COUNT is exact — too few AND too many both raise.
     assert!(s.run("E:SetMaxLetters()").is_err(), "too few raises");
@@ -1423,7 +1423,7 @@ fn set_max_letters_gates_the_argument_count_and_coerces_the_value() {
 /// benilla returned only the authored regions.
 #[test]
 fn an_editbox_is_born_with_the_ctors_five_regions_ahead_of_its_authored_ones() {
-    let s = script();
+    let mut s = script();
     let doc = crate::framexml::parse(
         r#"<Ui>
             <EditBox name="Box">
@@ -1440,7 +1440,7 @@ fn an_editbox_is_born_with_the_ctors_five_regions_ahead_of_its_authored_ones() {
         </Ui>"#,
     )
     .unwrap();
-    let report = crate::loader::load(&s, &doc, &|_| None);
+    let report = crate::loader::load(&mut s, &doc, &|_| None);
     assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
 
     // Five engine regions, then the two authored textures — and NOT a sixth from the embedded
@@ -1494,7 +1494,7 @@ fn an_editbox_is_born_with_the_ctors_five_regions_ahead_of_its_authored_ones() {
 /// work of its own. Decision 1831; the expected strings are the reference's executed output.
 #[test]
 fn set_number_formats_like_the_references_printf() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     s.run(r#"box = CreateFrame("EditBox", "NumBox", UIParent)"#)
         .unwrap();
 
@@ -1543,7 +1543,7 @@ fn set_number_formats_like_the_references_printf() {
 /// itself only ever passes non-negative integers.
 #[test]
 fn set_number_on_a_numeric_box_empties_it_when_the_text_is_not_all_digits() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     s.run(r#"box = CreateFrame("EditBox", "NumOnly", UIParent) box:SetNumeric(true)"#)
         .unwrap();
 
@@ -1563,18 +1563,18 @@ fn set_number_on_a_numeric_box_empties_it_when_the_text_is_not_all_digits() {
 /// buffer, and -1 as the no-limit sentinel where `SetMaxLetters` reads 0.
 #[test]
 fn set_max_bytes_caps_the_buffer_in_bytes_with_minus_one_unlimited() {
-    let s = script();
+    let mut s = script();
     s.run(r#"E = CreateFrame("EditBox", "E") E:SetFocus()"#)
         .unwrap();
-    let max = |s: &UiScript| s.eval::<i64>("return E:GetMaxBytes()").unwrap();
-    assert_eq!(max(&s), -1, "unlimited from the ctor");
+    let max = |s: &mut UiScript| s.eval::<i64>("return E:GetMaxBytes()").unwrap();
+    assert_eq!(max(&mut s), -1, "unlimited from the ctor");
     s.run("E:SetMaxBytes(4)").unwrap();
-    assert_eq!(max(&s), 4);
+    assert_eq!(max(&mut s), 4);
     // Four bytes hold two two-byte letters and not a third.
     s.run(r#"E:SetText("ééé")"#).unwrap();
     assert_eq!(s.eval::<String>("return E:GetText()").unwrap(), "éé");
     s.run(r#"E:SetMaxBytes(0) E:SetText("ééé")"#).unwrap();
-    assert_eq!(max(&s), -1, "a non-positive value is unlimited");
+    assert_eq!(max(&mut s), -1, "a non-positive value is unlimited");
     assert_eq!(s.eval::<String>("return E:GetText()").unwrap(), "ééé");
     s.run(r#"E:SetMaxBytes("3") E:SetText("abcd")"#).unwrap();
     assert_eq!(
@@ -1583,7 +1583,7 @@ fn set_max_bytes_caps_the_buffer_in_bytes_with_minus_one_unlimited() {
         "a numeric string coerces"
     );
     s.run("E:SetMaxBytes(nil)").unwrap();
-    assert_eq!(max(&s), -1, "nil coerces to 0, which is unlimited");
+    assert_eq!(max(&mut s), -1, "nil coerces to 0, which is unlimited");
     assert!(s.run("E:SetMaxBytes()").is_err(), "too few raises");
     assert!(s.run("E:SetMaxBytes(1, 2)").is_err(), "too many raises");
 }

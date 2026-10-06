@@ -612,6 +612,18 @@ fn gate_doodad_anim(
 
 pub struct DoodadAnimPlugin;
 
+/// Register only the material-animation half used by a live off-world M2 stage.
+///
+/// The full [`DoodadAnimPlugin`] also owns streamed-world placement policy (variation rerolls,
+/// draw-set parking and lazy rig pressure). A login background needs none of that: its model spawn
+/// already owns the looping pose, while its UV/RGB loops still use the exact production sampler
+/// and table writer.
+pub(crate) fn off_world_material_animation(app: &mut App) {
+    app.init_resource::<UvAnimMaterials>()
+        .init_resource::<TintAnimMaterials>()
+        .add_systems(Update, (sample_mat_anim, tick_anim_materials).chain());
+}
+
 impl Plugin for DoodadAnimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UvAnimMaterials>();

@@ -13,7 +13,7 @@
 
 use anyhow::{bail, Context, Result};
 
-use crate::chain::Chain;
+use crate::FileSource;
 
 /// Cells per grid edge (half-ADT: 128 cells over 64 tiles).
 pub const ZONE_MAP_EDGE: usize = 128;
@@ -21,7 +21,7 @@ pub const ZONE_MAP_EDGE: usize = 128;
 /// Load `Interface\WorldMap\<area_name>.zmp` — 16384 raw `AreaTable.dbc` ids, row-major.
 /// A continent without a shipped bitmap is an error (the client leaves its grid zeroed; callers
 /// decide whether that's tolerable).
-pub fn load_zone_map(chain: &mut Chain, area_name: &str) -> Result<Vec<u32>> {
+pub fn load_zone_map(chain: &mut impl FileSource, area_name: &str) -> Result<Vec<u32>> {
     let path = format!("Interface\\WorldMap\\{area_name}.zmp");
     let bytes = chain
         .read_file(&path)

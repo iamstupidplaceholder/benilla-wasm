@@ -65,25 +65,25 @@ fn board_and_dialog() -> UiScript {
 /// Nothing is born toplevel.
 #[test]
 fn the_flag_round_trips_and_defaults_off() {
-    let s = script();
+    let mut s = script();
     s.run(r#"F = CreateFrame("Frame", "F")"#).unwrap();
     assert!(
-        !s.eval::<bool>("return F:IsToplevel()").unwrap(),
+        !s.eval_truthy("return F:IsToplevel()").unwrap(),
         "no frame is born toplevel"
     );
     s.run("F:SetToplevel(true)").unwrap();
-    assert!(s.eval::<bool>("return F:IsToplevel()").unwrap());
+    assert!(s.eval_truthy("return F:IsToplevel()").unwrap());
     s.run("F:SetToplevel(false)").unwrap();
-    assert!(!s.eval::<bool>("return F:IsToplevel()").unwrap());
+    assert!(!s.eval_truthy("return F:IsToplevel()").unwrap());
     // The omitted argument is TRUE, not false — the reference's `SetToplevel()` turns the bit ON.
     s.run("F:SetToplevel()").unwrap();
     assert!(
-        s.eval::<bool>("return F:IsToplevel()").unwrap(),
+        s.eval_truthy("return F:IsToplevel()").unwrap(),
         "SetToplevel() with no argument sets the bit"
     );
     // Lua truthiness, like every other flag setter here: the corpus writes SetToplevel(1).
     s.run("F:SetToplevel(nil); F:SetToplevel(1)").unwrap();
-    assert!(s.eval::<bool>("return F:IsToplevel()").unwrap());
+    assert!(s.eval_truthy("return F:IsToplevel()").unwrap());
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
 
@@ -98,7 +98,7 @@ fn the_flag_round_trips_and_defaults_off() {
 /// (`frame-key-script-delivery.md` §3.2), which is why this asserts the flag alone.
 #[test]
 fn the_xml_toplevel_and_enable_keyboard_attributes_both_reach_their_methods() {
-    let s = script();
+    let mut s = script();
     let doc = crate::framexml::parse(
         r#"<Ui>
              <Frame name="XmlTop" toplevel="true" enableKeyboard="true">
@@ -110,7 +110,7 @@ fn the_xml_toplevel_and_enable_keyboard_attributes_both_reach_their_methods() {
            </Ui>"#,
     )
     .expect("valid FrameXML");
-    let report = crate::loader::load(&s, &doc, &|_| None);
+    let report = crate::loader::load(&mut s, &doc, &|_| None);
     assert!(
         !report.warnings.iter().any(|w| w.contains("SetToplevel")),
         "no gap warning any more: {:?}",
@@ -121,19 +121,19 @@ fn the_xml_toplevel_and_enable_keyboard_attributes_both_reach_their_methods() {
         "enableKeyboard is built now, not warned: {:?}",
         report.warnings
     );
-    assert!(s.eval::<bool>("return XmlTop:IsToplevel()").unwrap());
+    assert!(s.eval_truthy("return XmlTop:IsToplevel()").unwrap());
     assert!(
-        s.eval::<bool>("return XmlTop:IsKeyboardEnabled()").unwrap(),
+        s.eval_truthy("return XmlTop:IsKeyboardEnabled()").unwrap(),
         "the XML attribute must reach the flag"
     );
     // Default false, and the setter round-trips both ways — a frame that never asked is not in the
     // bucket (`0x76af00` is reached from the attribute or an explicit call, never a ctor).
     s.run("Plain = CreateFrame('Frame', 'PlainKbd')").unwrap();
-    assert!(!s.eval::<bool>("return Plain:IsKeyboardEnabled()").unwrap());
+    assert!(!s.eval_truthy("return Plain:IsKeyboardEnabled()").unwrap());
     s.run("Plain:EnableKeyboard(true)").unwrap();
-    assert!(s.eval::<bool>("return Plain:IsKeyboardEnabled()").unwrap());
+    assert!(s.eval_truthy("return Plain:IsKeyboardEnabled()").unwrap());
     s.run("Plain:EnableKeyboard(false)").unwrap();
-    assert!(!s.eval::<bool>("return Plain:IsKeyboardEnabled()").unwrap());
+    assert!(!s.eval_truthy("return Plain:IsKeyboardEnabled()").unwrap());
 }
 
 // ── The raise on Show ───────────────────────────────────────────────────────────────────────────
@@ -519,7 +519,7 @@ fn starting_a_move_raises_the_dragged_window() {
 // ── The mouse-DOWN trigger ──────────────────────────────────────────────────────────────────────
 
 /// The centre of `name`'s resolved rect, in the coordinate space [`UiScript::mouse_button`] takes.
-fn centre(s: &UiScript, name: &str) -> (f32, f32) {
+fn centre(s: &mut UiScript, name: &str) -> (f32, f32) {
     let (x, y) = s
         .eval::<(f64, f64)>(&format!(
             "return ({name}:GetLeft() + {name}:GetRight()) / 2, \
@@ -551,7 +551,7 @@ fn pressing_a_toplevel_window_brings_it_to_the_front() {
     assert!(level(&mut s, "Dialog") < level(&mut s, "Board"));
 
     // A point inside Dialog and clear of Board, so the hit is unambiguous.
-    let (x, y) = centre(&s, "Dialog");
+    let (x, y) = centre(&mut s, "Dialog");
     assert_eq!(s.hit_test_name(x, y).as_deref(), Some("Dialog"));
     s.mouse_button(x, y, "LeftButton", true);
     assert!(
@@ -585,7 +585,7 @@ fn pressing_a_child_of_a_toplevel_window_raises_the_window() {
     s.resolve();
     assert!(level(&mut s, "Dialog") < level(&mut s, "Board"));
 
-    let (x, y) = centre(&s, "Knob");
+    let (x, y) = centre(&mut s, "Knob");
     assert_eq!(s.hit_test_name(x, y).as_deref(), Some("Knob"));
     s.mouse_button(x, y, "LeftButton", true);
     assert!(
@@ -613,7 +613,7 @@ fn releasing_over_a_toplevel_window_does_not_raise_it() {
     )
     .unwrap();
     s.resolve();
-    let (x, y) = centre(&s, "Dialog");
+    let (x, y) = centre(&mut s, "Dialog");
     let before = level(&mut s, "Dialog");
     // A release with no press before it: the down edge never ran, so nothing may move.
     s.mouse_button(x, y, "LeftButton", false);
@@ -660,14 +660,14 @@ fn a_chorded_press_raises_the_held_frame_not_the_one_under_the_cursor() {
     s.resolve();
 
     // Hold the left button on Dialog…
-    let (dx, dy) = centre(&s, "Dialog");
+    let (dx, dy) = centre(&mut s, "Dialog");
     s.mouse_button(dx, dy, "LeftButton", true);
     let dialog_held = level(&mut s, "Dialog");
     let other_before = level(&mut s, "Other");
 
     // …then press the right button away over Other. The capture is still Dialog's, so Other is not
     // the raise target even though it is what the cursor is on.
-    let (ox, oy) = centre(&s, "Other");
+    let (ox, oy) = centre(&mut s, "Other");
     assert_eq!(s.hit_test_name(ox, oy).as_deref(), Some("Other"));
     s.mouse_button(ox, oy, "RightButton", true);
     assert_eq!(
@@ -773,7 +773,7 @@ fn a_raise_with_a_hidden_child_keeps_the_windows_own_siblings_level() {
     // THE SYMPTOM FIRST, through the engine's own pointer path: the Close button takes its own
     // click and its own hover. Asserted before the arithmetic below so a regression reports what
     // the director would see, not the number behind it.
-    let (cx, cy) = centre(&s, "Close");
+    let (cx, cy) = centre(&mut s, "Close");
     assert_eq!(
         s.hit_test_name(cx, cy).as_deref(),
         Some("Close"),

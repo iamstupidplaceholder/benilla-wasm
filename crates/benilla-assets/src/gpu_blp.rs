@@ -36,6 +36,13 @@ use bevy::render::render_resource::TextureFormat;
 
 static BC_SUPPORTED: OnceLock<bool> = OnceLock::new();
 
+/// Runtime override for platforms without environment variables (notably the browser).
+/// Capability detection remains authoritative unless `force_decode` is explicitly enabled.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct BlpGpuPolicy {
+    pub force_decode: bool,
+}
+
 /// Publish whether this run's GPU accepts BC textures. Called once, from the app's plugin
 /// `finish()`, after `RenderPlugin` has inserted `CompressedImageFormatSupport` into the main world.
 ///
@@ -72,7 +79,13 @@ impl Plugin for BlpGpuSupportPlugin {
         // for this whole change: it is the only way to price the passthrough against what it
         // replaced on one machine in one session, and the first thing to try if a texture ever
         // looks wrong (hardware block decode is not bit-identical to `texpresso`'s — see 1626).
+        #[cfg(not(target_arch = "wasm32"))]
         let forced_off = std::env::var("WOW_NO_BC").as_deref() == Ok("1");
+        #[cfg(target_arch = "wasm32")]
+        let forced_off = app
+            .world()
+            .get_resource::<BlpGpuPolicy>()
+            .is_some_and(|policy| policy.force_decode);
         let device_can = app
             .world()
             .get_resource::<CompressedImageFormatSupport>()
@@ -85,7 +98,7 @@ impl Plugin for BlpGpuSupportPlugin {
         if supported {
             info!("blp: DXT blocks upload natively (BC)");
         } else if forced_off {
-            info!("blp: WOW_NO_BC=1 — decoding textures to RGBA8");
+            info!("blp: native BC disabled by runtime policy — decoding textures to RGBA8");
         } else {
             info!("blp: device reports no BC support — decoding textures to RGBA8");
         }

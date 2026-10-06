@@ -26,22 +26,22 @@ fn harness() -> UiScript {
         "Interface\\FrameXML\\StaticPopup.xml",
         r"Interface\FrameXML\WorldFrame.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s
 }
 
-fn shown(s: &UiScript) -> bool {
+fn shown(s: &mut UiScript) -> bool {
     s.eval::<bool>("return ScreenshotStatus:IsVisible()")
         .unwrap()
 }
 
-fn text(s: &UiScript) -> String {
+fn text(s: &mut UiScript) -> String {
     s.eval::<String>("return ScreenshotStatusText:GetText() or \"\"")
         .unwrap()
 }
 
-fn alpha(s: &UiScript) -> f64 {
+fn alpha(s: &mut UiScript) -> f64 {
     s.eval::<f64>("return ScreenshotStatus:GetAlpha()").unwrap()
 }
 
@@ -51,7 +51,7 @@ fn alpha(s: &UiScript) -> f64 {
 #[test]
 fn the_capture_is_asked_for_silently_and_only_the_answer_speaks() {
     let mut s = harness();
-    assert!(!shown(&s), "the status line starts hidden");
+    assert!(!shown(&mut s), "the status line starts hidden");
 
     s.run("TakeScreenshot()").unwrap();
     assert_eq!(
@@ -60,15 +60,15 @@ fn the_capture_is_asked_for_silently_and_only_the_answer_speaks() {
         "the binding body reaches the engine verb"
     );
     assert!(
-        !shown(&s),
+        !shown(&mut s),
         "NOTHING is on screen at the moment of capture — this is B261's whole contract"
     );
 
     // The engine's answer, one or more frames later.
     s.fire_event("SCREENSHOT_SUCCEEDED", Vec::new());
-    assert!(shown(&s));
-    assert_eq!(text(&s), "Screen Captured");
-    assert_eq!(alpha(&s), 1.0);
+    assert!(shown(&mut s));
+    assert_eq!(text(&mut s), "Screen Captured");
+    assert_eq!(alpha(&mut s), 1.0);
 }
 
 /// **The second leak path, and the reason `TakeScreenshot` hides rather than waiting for the
@@ -79,19 +79,19 @@ fn a_second_press_inside_the_fade_clears_the_line_before_capturing() {
     let mut s = harness();
     s.fire_event("SCREENSHOT_SUCCEEDED", Vec::new());
     s.tick(0.5);
-    assert!(shown(&s), "half a second in, the line is still up");
-    assert!(alpha(&s) < 1.0, "and already fading");
+    assert!(shown(&mut s), "half a second in, the line is still up");
+    assert!(alpha(&mut s) < 1.0, "and already fading");
 
     s.run("TakeScreenshot()").unwrap();
     assert!(
-        !shown(&s),
+        !shown(&mut s),
         "hidden BEFORE the engine is asked, not after it answers"
     );
     assert_eq!(s.take_screenshot_asks(), 1);
 
     // The new answer restarts the fade at full rather than inheriting the old alpha.
     s.fire_event("SCREENSHOT_SUCCEEDED", Vec::new());
-    assert_eq!(alpha(&s), 1.0);
+    assert_eq!(alpha(&mut s), 1.0);
 }
 
 /// The 1.5 s fade: alpha falls with elapsed time and the frame takes itself off screen at the end.
@@ -101,14 +101,14 @@ fn the_line_fades_out_over_the_reference_s_second_and_a_half() {
     s.fire_event("SCREENSHOT_SUCCEEDED", Vec::new());
 
     s.tick(0.75);
-    let half = alpha(&s);
+    let half = alpha(&mut s);
     assert!(
         (half - 0.5).abs() < 1e-3,
         "halfway through 1.5 s the line is at half alpha, got {half}"
     );
 
     s.tick(0.75);
-    assert!(!shown(&s), "and it is gone at the end of the fade");
+    assert!(!shown(&mut s), "and it is gone at the end of the fade");
 }
 
 /// The failure path says so, in the reference's own words.
@@ -116,6 +116,6 @@ fn the_line_fades_out_over_the_reference_s_second_and_a_half() {
 fn a_failed_capture_shows_the_failure_string() {
     let mut s = harness();
     s.fire_event("SCREENSHOT_FAILED", Vec::new());
-    assert!(shown(&s));
-    assert_eq!(text(&s), "Screen Capture Failed");
+    assert!(shown(&mut s));
+    assert_eq!(text(&mut s), "Screen Capture Failed");
 }

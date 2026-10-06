@@ -282,11 +282,61 @@ pub(super) fn read_spell_go(r: &mut impl Read) -> io::Result<SpellGo> {
 /// Read `SMSG_SPELL_FAILED_OTHER` → `(caster, spell_id)` (vmangos `Spell::SendInterrupted`,
 /// `Spell.cpp:4780-4789`): the broadcast cast-cancel notice for **observers** — a raw (unpacked)
 /// `u64` guid + `u32` spellId. Our own cast's failure rides `SMSG_CAST_RESULT` instead;
-/// `SMSG_SPELL_FAILURE` is never constructed server-side (decision 0099).
-pub(super) fn read_spell_failed_other(r: &mut impl Read) -> io::Result<(u64, u32)> {
+/// vMaNGOS does not construct `SMSG_SPELL_FAILURE`; MaNGOS Zero does, adding
+/// a reason byte to this same raw guid + spell-id prefix (SpellPackets.cpp).
+pub(super) fn read_spell_failed_other(r: &mut &[u8]) -> io::Result<(u64, u32)> {
+    // MaNGOS Zero PlayerbotAI::InterruptSpell broadcasts a distinct 14-byte
+    // raw-GUID + counter(1) + spell + reason(0) companion packet.
+    let bot = r.len() == 14;
     let caster = read_u64_le(r)?;
+    if bot && read_u8(r)? != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid playerbot spell counter",
+        ));
+    }
     let spell_id = read_u32_le(r)?;
+    if bot && read_u8(r)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid playerbot interruption reason",
+        ));
+    }
     Ok((caster, spell_id))
+}
+
+pub(super) fn read_spell_failure(r: &mut &[u8]) -> io::Result<(u64, u32, u8)> {
+    // SpellPackets.cpp: raw GUID + spell + reason (13 bytes).
+    if r.len() == 13 {
+        return Ok((read_u64_le(r)?, read_u32_le(r)?, read_u8(r)?));
+    }
+    // Verified alternate writer: modules/Bots/playerbot/PlayerbotAI.cpp,
+    // InterruptSpell: packed GUID + uint8(1) + spell + uint8(0).
+    // Exact span and both authored sentinels are required. A 13-byte packet
+    // remains the core dialect; do not ambiguously reinterpret that layout.
+    let expected = r.first().map_or(0, |mask| mask.count_ones() as usize + 7);
+    if r.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported spell failure span: {} bytes", r.len()),
+        ));
+    }
+    let caster = crate::wire::read_packed_guid(r)?;
+    if read_u8(r)? != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid playerbot spell counter",
+        ));
+    }
+    let spell_id = read_u32_le(r)?;
+    let reason = read_u8(r)?;
+    if reason != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid playerbot interruption reason",
+        ));
+    }
+    Ok((caster, spell_id, reason))
 }
 
 /// Read `SMSG_SPELL_DELAYED` → `(caster, delay_ms)` (vmangos `Spell::Delayed`, `Spell.cpp:7472`):

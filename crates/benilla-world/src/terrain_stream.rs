@@ -14,8 +14,9 @@
 //! [`CurrentMap`]/[`MapCatalogRes`] ([`crate::world_map`]); the clutter catalog + build lifecycle from
 //! [`crate::clutter::ClutterPlugin`].
 
+use benilla_time::Instant;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use benilla_assets::coords::{bevy_to_wow, placement_rotation, wow_to_bevy};
 use benilla_assets::{AdtTile, M2Model, WdtIndex, WmoModel};
@@ -34,7 +35,7 @@ use crate::schedule::WorldStage;
 use crate::view::WorldCamera;
 use crate::vis_chain::VisChainOnly;
 use crate::world_map::CurrentMap;
-use benilla_assets::materials::{TerrainExtension, TerrainMaterial};
+use benilla_assets::materials::{TerrainBaseMaterial, TerrainExtension, TerrainMaterial};
 use benilla_assets::MapCatalogRes;
 use benilla_assets::RenderConfig;
 use benilla_assets::{m2_url, wmo_url};
@@ -91,6 +92,9 @@ pub struct TerrainStreamer {
     /// The focus tile [`stream_terrain`] last streamed around — the furnisher's nearest-first
     /// ordering key, published here so it never recomputes the focus ladder a second time.
     focus: (i32, i32),
+    /// Exact chunk-centred window last processed. Moving inside one tile can
+    /// still add/remove neighbouring tiles from the requested window.
+    last_window: Option<StreamWindow>,
     /// The window's `(inner, outer)` half-widths as of last frame, so the reach is logged once
     /// per change (the Terrain Distance slider) rather than per frame.
     reach: Option<(i32, i32)>,
@@ -752,7 +756,7 @@ fn stream_terrain(
     let window = StreamWindow::at(view.farclip, center[0], center[1]);
     let tiling = cfg.as_ref().map(|c| c.tex_tiles).unwrap_or(8.0);
     let (cx, cy) = window.focus_tile();
-    let same_window = state.focus == (cx, cy) && state.reach == Some((window.inner, window.outer));
+    let same_window = state.last_window == Some(window);
     // Never while a load is in flight: `paced` is false from a snap until the body settles, and
     // the tail this skip bypasses is where the load is RELEASED — the retained pass's undrawn
     // count that `presentable()` reads, the burst-over `flush_now`, and the settle hold. A
@@ -776,6 +780,7 @@ fn stream_terrain(
         return;
     }
     state.focus = (cx, cy);
+    state.last_window = Some(window);
     // One line per change of reach — the slider moved, or the first frame — so a run log says
     // what the residency window was when a tile count or a frame cost was read off it.
     if state.reach != Some((window.inner, window.outer)) {
@@ -1111,7 +1116,7 @@ fn stream_terrain(
         // forever. A focus on unfurnished ground IS a new load beginning (a worldport's map
         // swap, a far teleport), so it re-arms the latch; `release_world`'s reset covers the
         // logout → re-entry path.
-        if !p.focus_resident {
+        if !p.focus_resident || !same_window {
             p.complete = false;
         }
         // A **snap** re-arms it too, even onto ground that is already resident. `paced` is false
@@ -1421,10 +1426,12 @@ fn rescatter_clutter(
     mut last: Local<Option<f32>>,
 ) {
     let prev = last.replace(cfg.density);
-    let (Some(prev), Some(clutter)) = (prev, clutter) else {
+    let Some(clutter) = clutter else {
         return;
     };
-    if prev == cfg.density {
+    // An async host may publish the catalog after some terrain already spawned.
+    // Scatter those tiles too, without requiring a density toggle or re-entry.
+    if prev == Some(cfg.density) && !clutter.is_added() {
         return;
     }
     let mut n = 0;
@@ -1620,13 +1627,23 @@ fn release_placement(
 /// fan CCW-from-above in WoW space, and `transform_is_a_proper_rotation` pins the WoW→Bevy map at
 /// det +1 — so the ground's front face points up under wgpu's `FrontFace::Ccw`. Flip either and
 /// terrain disappears from *above*.
-fn terrain_base_material() -> StandardMaterial {
-    StandardMaterial {
-        base_color: Color::WHITE,
-        perceptual_roughness: 1.0,
-        double_sided: false,
-        cull_mode: Some(Face::Back),
-        ..default()
+fn terrain_base_material() -> TerrainBaseMaterial {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 1.0,
+            double_sided: false,
+            cull_mode: Some(Face::Back),
+            ..default()
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // `TerrainExtension` supplies both shader stages and every resource they read. Keeping a
+        // binding-free base is what prevents StandardMaterial's six unused texture entries from
+        // exhausting wgpu-hal/GLES's 16-slot combined texture map.
+        TerrainBaseMaterial::default()
     }
 }
 

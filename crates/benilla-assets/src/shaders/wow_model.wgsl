@@ -194,7 +194,200 @@ struct WowLight {
     water_clip: array<vec2<f32>, 2048>,
     palettes: array<vec4<f32>>,
 };
+#ifdef WOW_LIGHT_TEXTURE
+// WebGL2 has no storage buffers. The renderer uploads the byte-identical
+// WowLight blob into an rgba32uint texture; each texel is one 16-byte table
+// row. Float rows are recovered with bitcast, while the packed u32 tables are
+// read directly. Keep these row offsets in lockstep with the Rust region
+// functions in benilla-world.
+@group(#{MATERIAL_BIND_GROUP}) @binding(90) var wow_light_texture: texture_2d<u32>;
+
+const WOW_TABLE_WIDTH: u32 = 2048u;
+const WOW_POINTS_ROW: u32 = 21u;
+const WOW_PROBES_ROW: u32 = 533u;
+const WOW_RIG_TABLE_WORD: u32 = 231508u;
+const WOW_RIG_TINT_WORD: u32 = 233556u;
+const WOW_RIG_ORIGIN_ROW: u32 = 58901u;
+const WOW_MATANIM_ROW: u32 = 60949u;
+const WOW_WATER_CLIP_WORD: u32 = 251988u;
+const WOW_PALETTE_ROW: u32 = 64021u;
+
+fn wow_table_words(row: u32) -> vec4<u32> {
+    return textureLoad(
+        wow_light_texture,
+        vec2<i32>(i32(row % WOW_TABLE_WIDTH), i32(row / WOW_TABLE_WIDTH)),
+        0,
+    );
+}
+
+fn wow_table_f32(row: u32) -> vec4<f32> {
+    return bitcast<vec4<f32>>(wow_table_words(row));
+}
+
+fn wow_table_word(word: u32) -> u32 {
+    let words = wow_table_words(word / 4u);
+    return words[word & 3u];
+}
+
+fn wow_table_word_f32(word: u32) -> f32 {
+    return bitcast<f32>(wow_table_word(word));
+}
+#else
 @group(#{MATERIAL_BIND_GROUP}) @binding(90) var<storage, read> wow_light: WowLight;
+#endif
+
+fn wow_light_ambient() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(0u);
+#else
+    return wow_light.light_ambient;
+#endif
+}
+
+fn wow_light_diffuse() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(1u);
+#else
+    return wow_light.light_diffuse;
+#endif
+}
+
+fn wow_light_sun() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(2u);
+#else
+    return wow_light.light_sun;
+#endif
+}
+
+fn wow_fog_color() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(4u);
+#else
+    return wow_light.fog_color;
+#endif
+}
+
+fn wow_fog_params() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(5u);
+#else
+    return wow_light.fog_params;
+#endif
+}
+
+fn wow_sh(row: u32) -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(6u + row);
+#else
+    switch row {
+        case 0u: { return wow_light.sh_c10_r; }
+        case 1u: { return wow_light.sh_c10_g; }
+        case 2u: { return wow_light.sh_c10_b; }
+        case 3u: { return wow_light.sh_c13_r; }
+        case 4u: { return wow_light.sh_c13_g; }
+        case 5u: { return wow_light.sh_c13_b; }
+        default: { return wow_light.sh_c16; }
+    }
+#endif
+}
+
+fn wow_grade() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(17u);
+#else
+    return wow_light.grade;
+#endif
+}
+
+fn wow_wmo_fog_color() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(18u);
+#else
+    return wow_light.wmo_fog_color;
+#endif
+}
+
+fn wow_wmo_fog_params() -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(19u);
+#else
+    return wow_light.wmo_fog_params;
+#endif
+}
+
+fn wow_point_count() -> u32 {
+#ifdef WOW_LIGHT_TEXTURE
+    return u32(wow_table_f32(20u).x);
+#else
+    return u32(wow_light.point_count.x);
+#endif
+}
+
+fn wow_point(row: u32) -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(WOW_POINTS_ROW + row);
+#else
+    return wow_light.points[row];
+#endif
+}
+
+fn wow_prop_probe(row: u32) -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(WOW_PROBES_ROW + row);
+#else
+    return wow_light.prop_probes[row];
+#endif
+}
+
+fn wow_rig_table(slot: u32) -> u32 {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_word(WOW_RIG_TABLE_WORD + slot);
+#else
+    return wow_light.rig_table[slot];
+#endif
+}
+
+fn wow_rig_tint(slot: u32) -> u32 {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_word(WOW_RIG_TINT_WORD + slot);
+#else
+    return wow_light.rig_tint[slot];
+#endif
+}
+
+fn wow_rig_origin(slot: u32) -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(WOW_RIG_ORIGIN_ROW + slot);
+#else
+    return wow_light.rig_origin[slot];
+#endif
+}
+
+fn wow_matanim(slot: u32) -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(WOW_MATANIM_ROW + slot);
+#else
+    return wow_light.matanim[slot];
+#endif
+}
+
+fn wow_water_clip(slot: u32) -> vec2<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    let word = WOW_WATER_CLIP_WORD + 2u * slot;
+    return vec2<f32>(wow_table_word_f32(word), wow_table_word_f32(word + 1u));
+#else
+    return wow_light.water_clip[slot];
+#endif
+}
+
+fn wow_palette(row: u32) -> vec4<f32> {
+#ifdef WOW_LIGHT_TEXTURE
+    return wow_table_f32(WOW_PALETTE_ROW + row);
+#else
+    return wow_light.palettes[row];
+#endif
+}
 
 // Vanilla M2 cutout alpha-test reference (224/255 on ≤ WotLK) — kept in sync with
 // `debug_panel::VANILLA_ALPHA_KEY_REF`. Used to re-apply the hard cutout on the distance-fade blend
@@ -281,11 +474,11 @@ fn wow_normalize(v: vec3<f32>) -> vec3<f32> {
 }
 
 fn point_light_sum(P: vec3<f32>, N: vec3<f32>, anchor: vec3<f32>) -> vec3<f32> {
-    let count = u32(wow_light.point_count.x);
+    let count = wow_point_count();
     var sel = array<u32, 3>(0u, 0u, 0u);
     var sd = array<f32, 3>(1e30, 1e30, 1e30);
     for (var i = 0u; i < count; i = i + 1u) {
-        let pos_range = wow_light.points[2u * i];
+        let pos_range = wow_point(2u * i);
         let dv = pos_range.xyz - anchor;
         let d2 = dot(dv, dv);
         if (d2 > pos_range.w * pos_range.w) {
@@ -307,12 +500,12 @@ fn point_light_sum(P: vec3<f32>, N: vec3<f32>, anchor: vec3<f32>) -> vec3<f32> {
         if (sd[s] > 9.9e29) {
             break;
         }
-        let pos_range = wow_light.points[2u * sel[s]];
+        let pos_range = wow_point(2u * sel[s]);
         let to_light = pos_range.xyz - P;
         let d = length(to_light);
         let atten = 1.0 / (0.7 * d + 0.03 * d * d);
         let nl = max(dot(N, to_light / max(d, 1e-4)), 0.0);
-        sum += wow_light.points[2u * sel[s] + 1u].rgb * (atten * nl);
+        sum += wow_point(2u * sel[s] + 1u).rgb * (atten * nl);
     }
     return sum;
 }
@@ -406,23 +599,23 @@ fn wow_rig_slot(instance_index: u32) -> u32 {
 // measured from the rig's own origin rather than the map's (decision 0974). `rig_origin[slot]`
 // carries the missing piece; the vertex stage applies it camera-relative.
 fn wow_skin_model(instance_index: u32, indices: vec4<u32>, weights: vec4<f32>) -> mat4x4<f32> {
-    let base = wow_light.rig_table[wow_rig_slot(instance_index)];
+    let base = wow_rig_table(wow_rig_slot(instance_index));
     let b0 = 3u * (base + indices.x);
     let b1 = 3u * (base + indices.y);
     let b2 = 3u * (base + indices.z);
     let b3 = 3u * (base + indices.w);
-    let r0 = weights.x * wow_light.palettes[b0]
-        + weights.y * wow_light.palettes[b1]
-        + weights.z * wow_light.palettes[b2]
-        + weights.w * wow_light.palettes[b3];
-    let r1 = weights.x * wow_light.palettes[b0 + 1u]
-        + weights.y * wow_light.palettes[b1 + 1u]
-        + weights.z * wow_light.palettes[b2 + 1u]
-        + weights.w * wow_light.palettes[b3 + 1u];
-    let r2 = weights.x * wow_light.palettes[b0 + 2u]
-        + weights.y * wow_light.palettes[b1 + 2u]
-        + weights.z * wow_light.palettes[b2 + 2u]
-        + weights.w * wow_light.palettes[b3 + 2u];
+    let r0 = weights.x * wow_palette(b0)
+        + weights.y * wow_palette(b1)
+        + weights.z * wow_palette(b2)
+        + weights.w * wow_palette(b3);
+    let r1 = weights.x * wow_palette(b0 + 1u)
+        + weights.y * wow_palette(b1 + 1u)
+        + weights.z * wow_palette(b2 + 1u)
+        + weights.w * wow_palette(b3 + 1u);
+    let r2 = weights.x * wow_palette(b0 + 2u)
+        + weights.y * wow_palette(b1 + 2u)
+        + weights.z * wow_palette(b2 + 2u)
+        + weights.w * wow_palette(b3 + 2u);
     // r0/r1/r2 are the affine's ROWS; a wgsl matrix is column-major.
     return mat4x4<f32>(
         vec4<f32>(r0.x, r1.x, r2.x, 0.0),
@@ -477,7 +670,7 @@ fn vertex(vertex: WowVertex) -> WowVsOut {
         vertex.joint_indices,
         vertex.joint_weights
     );
-    let frame_origin = wow_light.rig_origin[wow_rig_slot(vertex.instance_index)].xyz;
+    let frame_origin = wow_rig_origin(wow_rig_slot(vertex.instance_index)).xyz;
 #else
     var frame_from_local = mesh_world_from_local;
     let frame_origin = mesh_world_from_local[3].xyz;
@@ -625,7 +818,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // which is what `@builtin(position)` is here) and the fragment is the scissor. `w == 0` is
     // the pinned-zero row: every world material, no clip, one comparison.
     if (m.anim_slots.w > 0.5) {
-        let r = wow_light.matanim[u32(m.anim_slots.w)];
+        let r = wow_matanim(u32(m.anim_slots.w));
         if (in.position.x < r.x || in.position.y < r.y
             || in.position.x > r.z || in.position.y > r.w) {
             discard;
@@ -634,9 +827,9 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // HARD FAR-CLIP WALL (faithful `farclip` ~777 yd) — see terrain.wgsl. Per-pixel discard beyond the
     // projection far plane (planar eye-Z), so distant buildings/trees reveal closest-part-first and the
     // sky/WDL shows behind. `wow_light.fog_params.w` = farclip (0 ⇒ disabled). Clutter (≤70 yd) never hits it.
-    if (wow_light.fog_params.w > 0.0) {
+    if (wow_fog_params().w > 0.0) {
         let clip_z = -(view.view_from_world * vec4<f32>(in.world_position.xyz, 1.0)).z;
-        if (clip_z > wow_light.fog_params.w) {
+        if (clip_z > wow_fog_params().w) {
             discard;
         }
     }
@@ -646,7 +839,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // batch on the eye's (near) list, its far twin (FAR_SIDE_MARKER, `clutter_fade.z` bit 11)
     // before the water — and each copy keeps only its own half: the reference's `M2UseClipPlanes`
     // hardware clip plane at the waterline. `straddle::keeps` is this block's Rust twin.
-    let water_clip = wow_light.water_clip[(mesh_functions::get_tag(in.instance_index) >> 19u) & 0x7ffu];
+    let water_clip = wow_water_clip((mesh_functions::get_tag(in.instance_index) >> 19u) & 0x7ffu);
     if (water_clip.y != 0.0) {
         let far_copy = (u32(m.clutter_fade.z) & 2048u) != 0u;
         let keep_side = select(water_clip.y, -water_clip.y, far_copy);
@@ -684,8 +877,8 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     if ((u32(m.clutter_fade.z) & 4096u) != 0u) {
         vo.uv = in.uv;
     } else {
-        let uv_t = in.uv + m.sun_scale.zw + wow_light.matanim[u32(m.anim_slots.x)].xy;
-        let affine = wow_light.matanim[u32(m.anim_slots.z)];
+        let uv_t = in.uv + m.sun_scale.zw + wow_matanim(u32(m.anim_slots.x)).xy;
+        let affine = wow_matanim(u32(m.anim_slots.z));
         let d = (uv_t - vec2<f32>(0.5, 0.5)) * vec2<f32>(1.0 + affine.z, 1.0 + affine.w);
         let c = 1.0 + affine.x;
         vo.uv = vec2<f32>(0.5 + d.x * c - d.y * affine.y, 0.5 + d.x * affine.y + d.y * c);
@@ -849,7 +1042,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // untinted unit. It is the material's ambient+diffuse colour (gx SetState(1) →
     // GL_COLOR_MATERIAL), so it multiplies the light sum INSIDE the clamp below and never the
     // emission terms — the same placement the WMO branch already gives MOCV.
-    let tint_word = wow_light.rig_tint[(fade_tag >> 19u) & 0x7ffu];
+    let tint_word = wow_rig_tint((fade_tag >> 19u) & 0x7ffu);
     let inst_tint = select(
         vec3<f32>(
             f32((tint_word >> 16u) & 0xffu),
@@ -892,7 +1085,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // clutter and WMO keep the plain FFP `ambient + diffuse·max(N·L,0)` — clutter lit by the ground
     // normal, WMO by its own (both genuinely fixed-function reference programs).
     let is_clutter = m.clutter_fade.w > 0.5;
-    let L = -normalize(wow_light.light_sun.xyz);
+    let L = -normalize(wow_light_sun().xyz);
     // `wow_normalize`, not `normalize`: the unskinned lane carries an authored `(0,0,0)` normal
     // through to here unchanged, and a NaN out of this line blacks the whole batch (see the helper).
     let n_m2 = wow_normalize(pbr_input.world_normal);
@@ -907,7 +1100,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // M2 foliage (doodad matte path) OR WMO group geometry (the FFP N·L path below) (foliage.md).
     let n_lit = select(-n_m2, n_m2, is_front);
     let ndotl = max(dot(n_lit, L), 0.0);
-    let lit_nl = clamp(wow_light.light_ambient.rgb + wow_light.light_diffuse.rgb * ndotl, vec3<f32>(0.0), vec3<f32>(1.0));
+    let lit_nl = clamp(wow_light_ambient().rgb + wow_light_diffuse().rgb * ndotl, vec3<f32>(0.0), vec3<f32>(1.0));
     // The order-2 SH basis products over the fragment normal — shared by the global exterior eval
     // below and the interior-prop probe lane further down.
     let quad = vec4<f32>(n_lit.x * n_lit.y, n_lit.y * n_lit.z, n_lit.z * n_lit.z, n_lit.x * n_lit.z);
@@ -996,20 +1189,20 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // `pack_model_core_rows` folds. Every sun band is linear in the committed colour, so ONE
     // `intensity` multiply covers the whole lobe (never I²); ambient rides the c10 `.w` lanes and
     // does NOT scale with it, and the sun's DC redistribution rides `grade.yzw`.
-    let sun_dc = wow_light.grade.yzw * intensity;
+    let sun_dc = wow_grade().yzw * intensity;
     let sun_lobe = vec3<f32>(
-        wow_light.sh_c10_r.w + sun_dc.x
+        wow_sh(0u).w + sun_dc.x
             + intensity
-                * (dot(wow_light.sh_c10_r.xyz, n_lit) + dot(wow_light.sh_c13_r, quad)
-                    + wow_light.sh_c16.x * x2y2),
-        wow_light.sh_c10_g.w + sun_dc.y
+                * (dot(wow_sh(0u).xyz, n_lit) + dot(wow_sh(3u), quad)
+                    + wow_sh(6u).x * x2y2),
+        wow_sh(1u).w + sun_dc.y
             + intensity
-                * (dot(wow_light.sh_c10_g.xyz, n_lit) + dot(wow_light.sh_c13_g, quad)
-                    + wow_light.sh_c16.y * x2y2),
-        wow_light.sh_c10_b.w + sun_dc.z
+                * (dot(wow_sh(1u).xyz, n_lit) + dot(wow_sh(4u), quad)
+                    + wow_sh(6u).y * x2y2),
+        wow_sh(2u).w + sun_dc.z
             + intensity
-                * (dot(wow_light.sh_c10_b.xyz, n_lit) + dot(wow_light.sh_c13_b, quad)
-                    + wow_light.sh_c16.z * x2y2),
+                * (dot(wow_sh(2u).xyz, n_lit) + dot(wow_sh(5u), quad)
+                    + wow_sh(6u).z * x2y2),
     );
     // clamp01 the SUM, never per term — the lobe dips to −0.037·C around μ≈−0.53 (low-order-SH
     // ringing, the reference's own authored response), and clamping the sun term alone would floor
@@ -1023,7 +1216,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // clutter uses its own ground-normal matte. `light_sun.w` is the directional-enable flag (on outdoors).
     let is_wmo = m.model_flags.x > 0.5;
     let is_interior = m.model_flags.z > 0.5;
-    let use_doodad_shade = (wow_light.light_sun.w > 0.5) && !is_clutter && !is_wmo;
+    let use_doodad_shade = (wow_light_sun().w > 0.5) && !is_clutter && !is_wmo;
     let lit_exterior = select(lit_nl, lit_doodad, use_doodad_shade);
     // WMO INTERIOR surfaces (model_flags.z; groupFlags & 0x48 == 0) — by BATCH CLASS (tint.w; wow-re
     // trace-forensics-abbey-interior-d3d §2, observed on the abbey at close range):
@@ -1045,7 +1238,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
 #ifdef VERTEX_COLORS
     trans_a = in.color.a;
 #endif
-    let window_mid = 0.5 * (wow_light.light_ambient.rgb + wow_light.light_diffuse.rgb);
+    let window_mid = 0.5 * (wow_light_ambient().rgb + wow_light_diffuse().rgb);
     let lit_window = clamp(
         window_mid + vec3<f32>(16.0 / 255.0) + window_mid * ndotl,
         vec3<f32>(0.0),
@@ -1077,15 +1270,15 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
 #endif
     let lit_m2_interior = clamp(
         vec3<f32>(
-            dot(wow_light.prop_probes[probe + 0u], n1)
-                + dot(wow_light.prop_probes[probe + 3u], quad)
-                + wow_light.prop_probes[probe + 6u].x * x2y2,
-            dot(wow_light.prop_probes[probe + 1u], n1)
-                + dot(wow_light.prop_probes[probe + 4u], quad)
-                + wow_light.prop_probes[probe + 6u].y * x2y2,
-            dot(wow_light.prop_probes[probe + 2u], n1)
-                + dot(wow_light.prop_probes[probe + 5u], quad)
-                + wow_light.prop_probes[probe + 6u].z * x2y2,
+            dot(wow_prop_probe(probe + 0u), n1)
+                + dot(wow_prop_probe(probe + 3u), quad)
+                + wow_prop_probe(probe + 6u).x * x2y2,
+            dot(wow_prop_probe(probe + 1u), n1)
+                + dot(wow_prop_probe(probe + 4u), quad)
+                + wow_prop_probe(probe + 6u).y * x2y2,
+            dot(wow_prop_probe(probe + 2u), n1)
+                + dot(wow_prop_probe(probe + 5u), quad)
+                + wow_prop_probe(probe + 6u).z * x2y2,
         ),
         vec3<f32>(0.0),
         vec3<f32>(1.0),
@@ -1104,7 +1297,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // authored values. (The old fog_params.z linear-space A/B is dead — settled by the lane.)
     // `m.tint` is the animated M2Color RGB (identity 1 for static batches) — the same per-batch
     // tint the vertex colours carry for constant tracks, so it folds at the same point.
-    let albedo = base.rgb * (m.tint.rgb + wow_light.matanim[u32(m.anim_slots.y)].xyz);
+    let albedo = base.rgb * (m.tint.rgb + wow_matanim(u32(m.anim_slots.y)).xyz);
     // Unlit fullbright (model_flags.w): M2 UNLIT (0x01) glass/glow cards, or WMO UNLIT on an
     // exterior-group batch (`tex × white` — the inn's always-lit outside panes). Wins over the lit
     // path; faithfully receives NO emission terms (lighting is off, so GL_EMISSION is dead there).
@@ -1123,7 +1316,7 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
             sidn_w = 0.0; // INT: lighting off — the emissive write is dead, like the FFP
         }
     }
-    let sidn_e = m.sidn.rgb * (wow_light.grade.x * sidn_w);
+    let sidn_e = m.sidn.rgb * (wow_grade().x * sidn_w);
     // WoW dynamic point lights (decisions 0016/0273/0278, selection 0285) — exterior doodads,
     // entities, clutter, and terrain receive their unit's committed lights: the ≤3 NEAREST to the
     // receiving unit's own position, never the whole scene (`point_light_sum`). WMO surfaces take
@@ -1228,11 +1421,11 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // the camera stood anywhere inside it — B335, where the Shadowfang room two exterior-lit
     // courtyards away read as a flat teal wash at 70 yd. At camera-out the two triples are equal,
     // so the bit only ever diverges inside a fogged WMO. Every other lane inherits the scene fog.
-    var fog_color = wow_light.fog_color;
-    var fog_span = wow_light.fog_params.xy;
+    var fog_color = wow_fog_color();
+    var fog_span = wow_fog_params().xy;
     if (interior_fogged) {
-        fog_color = wow_light.wmo_fog_color;
-        fog_span = wow_light.wmo_fog_params.xy;
+        fog_color = wow_wmo_fog_color();
+        fog_span = wow_wmo_fog_params().xy;
     }
     let fog_policy = (u32(m.clutter_fade.z) >> 4u) & 7u;
     if (fog_color.w > 0.5 && fog_policy != 4u) {

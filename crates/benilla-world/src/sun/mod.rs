@@ -116,7 +116,6 @@ impl Plugin for SunPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<CelestialMaterial>::default())
             .add_plugins(MaterialPlugin::<StarMaterial>::default())
-            .add_systems(Startup, setup_sun.after(AssetSet::Open))
             // Post-propagation camera-anchored placement (the BillboardPlace slot): the follows read
             // the camera's SAME-frame pose and write GlobalTransform directly. In plain Update they
             // read the last-frame camera — one frame of motion is ~1% of the glare quads' 12-unit
@@ -135,6 +134,11 @@ impl Plugin for SunPlugin {
                     .after(crate::skybox::SkyboxResolve)
                     .after(crate::liquid::SubmersionVerdict),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Startup, setup_sun.after(AssetSet::Open));
+        #[cfg(target_arch = "wasm32")]
+        app.init_resource::<crate::sky_assets::Inputs>()
+            .add_systems(Update, setup_sun.before(apply_celestial_visibility));
     }
 }
 

@@ -15,10 +15,10 @@
 //!
 //! Read with [`recent`]. Nothing else in the engine reads it: it is an artefact feed, not a log.
 
+use benilla_time::Instant;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 use bevy::log::tracing::field::{Field, Visit};
 use bevy::log::tracing::{Event, Subscriber};

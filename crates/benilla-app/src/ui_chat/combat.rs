@@ -855,11 +855,11 @@ pub(crate) struct Trailers {
 }
 
 /// Append the trailers `0x628410` would, in its order, skipping each whose GlobalString is empty.
-fn append_trailers(lua: &benilla_ui::script::UiScript, line: &mut String, t: Trailers) {
+fn append_trailers(lua: &mut benilla_ui::script::UiScript, line: &mut String, t: Trailers) {
     const GLANCING: u32 = 0x4000;
     const CRUSHING: u32 = 0x8000;
     let mut push = |key: &str, arg: Option<i64>| {
-        let Some(template) = global_string(lua, key) else {
+        let Some(template) = global_string(&mut *lua, key) else {
             return;
         };
         let args = match arg {
@@ -924,7 +924,7 @@ pub(crate) struct Fills {
 /// at `0x626850`; 1.12's templates carry no positional (`%1$s`) specifiers, and could not — the
 /// MSVC CRT the client links has never supported them.
 pub(crate) fn compose_line(
-    lua: &benilla_ui::script::UiScript,
+    lua: &mut benilla_ui::script::UiScript,
     family: Family,
     variant: Variant,
     fills: &Fills,
@@ -932,9 +932,9 @@ pub(crate) fn compose_line(
     let key = family.key(variant);
     let template = global_string(lua, &key)?;
     // Resolved before the walk so the borrows outlive it.
-    let school = fills.school.and_then(|s| school_word(lua, s));
-    let power = fills.power.and_then(|p| power_word(lua, p));
-    let power2 = fills.power2.and_then(|p| power_word(lua, p));
+    let school = fills.school.and_then(|s| school_word(&mut *lua, s));
+    let power = fills.power.and_then(|p| power_word(&mut *lua, p));
+    let power2 = fills.power2.and_then(|p| power_word(&mut *lua, p));
     let mut args: Vec<Arg> = Vec::with_capacity(family.slots.len());
     for slot in family.slots {
         match slot {
@@ -953,7 +953,7 @@ pub(crate) fn compose_line(
     match fill(&template, &args) {
         Some(mut line) => {
             if let Some(t) = fills.trailers {
-                append_trailers(lua, &mut line, t);
+                append_trailers(&mut *lua, &mut line, t);
             }
             Some(line)
         }
@@ -1009,14 +1009,11 @@ fn fill(template: &str, args: &[Arg<'_>]) -> Option<String> {
 /// A GlobalString off the VM's globals, `None` when absent **or empty** — the same two tests
 /// `0x703bf0`'s callers make (`GetPVPRankInfo` at `0x51aa1c`/`0x51aa20` is the pattern
 /// [`crate::ui_script`] already follows for the pvp strings).
-pub(crate) fn global_string(script: &benilla_ui::script::UiScript, key: &str) -> Option<String> {
-    script
-        .lua()
-        .globals()
-        .get::<Option<String>>(key)
-        .ok()
-        .flatten()
-        .filter(|s| !s.is_empty())
+pub(crate) fn global_string(
+    script: &mut benilla_ui::script::UiScript,
+    key: &str,
+) -> Option<String> {
+    script.global_string(key).filter(|s| !s.is_empty())
 }
 
 /// The school word a `…SCHOOL…` template's `%s` takes — **capitalized** (decision 2127).
@@ -1035,14 +1032,11 @@ pub(crate) fn global_string(script: &benilla_ui::script::UiScript, key: &str) ->
 /// so it is independent evidence for the capital. A lowercase word falls through to
 /// `DAMAGETYPE_UNKNOWN` and every school-coloured number in the addon loses its tint.
 ///
-/// **Named residue:** the *source* is still the GlobalString, not the DBC. `SPELL_SCHOOL<n>_CAP`
-/// carries the same seven strings as `Resistances.dbc` in enUS (both read, 2127), and this client
-/// is enUS-only by construction (`combat_text::law::WORDS` and the rest of the string data are
-/// hardcoded enUS). A locale where the two tables disagree would diverge; a `Resistances.dbc`
-/// catalog is what closes it, and it is a data change rather than a string one — `compose_line`
-/// is handed the Lua VM and nothing else.
-pub(crate) fn school_word(script: &benilla_ui::script::UiScript, school: u8) -> Option<String> {
-    global_string(script, &format!("SPELL_SCHOOL{school}_CAP"))
+/// The host now feeds the original Resistances.dbc catalog into the VM's engine
+/// model. No GlobalString substitution: the installed ruRU table demonstrably
+/// differs from `SPELL_SCHOOL<n>_CAP` in both vocabulary and capitalization.
+pub(crate) fn school_word(script: &mut benilla_ui::script::UiScript, school: u8) -> Option<String> {
+    script.damage_school_name(school)
 }
 
 /// The GlobalString key `0x6278f0` resolves for a power tag, or `None` where it answers NULL.
@@ -1080,7 +1074,7 @@ pub(crate) fn power_has_word(power: u32) -> bool {
 /// The power word a `POWERGAIN`/`SPELLPOWERLEECH`/`SPELLPOWERDRAIN` template takes, by the vmangos
 /// `Powers` index the wire carries — `0x6278f0`'s table, resolved through the same GlobalString
 /// mechanism the reference uses ([`power_key`] carries the law).
-pub(crate) fn power_word(script: &benilla_ui::script::UiScript, power: u32) -> Option<String> {
+pub(crate) fn power_word(script: &mut benilla_ui::script::UiScript, power: u32) -> Option<String> {
     global_string(script, power_key(power)?)
 }
 

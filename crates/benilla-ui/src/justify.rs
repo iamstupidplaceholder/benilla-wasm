@@ -47,7 +47,30 @@
 //! fall-through and the unconditional inherit clear, `system/ui/scratch/justify-fallthrough-law.md`
 //! (§5 quad, arbitrated).
 
-use crate::script::{JustifyH, JustifyV};
+/// A `FontString`'s horizontal text justification within its resolved rect — the XML `justifyH`
+/// attr (`SetJustifyH`). The FrameXML default is **CENTER** (the client's `JustifyH` field default);
+/// the app's text renderer positions each line's run against the rect per this.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JustifyH {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+/// A `FontString`'s vertical text justification within its resolved rect — the XML `justifyV`
+/// attr (`SetJustifyV`). The FrameXML default is **MIDDLE** (the client's `JustifyV` field
+/// default) — a sized FontString centers its line block vertically, which is why the real
+/// client's 13px money numbers sit on their coin icons' centerline. The app's text renderer
+/// offsets the line block against the rect per this (no-op for a rect sized to its text, i.e.
+/// every host-measured height-less FontString).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JustifyV {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
+}
 
 /// `.rdata 0x811ad0` — six `{u32 bits, const char* name}` entries, in image order. The order is
 /// load-bearing twice over: `0x6f1990` scans it linearly, and `0x6f1a00` answers with the **first**
@@ -248,13 +271,13 @@ pub fn name_v(j: JustifyV) -> &'static str {
 
 /// The `Usage:` string `SetJustifyH` raises on a miss (`.rdata 0x87c77c`). The `%s` is spelled as
 /// the widget type, matching the shipped convention in `script::font_block`.
-pub fn usage_h(widget: &str) -> mlua::Error {
-    mlua::Error::runtime(format!("Usage: <{widget}>:SetJustifyH(\"justify\")"))
+pub fn usage_h_message(widget: &str) -> String {
+    format!("Usage: <{widget}>:SetJustifyH(\"justify\")")
 }
 
 /// The `Usage:` string `SetJustifyV` raises on a miss (`.rdata 0x87c7a0`).
-pub fn usage_v(widget: &str) -> mlua::Error {
-    mlua::Error::runtime(format!("Usage: <{widget}>:SetJustifyV(\"justify\")"))
+pub fn usage_v_message(widget: &str) -> String {
+    format!("Usage: <{widget}>:SetJustifyV(\"justify\")")
 }
 
 #[cfg(test)]

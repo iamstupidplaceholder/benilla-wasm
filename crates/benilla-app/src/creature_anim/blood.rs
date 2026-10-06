@@ -45,7 +45,7 @@ pub(super) fn load_blood_tables(mut commands: Commands, assets: Option<Res<World
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_blood_catalog(&mut chain)
+        benilla_formats::load_blood_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {

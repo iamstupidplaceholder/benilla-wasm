@@ -37,6 +37,10 @@ pub(crate) struct LockHighlight(pub(crate) bool);
 /// components, so presence alone can't distinguish the fallback).
 #[derive(Component)]
 pub(crate) struct FallbackFace;
+
+/// Login controls hidden during browser startup; the scene backdrop is independent.
+#[derive(Component)]
+pub(crate) struct StartupChrome;
 /// An icon button's name label (the ref's `HighlightText`: visible on hover/selected — always,
 /// without icon art).
 #[derive(Component)]

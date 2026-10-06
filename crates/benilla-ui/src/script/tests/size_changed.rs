@@ -190,7 +190,7 @@ fn the_on_size_changed_watch_list_is_exactly_the_frames_carrying_the_script() {
     )
     .unwrap();
     let watched = |s: &crate::script::UiScript| {
-        s.lua()
+        s.vm()
             .app_data_ref::<Model>()
             .expect("model app_data")
             .on_size_changed_frames

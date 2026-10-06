@@ -6,13 +6,12 @@
 
 use std::sync::Arc;
 
-use benilla_assets::{M2Model, ModelSubmesh};
+use benilla_assets::{gpu_table::GpuTable, M2Model, ModelSubmesh};
 use benilla_formats::ModelBlend;
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::NoAutoAabb;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
-use bevy::render::render_resource::Buffer;
 
 use crate::billboard::BillboardCard;
 use crate::doodad_anim::DoodadAnimHost;
@@ -86,7 +85,7 @@ pub fn spawn_model_entities(
     commands: &mut Commands,
     mat_cache: &mut MaterialCache,
     materials: &mut Assets<WowModelMaterial>,
-    light: &Buffer,
+    light: &GpuTable,
     submeshes: &[ModelSubmesh],
     // The model's app-built render forms (decision 0834), index-parallel with `submeshes`: the
     // static handle + its build-time `Aabb` per batch, and the skinned twins when this model's

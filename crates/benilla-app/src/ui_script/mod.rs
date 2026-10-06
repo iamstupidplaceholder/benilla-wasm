@@ -47,12 +47,17 @@ mod session;
 /// missing an input.
 pub(crate) mod gate;
 
+#[cfg(feature = "port-gates")]
+pub use extract::port_gates::verify_ui_paint_host_boundary;
+#[cfg(feature = "port-gates")]
+pub(crate) use lifecycle::port_gates;
 pub(crate) use session::VmMemo;
 
 // The manifest's loaders read as `ui_script::…` at every call site, including the tests' `super::`.
 // `load_default_ui` is no longer test-only: the addon harness (1188 phase 6) loads the whole
 // shipped interface under each surveyed addon, because roughly half of what an addon calls is
 // FrameXML's Lua rather than the engine's (decision 1190).
+#[cfg(any(test, all(not(target_arch = "wasm32"), feature = "dev")))]
 pub(crate) use manifest::load_default_ui;
 pub(crate) use manifest::{load_font_registry, load_ingame_ui};
 
@@ -162,15 +167,7 @@ pub(crate) struct UiFrameCost {
     pub(crate) dropped: usize,
 }
 
-/// Does anything want [`UiFrameCost`] filled in this run? Measuring the split costs a clock read
-/// per phase plus the churn strings, so the pass only pays when asked.
-///
-/// `WOW_UI_COST=1` (this module's own `[ui-cost]` line) arms it inline; the hover recorder arms it
-/// by setting this — the direction that keeps the pass free of the instrument's name, and the
-/// reason the flag is a resource rather than an env read here (decision 1174). Default `false` is
-/// the player answer.
-#[derive(Resource, Default)]
-pub(crate) struct UiCostWanted(pub(crate) bool);
+pub(crate) use crate::ui_cost::UiCostWanted;
 
 /// The frame the cursor is currently over (a mouse-enabled, visible player-UI frame), or `None`.
 /// Written by [`feed_ui_input`], read by the pointer arbiter below so world-pick
@@ -225,6 +222,11 @@ pub(crate) struct UiKeyboardCapture {
 /// yield exactly as they do for a hovered click.
 #[derive(Resource, Default)]
 pub(crate) struct PlayerUiClickConsumed(pub(crate) bool);
+
+/// Some browser UI domains await real sprite bytes. Keeps extraction polling;
+/// input admission is per presented frame, never a whole-interface lock.
+#[derive(Resource, Default)]
+pub(crate) struct UiArtPending(pub(crate) bool);
 
 /// Set each frame by [`feed_ui_input`] (after the mouse feed, so a same-frame pickup counts):
 /// whether the cursor currently carries a payload ([`UiScript::cursor_payload`]) — a `Send`
@@ -331,7 +333,7 @@ pub(crate) struct UiInput;
 #[derive(Resource)]
 pub(crate) struct UiClock {
     /// The `Instant` leg: `Time<Real>::last_update()` at the tick that produced [`Self::ui_now`].
-    pub(crate) anchor: std::time::Instant,
+    pub(crate) anchor: benilla_time::Instant,
     /// The `GetTime` leg: the clock's value after that tick (seconds since this process started).
     pub(crate) ui_now: f64,
 }
@@ -341,7 +343,7 @@ pub(crate) struct UiClock {
 impl Default for UiClock {
     fn default() -> Self {
         Self {
-            anchor: std::time::Instant::now(),
+            anchor: benilla_time::Instant::now(),
             ui_now: 0.0,
         }
     }
@@ -358,64 +360,14 @@ pub(crate) fn framexml_digest() -> String {
     content::digest()
 }
 
-pub(crate) fn run_or_warn(script: &benilla_ui::script::UiScript, chunk: &str) {
+pub(crate) fn run_or_warn(script: &mut benilla_ui::script::UiScript, chunk: &str) {
     if let Err(e) = script.run(chunk) {
         warn!("ui_script: chunk failed: {e}");
     }
 }
 
-/// The reference's `uiScale` cvar — the user dial on TOP of the 768-virtual base (decision 0584):
-/// px-per-UI-unit multiplies by it, so the VM's virtual screen is `768/uiScale` units tall — the
-/// same law that makes the reference's `uiScale = 768/screenH` its known pixel-perfect setting.
-/// Folded into the one seam scale by [`seam_scale`]; at `1.0` (this `Default`, what every test
-/// pins) the pipeline is bit-identical to the pre-dial 0582 behavior. The app inserts
-/// [`default_ui_scale`] instead — the director's taste default, `WOW_UI_SCALE=` per-run override —
-/// until a real cvar system subsumes this dial (0582's named residual).
-#[derive(Resource)]
-pub(crate) struct UiScaleCvar(pub(crate) f32);
-
-impl Default for UiScaleCvar {
-    fn default() -> Self {
-        Self(1.0)
-    }
-}
-
-/// The shipped default (the reference's slider spans 0.64..1.0; 1.0 read oversized to the
-/// director's eye — the taste call this dial exists for).
-///
-/// **It also happens to be what the reference itself lands on above ~853 px tall**, which we did
-/// not know when it was chosen (wow-re `system/ui/scratch/modelframe-uiscale-law.md`, out of the
-/// autocast-shine thread): `0x492f70` computes `max((H > 768) ? 768/H : 1.0, 0.9)` and is called
-/// **both** on a mode set and from the `useUiScale`-OFF leg (`0x4908ad`) — and OFF is the shipped
-/// default (`0x8430c0` = `"0"`). So the reference is 1.0 at 768 and below, 0.96 at 1280×800, and
-/// **0.9 at 1080p and 1440p**. Our flat 0.9 therefore agrees with it on every modern window and
-/// diverges only *below* ~853 px tall, where the reference is nearer 1.0. Left alone deliberately:
-/// this constant is a director taste call, and the divergence is confined to window heights we
-/// do not ship against. The reference's own law is written here so the next session inherits it
-/// rather than re-deriving it.
-pub(crate) const DEFAULT_UI_SCALE: f32 = 0.9;
-
-/// The app's `uiScale`: `WOW_UI_SCALE=` if set (clamped to the plausible dial range), else
-/// [`DEFAULT_UI_SCALE`] — the env override makes taste iteration a relaunch, not a rebuild.
-fn default_ui_scale() -> f32 {
-    std::env::var("WOW_UI_SCALE")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .map(|v| v.clamp(0.5, 1.5))
-        .unwrap_or(DEFAULT_UI_SCALE)
-}
-
-/// THE seam scale `s` (decision 0582 + the 0584 dial): window px per UI unit —
-/// `windowH/768 × uiScale`. Every crossing of the VM boundary uses this one number: extraction
-/// ×s out, mouse ÷s in, measures at ×s answered ÷s, the atlas bakes at ×s. A degenerate window
-/// (h ≤ 0, the pre-winit frame) is identity.
-pub(crate) fn seam_scale(window_h: f32, ui_scale: f32) -> f32 {
-    if window_h > 0.0 {
-        window_h / 768.0 * ui_scale
-    } else {
-        1.0
-    }
-}
+use crate::ui_scale::default_ui_scale;
+pub(crate) use crate::ui_scale::{seam_scale, UiScaleCvar};
 
 /// Adds the Lua UI host as a `NonSend` resource (an mlua VM is `!Send`) and the per-frame
 /// tick → resolve → extract pipeline into [`UiQuads`], plus the input pass ([`feed_ui_input`]).
@@ -457,6 +409,9 @@ impl Plugin for UiScriptPlugin {
             // the hover recorder is armed; the producer owns the resource so any minimal app that
             // runs the UI pass (the extract tests) has it.
             .init_resource::<UiFrameCost>()
+            // Geometry output mailbox written by paint_script; PortraitPlugin
+            // consumes it when portrait booths are installed.
+            .init_resource::<crate::portrait::BoothPanes>()
             .init_resource::<UiCostWanted>()
             .init_resource::<PointerOverUi>()
             .init_resource::<SyntheticPointer>()
@@ -470,6 +425,7 @@ impl Plugin for UiScriptPlugin {
             .init_resource::<PlayerUiHover>()
             .init_resource::<UiKeyboardCapture>()
             .init_resource::<PlayerUiClickConsumed>()
+            .init_resource::<UiArtPending>()
             .init_resource::<CursorPayloadHeld>()
             .init_resource::<UiClock>()
             .init_resource::<AddOnIdentity>()
@@ -513,7 +469,12 @@ impl Plugin for UiScriptPlugin {
             // load.
             .add_systems(
                 PreUpdate,
-                (run_pending_reload, lifecycle::run_pending_entry_load).chain(),
+                (
+                    lifecycle::run_pending_boot,
+                    run_pending_reload,
+                    lifecycle::run_pending_entry_load,
+                )
+                    .chain(),
             )
             // **The three UI phases, in order** (decision 2304): every push after the net
             // drain, then the tick, then the paint. `UiFeed`'s own doc has the why; `UiInput`
@@ -602,7 +563,7 @@ fn capture_ui_active(capture: Option<Res<crate::run_mode::CaptureMode>>) -> bool
 fn arbitrate_pointer_over_ui(
     egui: Option<Res<EguiPointerOver>>,
     hover: Res<PlayerUiHover>,
-    plate_hover: Res<crate::vplates::PlateHover>,
+    plate_hover: Option<Res<crate::vplates::PlateHover>>,
     mut over: ResMut<PointerOverUi>,
     mut panel: ResMut<PointerOverUiPanel>,
 ) {
@@ -615,7 +576,7 @@ fn arbitrate_pointer_over_ui(
     // A nameplate is mouse-enabled UI and it is not CHROME — see [`PointerOverUiPanel`]. The plate
     // hover is last frame's (the plate driver runs after the camera), which is the same vintage the
     // camera's own plate exception has always used.
-    panel.0 = over.0 && plate_hover.0.is_none();
+    panel.0 = over.0 && plate_hover.as_deref().is_none_or(|hover| hover.0.is_none());
 }
 
 /// The session lifecycle — the VM's birth, identity, death, and the reload. Every edge function
@@ -966,11 +927,15 @@ pub(crate) fn fire_chat_login(s: &mut benilla_ui::script::UiScript) {
 /// which key and which numbers a `$d` or `$s` token wants; it has no business knowing about a
 /// script VM or carrying a printf-family formatter, and it depends on neither crate that has one.
 /// So it names the key, and this renders it.
+/// Fill a `GlobalStrings` template off the VM: `text` is `get` plus the `%d` holes.
+/// Takes the lookup rather than the script so the borrow chains — the caller holds
+/// one exclusive VM borrow through `get`, and this adds no second one (a sibling
+/// closure over the same script would not compile).
 pub(crate) fn token_text(
-    script: &benilla_ui::script::UiScript,
-) -> impl Fn(&str, &[i64]) -> Option<String> + '_ {
+    get: &mut dyn FnMut(&str) -> Option<String>,
+) -> impl FnMut(&str, &[i64]) -> Option<String> + '_ {
     |key: &str, args: &[i64]| {
-        let template = benilla_ui::strings::global(script.lua(), key)?;
+        let template = get(key)?;
         let args: Vec<_> = args
             .iter()
             .map(|n| benilla_ui::strings::Arg::D(*n))
@@ -982,7 +947,7 @@ pub(crate) fn token_text(
 /// [`test_ui::load_ui`] for a test module OUTSIDE `ui_script` — `ui_action::feed_tests` drives the
 /// real `UIErrorsFrame` end to end and needs the same both-stores reader everything else uses.
 #[cfg(test)]
-pub(crate) fn load_ui_for_test(script: &benilla_ui::script::UiScript, entry: &str) -> usize {
+pub(crate) fn load_ui_for_test(script: &mut benilla_ui::script::UiScript, entry: &str) -> usize {
     test_ui::load_ui(script, entry)
 }
 

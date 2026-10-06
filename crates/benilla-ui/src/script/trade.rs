@@ -25,9 +25,9 @@
 //! `CMSG_UNACCEPT_TRADE` / `CMSG_CANCEL_TRADE`. Setting items/gold onto the window (the drag-drop
 //! slots + the money widget) is decision 0592 P2.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
-use super::binding_abi::flag;
+use super::binding_abi::neutral_flag;
 use super::cursor::{self, CursorPayload};
 use super::Model;
 
@@ -214,40 +214,29 @@ fn click_trade_button(model: &mut Model, id: u32) {
 }
 
 /// Register the trade globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetTradePlayerItemInfo(id) → name, texture, numItems, isUsable, enchantment (our own offer;
     // TradeFrame.lua l.55). An empty/out-of-range slot answers nil.
-    g.set(
-        "GetTradePlayerItemInfo",
-        lua.create_function(|lua, id: usize| {
-            let (slot, usable) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let slot = slot_at(&model, id, |t| &t.player);
-                let usable = slot
-                    .as_ref()
-                    .is_none_or(|s| super::item_stats::item_usable_by_id(&model, s.item_id));
-                (slot, usable)
-            };
-            let Some(s) = slot else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let opt_str = |v: &Option<String>| -> mlua::Result<Value> {
-                Ok(match v {
-                    Some(s) => Value::String(lua.create_string(s)?),
-                    None => Value::Nil,
-                })
-            };
-            Ok(MultiValue::from_vec(vec![
-                opt_str(&s.name)?,
-                opt_str(&s.texture)?,
-                Value::Integer(i64::from(s.count.max(1))),
-                flag(usable),
-                opt_str(&s.enchantment)?,
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetTradePlayerItemInfo", |lua, id: usize| {
+        let (slot, usable) = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let slot = slot_at(&model, id, |t| &t.player);
+            let usable = slot
+                .as_ref()
+                .is_none_or(|s| super::item_stats::item_usable_by_id(&model, s.item_id));
+            (slot, usable)
+        };
+        let Some(s) = slot else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            s.name.map_or(Value::Nil, Value::from),
+            s.texture.map_or(Value::Nil, Value::from),
+            Value::Integer(i64::from(s.count.max(1))),
+            neutral_flag(usable),
+            s.enchantment.map_or(Value::Nil, Value::from),
+        ]))
+    })?;
 
     // GetTradePlayerItemLink(id) / GetTradeTargetItemLink(id) → the slot's escaped item link, or
     // nil for an empty slot / one whose template answer is still in flight.
@@ -260,206 +249,152 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("GetTradePlayerItemLink", true),
         ("GetTradeTargetItemLink", false),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, id: usize| {
-                let link = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    let slot = if side {
-                        slot_at(&model, id, |t| &t.player)
-                    } else {
-                        slot_at(&model, id, |t| &t.target)
-                    };
-                    slot.and_then(|s| s.link.clone())
+        lua.register_function(name, move |lua, id: usize| {
+            let link = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let slot = if side {
+                    slot_at(&model, id, |t| &t.player)
+                } else {
+                    slot_at(&model, id, |t| &t.target)
                 };
-                match link {
-                    Some(link) => Ok(Value::String(lua.create_string(&link)?)),
-                    None => Ok(Value::Nil),
-                }
-            })?,
-        )?;
+                slot.and_then(|s| s.link.clone())
+            };
+            Ok(link.map_or(Value::Nil, Value::from))
+        })?;
     }
 
     // GetTradeTargetItemInfo(id) → name, texture, numItems, quality, isUsable, enchantment (the
     // partner's offer; TradeFrame.lua l.84 — the extra `quality` is the recipient-only colour).
-    g.set(
-        "GetTradeTargetItemInfo",
-        lua.create_function(|lua, id: usize| {
-            let (slot, usable) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let slot = slot_at(&model, id, |t| &t.target);
-                let usable = slot
-                    .as_ref()
-                    .is_none_or(|s| super::item_stats::item_usable_by_id(&model, s.item_id));
-                (slot, usable)
-            };
-            let Some(s) = slot else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let opt_str = |v: &Option<String>| -> mlua::Result<Value> {
-                Ok(match v {
-                    Some(s) => Value::String(lua.create_string(s)?),
-                    None => Value::Nil,
-                })
-            };
-            let quality = match s.quality {
-                Some(q) => Value::Integer(i64::from(q)),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                opt_str(&s.name)?,
-                opt_str(&s.texture)?,
-                Value::Integer(i64::from(s.count.max(1))),
-                quality,
-                flag(usable),
-                opt_str(&s.enchantment)?,
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetTradeTargetItemInfo", |lua, id: usize| {
+        let (slot, usable) = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let slot = slot_at(&model, id, |t| &t.target);
+            let usable = slot
+                .as_ref()
+                .is_none_or(|s| super::item_stats::item_usable_by_id(&model, s.item_id));
+            (slot, usable)
+        };
+        let Some(s) = slot else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let quality = match s.quality {
+            Some(q) => Value::Integer(i64::from(q)),
+            None => Value::Nil,
+        };
+        Ok(MultiValue::from(vec![
+            s.name.map_or(Value::Nil, Value::from),
+            s.texture.map_or(Value::Nil, Value::from),
+            Value::Integer(i64::from(s.count.max(1))),
+            quality,
+            neutral_flag(usable),
+            s.enchantment.map_or(Value::Nil, Value::from),
+        ]))
+    })?;
 
     // GetPlayerTradeMoney() / GetTargetTradeMoney() → the two gold amounts, copper (TradeFrame.lua
     // l.165/l.585). 0 when no trade is open.
-    g.set(
-        "GetPlayerTradeMoney",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(gold(&model, |t| &t.player)))
-        })?,
-    )?;
-    g.set(
-        "GetTargetTradeMoney",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(gold(&model, |t| &t.target)))
-        })?,
-    )?;
+    lua.register_function("GetPlayerTradeMoney", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(gold(&model, |t| &t.player)))
+    })?;
+    lua.register_function("GetTargetTradeMoney", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(gold(&model, |t| &t.target)))
+    })?;
 
     // GetTradePartnerName() → the partner's name (benilla's header getter, in place of the
     // reference's UnitName("NPC") — see the module doc). nil while in flight / no trade open.
-    g.set(
-        "GetTradePartnerName",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(
-                match model.trade.as_ref().and_then(|t| t.partner_name.clone()) {
-                    Some(n) => Value::String(lua.create_string(&n)?),
-                    None => Value::Nil,
-                },
-            )
-        })?,
-    )?;
+    lua.register_function("GetTradePartnerName", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .trade
+            .as_ref()
+            .and_then(|t| t.partner_name.clone())
+            .map_or(Value::Nil, Value::from))
+    })?;
 
     // InitiateTrade(unit) — queue the right-click menu's trade offer against a unit token; the app
     // resolves it → player guid → CMSG_INITIATE_TRADE (the UnitPopup TRADE row, decision 0592 P1).
-    g.set(
-        "InitiateTrade",
-        lua.create_function(|lua, unit: String| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .trade_initiates
-                .push(unit);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("InitiateTrade", |lua, unit: String| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .trade_initiates
+            .push(unit);
+        Ok(())
+    })?;
 
     // AcceptTrade() / CancelTradeAccept() / CloseTrade() — the Trade / un-accept / cancel verbs the
     // app maps to CMSG_ACCEPT_TRADE / CMSG_UNACCEPT_TRADE / CMSG_CANCEL_TRADE (decision 0592 P1).
-    g.set(
-        "AcceptTrade",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .trade_accept = true;
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "CancelTradeAccept",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .trade_unaccept = true;
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "CloseTrade",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .trade_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("AcceptTrade", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .trade_accept = true;
+        Ok(())
+    })?;
+    lua.register_function("CancelTradeAccept", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .trade_unaccept = true;
+        Ok(())
+    })?;
+    lua.register_function("CloseTrade", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .trade_close = true;
+        Ok(())
+    })?;
     // BeginTrade() / CancelTrade() — the TRADE dialog's pair (wow-re `staticpopup-dialog-bindings.md`
     // §2: 0 args, 0 returns, no gate; `0x117` and `0x11C`, both empty). The dialog itself can never
     // show in 1.12.1 (TRADE_REQUEST is signalled by nothing), so both are an addon's reach;
     // CancelTrade is the bare packet, CloseTrade above the same opcode wrapped in the teardown.
-    g.set(
-        "BeginTrade",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .trade_begin = true;
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "CancelTrade",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .trade_cancel = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("BeginTrade", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .trade_begin = true;
+        Ok(())
+    })?;
+    lua.register_function("CancelTrade", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .trade_cancel = true;
+        Ok(())
+    })?;
 
     // SetTradeMoney(copper) — offer this many copper on our side (the money input's value-changed
     // callback); the app maps it to CMSG_SET_TRADE_GOLD (decision 0592 P2). `i64` in, clamped, so a
     // fractional/negative Lua number can never panic the coercion.
-    g.set(
-        "SetTradeMoney",
-        lua.create_function(|lua, copper: Value| {
-            // `0x4c0820` (decision 1965): a non-number RAISES; the low dword goes on the wire as an
-            // absolute offer, gated on the purse covering it — a refusal is silent at every level.
-            let n = crate::script::binding_abi::number_arg(
-                lua,
-                copper,
-                "Usage: SetTradeMoney(amount)",
-            )? as u32;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if u64::from(n) > model.money {
-                return Ok(());
-            }
-            model.trade_set_money = Some(n);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetTradeMoney", |lua, copper: Value| {
+        // `0x4c0820` (decision 1965): a non-number RAISES; the low dword goes on the wire as an
+        // absolute offer, gated on the purse covering it — a refusal is silent at every level.
+        let n =
+            crate::script::binding_abi::neutral_number_arg(copper, "Usage: SetTradeMoney(amount)")?
+                as u32;
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if u64::from(n) > model.money {
+            return Ok(());
+        }
+        model.trade_set_money = Some(n);
+        Ok(())
+    })?;
 
     // ClickTradeButton(id) — drop a held bag item into / clear our trade slot `id` (1..=7); the app
     // maps it to CMSG_SET_TRADE_ITEM / CMSG_CLEAR_TRADE_ITEM (decision 0592 P2).
-    g.set(
-        "ClickTradeButton",
-        lua.create_function(|lua, id: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            click_trade_button(&mut model, id);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ClickTradeButton", |lua, id: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        click_trade_button(&mut model, id);
+        Ok(())
+    })?;
 
     // ClickTargetTradeButton(id) — the partner's column is read-only (their offer is server-driven);
     // inert in P2 (the shift-click item link is decision 0592 P3). Registered so the shared slot
     // handler can call it for the recipient side without erroring.
-    g.set(
-        "ClickTargetTradeButton",
-        lua.create_function(|lua, _id: u32| {
-            // The same money arm as `ClickTradeButton` (`0x4c00a3`, decision 1965): coins on the
-            // cursor go into OUR offer whichever side's slot was clicked, the index unread.
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            cursor::money::add_trade_money(&mut model);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ClickTargetTradeButton", |lua, _id: u32| {
+        // The same money arm as `ClickTradeButton` (`0x4c00a3`, decision 1965): coins on the
+        // cursor go into OUR offer whichever side's slot was clicked, the index unread.
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        cursor::money::add_trade_money(&mut model);
+        Ok(())
+    })?;
 
     Ok(())
 }

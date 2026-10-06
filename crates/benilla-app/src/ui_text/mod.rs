@@ -64,6 +64,12 @@ mod measurer;
 mod outline;
 mod pack;
 
+#[cfg(any(target_arch = "wasm32", feature = "port-gates"))]
+pub(crate) use engine::client_font_files;
+#[cfg(feature = "port-gates")]
+pub use engine::verify_font_host_boundary;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use engine::FontInit;
 pub(crate) use engine::{UiFontAtlas, UiTextPlugin};
 
 use benilla_ui::script::Outline;

@@ -15,20 +15,20 @@ use super::test_ui::load_ui as load_xml;
 fn harness() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // The stock file writes `CastingBarText:SetText(FAILED)` rather than a literal, so the window
     // needs GlobalStrings — which the manifest has above it, and which our own retired
     // `CastingBar.xml` did not need because it hardcoded "Failed".
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\CastingBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\CastingBarFrame.xml");
     s
 }
 
-fn bar_value(s: &UiScript) -> f64 {
+fn bar_value(s: &mut UiScript) -> f64 {
     s.eval::<f64>("return CastingBarFrame:GetValue()").unwrap()
 }
 
-fn bar_color(s: &UiScript) -> (f64, f64, f64) {
+fn bar_color(s: &mut UiScript) -> (f64, f64, f64) {
     s.eval::<(f64, f64, f64)>("local r, g, b = CastingBarFrame:GetStatusBarColor(); return r, g, b")
         .unwrap()
 }
@@ -66,18 +66,18 @@ fn cast_fills_then_completes_green_and_fades() {
         s.eval::<String>("return CastingBarText:GetText()").unwrap(),
         "Frostbolt"
     );
-    let (r, g, b) = bar_color(&s);
+    let (r, g, b) = bar_color(&mut s);
     assert!(
         (r - 1.0).abs() < 1e-6 && (g - 0.7).abs() < 1e-6 && b.abs() < 1e-6,
         "casting is orange (got {r} {g} {b})"
     );
 
     // The fill tracks GetTime: 1.5 s in (15 ticks) the value sits mid-window.
-    let start = bar_value(&s);
+    let start = bar_value(&mut s);
     for _ in 0..15 {
         s.tick(0.1);
     }
-    let mid = bar_value(&s);
+    let mid = bar_value(&mut s);
     assert!(
         (mid - start - 1.5).abs() < 0.05,
         "1.5s of ticks advance the fill by 1.5 (got {})",
@@ -86,7 +86,7 @@ fn cast_fills_then_completes_green_and_fades() {
 
     // Completion: green, full, then the fade takes it below full alpha and eventually hides.
     s.fire_event("SPELLCAST_STOP", vec![]);
-    assert_eq!(bar_color(&s), (0.0, 1.0, 0.0), "completed is green");
+    assert_eq!(bar_color(&mut s), (0.0, 1.0, 0.0), "completed is green");
     for _ in 0..30 {
         s.tick(0.1);
     }
@@ -113,7 +113,7 @@ fn a_hit_pushes_the_bar_back_it_does_not_cancel() {
     }
     let minmax = "local a, b = CastingBarFrame:GetMinMaxValues(); return a, b";
     let (_, max_before) = s.eval::<(f64, f64)>(minmax).unwrap();
-    let remaining_before = max_before - bar_value(&s);
+    let remaining_before = max_before - bar_value(&mut s);
     assert!(
         (remaining_before - 1.5).abs() < 0.05,
         "half-way: ~1.5 s left (got {remaining_before})"
@@ -125,7 +125,7 @@ fn a_hit_pushes_the_bar_back_it_does_not_cancel() {
         s.eval::<bool>("return CastingBarFrame:IsShown()").unwrap(),
         "a hit never hides the bar"
     );
-    let (r, g, b) = bar_color(&s);
+    let (r, g, b) = bar_color(&mut s);
     assert!(
         (r - 1.0).abs() < 1e-6 && (g - 0.7).abs() < 1e-6 && b.abs() < 1e-6,
         "still orange — not failed/red (got {r} {g} {b})"
@@ -135,7 +135,7 @@ fn a_hit_pushes_the_bar_back_it_does_not_cancel() {
         (max_after - max_before - 0.5).abs() < 1e-6,
         "the window end moved out by the 0.5 s pushback"
     );
-    let remaining_after = max_after - bar_value(&s);
+    let remaining_after = max_after - bar_value(&mut s);
     assert!(
         (remaining_after - remaining_before - 0.5).abs() < 0.05,
         "the cast now has ~0.5 s more to run (spark jumped back): {remaining_before} -> {remaining_after}"
@@ -151,7 +151,7 @@ fn failed_cast_turns_red_holds_then_fades() {
         vec![ScriptValue::Str("Frostbolt".into()), ScriptValue::Int(3000)],
     );
     s.fire_event("SPELLCAST_FAILED", vec![]);
-    assert_eq!(bar_color(&s), (1.0, 0.0, 0.0), "failed is red");
+    assert_eq!(bar_color(&mut s), (1.0, 0.0, 0.0), "failed is red");
     assert_eq!(
         s.eval::<String>("return CastingBarText:GetText()").unwrap(),
         "Failed"
@@ -203,17 +203,17 @@ fn channel_counts_down_not_up() {
     // green** (`CastingBarType.Channel`'s `classicFillColor = CASTBAR_CLASSIC_GREEN`) — a real
     // behaviour of a different client, which is why this is a gate and not a comment: if we ever
     // take Era's colour it is a deliberate deviation that has to come here first (decision 2284).
-    let (r, g, b) = bar_color(&s);
+    let (r, g, b) = bar_color(&mut s);
     assert!(
         (r - 1.0).abs() < 1e-6 && (g - 0.7).abs() < 1e-6 && b.abs() < 1e-6,
         "a channel opens orange, exactly like a cast (got {r} {g} {b})"
     );
 
-    let full = bar_value(&s);
+    let full = bar_value(&mut s);
     for _ in 0..10 {
         s.tick(0.1);
     }
-    let after_1s = bar_value(&s);
+    let after_1s = bar_value(&mut s);
     assert!(
         (full - after_1s - 1.0).abs() < 0.05,
         "a channel drains: 1s of ticks take the value DOWN by 1 (got {})",
@@ -223,14 +223,14 @@ fn channel_counts_down_not_up() {
     // The server's mid-channel correction re-anchors the window (pushback shortens it).
     s.fire_event("SPELLCAST_CHANNEL_UPDATE", vec![ScriptValue::Int(2000)]);
     s.tick(0.1);
-    let corrected = bar_value(&s);
+    let corrected = bar_value(&mut s);
     assert!(
         corrected < after_1s,
         "an update to 2s-left pulls the fill further down ({corrected} < {after_1s})"
     );
 
     s.fire_event("SPELLCAST_CHANNEL_STOP", vec![]);
-    assert_eq!(bar_color(&s), (0.0, 1.0, 0.0), "channel end flashes green");
+    assert_eq!(bar_color(&mut s), (0.0, 1.0, 0.0), "channel end flashes green");
     for _ in 0..30 {
         s.tick(0.1);
     }
@@ -279,7 +279,7 @@ fn a_finished_channel_fades_on_its_own_clock_and_the_late_stop_is_inert() {
         s.eval::<bool>("return CastingBarFrame:IsShown()").unwrap(),
         "still channelling at 0.9 s of a 1 s channel"
     );
-    let (r, g, b) = bar_color(&s);
+    let (r, g, b) = bar_color(&mut s);
     assert!(
         (r - 1.0).abs() < 1e-6 && (g - 0.7).abs() < 1e-6 && b.abs() < 1e-6,
         "never flashes green — a finished channel fades, it does not complete (got {r} {g} {b})"
@@ -447,7 +447,7 @@ fn the_fill_crops_its_texture_rather_than_stretching_it() {
 }
 
 /// The resolved bottom edge of a named frame, in UI units (y-up from the screen bottom).
-fn bottom(s: &UiScript, name: &str) -> f64 {
+fn bottom(s: &mut UiScript, name: &str) -> f64 {
     s.eval::<f64>(&format!("return {name}:GetBottom()"))
         .unwrap()
 }
@@ -462,32 +462,32 @@ fn bottom(s: &UiScript, name: &str) -> f64 {
 fn managed_positions_track_the_bottom_bar_stack() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\CastingBarFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml"); // the kit the chat menus build from
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml"); // the dropdown kit's MenuBackdrop reads TOOLTIP_DEFAULT_COLOR
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CastingBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml"); // the kit the chat menus build from
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml"); // the dropdown kit's MenuBackdrop reads TOOLTIP_DEFAULT_COLOR
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
 
     // The loader's post-load bootstrap, replayed with no bars in existence: the bare bases.
     s.run("UIParent_ManageFramePositions()").unwrap();
     s.resolve();
     assert_eq!(
-        bottom(&s, "CastingBarFrame"),
+        bottom(&mut s, "CastingBarFrame"),
         60.0,
         "baseY replaces the XML 55"
     );
-    assert_eq!(bottom(&s, "ChatFrame1"), 85.0, "chat baseY");
+    assert_eq!(bottom(&mut s, "ChatFrame1"), 85.0, "chat baseY");
 
     // The always-on bottom multibars appear (0270): bottomEither for the bar, bottomLeft for chat.
     // The bar stubs carry a no-op SetPoint: `MultiBarBottomLeft` and `ShapeshiftBarFrame` are
@@ -501,8 +501,8 @@ fn managed_positions_track_the_bottom_bar_stack() {
     s.run("SHOW_MULTI_ACTIONBAR_1 = 1 SHOW_MULTI_ACTIONBAR_2 = 1 UIParent_ManageFramePositions()")
         .unwrap();
     s.resolve();
-    assert_eq!(bottom(&s, "CastingBarFrame"), 100.0, "60 + bottomEither 40");
-    assert_eq!(bottom(&s, "ChatFrame1"), 102.0, "85 + bottomLeft 17");
+    assert_eq!(bottom(&mut s, "CastingBarFrame"), 100.0, "60 + bottomEither 40");
+    assert_eq!(bottom(&mut s, "ChatFrame1"), 102.0, "85 + bottomLeft 17");
 
     // The stance bar shows (the warrior at login): the pet term, plus chat's both-flags extra.
     // The pass's shapeshift-appearance arm (the reference's own, UIParent.lua:1705-1732 — in ours
@@ -519,9 +519,9 @@ fn managed_positions_track_the_bottom_bar_stack() {
     )
         .unwrap();
     s.resolve();
-    assert_eq!(bottom(&s, "CastingBarFrame"), 140.0, "60 + 40 + pet 40");
+    assert_eq!(bottom(&mut s, "CastingBarFrame"), 140.0, "60 + 40 + pet 40");
     assert_eq!(
-        bottom(&s, "ChatFrame1"),
+        bottom(&mut s, "ChatFrame1"),
         142.0,
         "85 + 17 + pet 17 + both-flags 23"
     );
@@ -530,8 +530,8 @@ fn managed_positions_track_the_bottom_bar_stack() {
     s.run("ShapeshiftBarFrame:Hide() UIParent_ManageFramePositions()")
         .unwrap();
     s.resolve();
-    assert_eq!(bottom(&s, "CastingBarFrame"), 100.0);
-    assert_eq!(bottom(&s, "ChatFrame1"), 102.0);
+    assert_eq!(bottom(&mut s, "CastingBarFrame"), 100.0);
+    assert_eq!(bottom(&mut s, "ChatFrame1"), 102.0);
 }
 
 /// **`CastingBarFrameStatusBar` is published, and it IS `CastingBarFrame`.**
@@ -553,7 +553,7 @@ fn managed_positions_track_the_bottom_bar_stack() {
 /// "exists" and still break every addon that drives the bar through it.
 #[test]
 fn the_casting_bar_publishes_its_status_bar_alias() {
-    let s = harness();
+    let mut s = harness();
     assert!(
         s.eval::<bool>("return CastingBarFrameStatusBar ~= nil")
             .unwrap(),
@@ -567,5 +567,5 @@ fn the_casting_bar_publishes_its_status_bar_alias() {
     // And it drives: the addons that index it call StatusBar methods straight through.
     s.run("CastingBarFrameStatusBar:SetMinMaxValues(0, 10) CastingBarFrameStatusBar:SetValue(4)")
         .unwrap();
-    assert!((bar_value(&s) - 4.0).abs() < 1e-9);
+    assert!((bar_value(&mut s) - 4.0).abs() < 1e-9);
 }

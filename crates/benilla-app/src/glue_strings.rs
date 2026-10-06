@@ -22,6 +22,9 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+use benilla_assets::LuaSource;
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::{LockRecover, WorldAssets};
 
 const GLUE_STRINGS: &str = "Interface\\GlueXML\\GlueStrings.lua";
@@ -62,6 +65,7 @@ impl GlueStrings {
 /// Two reads, and the **order is the whole point**: the base file, then the locale patch over it,
 /// exactly as `GlueXML.toc` sources them. A chain missing either one degrades on its own — no
 /// base means built-in captions, no patch means the base text.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn load_glue_strings(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let mut table = GlueStrings::default();
     if let Some(assets) = assets {
@@ -83,6 +87,74 @@ pub(crate) fn load_glue_strings(mut commands: Commands, assets: Option<Res<World
         }
     }
     commands.insert_resource(table);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource)]
+pub(crate) struct WebGlueStringLoads {
+    base: Handle<LuaSource>,
+    locale: Handle<LuaSource>,
+}
+
+/// Browser startup requests the same two production files through the existing
+/// asynchronous `mpq://` AssetServer source instead of opening `WorldAssets`.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn load_glue_strings(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(WebGlueStringLoads {
+        base: assets.load("mpq://interface/gluexml/gluestrings.lua"),
+        locale: assets.load("mpq://interface/gluexml/gluelocalization.lua"),
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn finish_web_glue_strings(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    sources: Res<Assets<LuaSource>>,
+    loads: Option<Res<WebGlueStringLoads>>,
+) {
+    let Some(loads) = loads else {
+        return;
+    };
+    let base = match assets.load_state(&loads.base) {
+        bevy::asset::LoadState::Loaded => {
+            let Some(source) = sources.get(&loads.base) else {
+                return;
+            };
+            Some(source.0.as_slice())
+        }
+        bevy::asset::LoadState::Failed(ref error) => {
+            warn!("glue strings unavailable ({error}) — built-in captions only");
+            None
+        }
+        _ => return,
+    };
+    let locale = match assets.load_state(&loads.locale) {
+        bevy::asset::LoadState::Loaded => {
+            let Some(source) = sources.get(&loads.locale) else {
+                return;
+            };
+            Some(source.0.as_slice())
+        }
+        bevy::asset::LoadState::Failed(ref error) => {
+            warn!("glue localization unavailable ({error}) — base strings only");
+            None
+        }
+        _ => return,
+    };
+
+    let mut table = GlueStrings::default();
+    if let Some(bytes) = base {
+        table.0 = parse_glue_strings(&String::from_utf8_lossy(bytes));
+    }
+    if let Some(bytes) = locale {
+        table
+            .0
+            .extend(parse_localize_overrides(&String::from_utf8_lossy(bytes)));
+    }
+    info!("browser glue strings READY: {} entries", table.0.len());
+    commands.insert_resource(table);
+    commands.remove_resource::<WebGlueStringLoads>();
 }
 
 /// Parse the `KEY = "value";` assignments (one per line; `\n`/`\t`/`\"`/`\\` escapes unfolded).

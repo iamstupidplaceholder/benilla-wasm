@@ -4,7 +4,8 @@
 //! Two consumers read exactly this table: the **aura tooltip's right column** ("Magic" on Ice
 //! Armor — wow-re `tooltip-content-law.md` §3-BUFF, the aura builder `0x52f880`), and the
 //! `debuffType` return of `UnitAura`/`UnitDebuff`, which FrameXML's `DebuffTypeColor` keys the
-//! debuff border tint on. Both take the name from this row; neither hard-codes it.
+//! debuff border tint on. The tooltip takes the localized name; the Lua API takes
+//! the invariant key in column 11, not the localized display text.
 //!
 //! **The gate is `[+0x28]`, not the id.** A row is named only when its `+0x28` field is nonzero —
 //! byte-verified in wow-re, and confirmed here on the shipped file: the 11 records are `{0 "",
@@ -17,11 +18,12 @@
 //! `ID@0`, `Name_Lang@1..8` (enUS at 1; every other locale is empty on 5875), `NameFlags@9`
 //! (`0x007F007E`, `0x003F007E` on the last two rows), the gate at `@10` (= `+0x28`), and `@11` —
 //! a second string column holding the *same* string as the name, populated on exactly the same
-//! four rows. Whatever `@11` is for, it is not what the tooltip reads; `@10` is.
+//! four rows. ruRU localizes column 1 but retains Magic/Curse/Disease/Poison in
+//! column 11: these are the keys used by original FrameXML's DebuffTypeColor.
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -32,6 +34,7 @@ use crate::dbc::{parse, str_at, u32_at};
 #[derive(Default)]
 pub struct SpellDispelTypes {
     names: HashMap<u32, String>,
+    keys: HashMap<u32, String>,
 }
 
 impl SpellDispelTypes {
@@ -39,6 +42,11 @@ impl SpellDispelTypes {
     /// spell has no dispel class (`dispel == 0`) or its class is one the gate withholds.
     pub fn name(&self, dispel: u32) -> Option<&str> {
         self.names.get(&dispel).map(String::as_str)
+    }
+
+    /// Locale-independent Lua debuff type key from column 11.
+    pub fn key(&self, dispel: u32) -> Option<&str> {
+        self.keys.get(&dispel).map(String::as_str)
     }
 
     pub fn len(&self) -> usize {
@@ -51,7 +59,7 @@ impl SpellDispelTypes {
 }
 
 /// Load `SpellDispelType.dbc` off the patch chain, keeping only the rows the `[+0x28]` gate names.
-pub fn load_spell_dispel_types(chain: &mut Chain) -> Result<SpellDispelTypes> {
+pub fn load_spell_dispel_types(chain: &mut impl FileSource) -> Result<SpellDispelTypes> {
     let bytes = chain
         .read_file("DBFilesClient\\SpellDispelType.dbc")
         .context("reading SpellDispelType.dbc")?;
@@ -65,6 +73,7 @@ pub fn load_spell_dispel_types(chain: &mut Chain) -> Result<SpellDispelTypes> {
     schema.add_field(SchemaField::new("Unknown11", FieldType::String));
     let set = parse(&bytes, schema, "SpellDispelType.dbc")?;
     let mut names = HashMap::new();
+    let mut keys = HashMap::new();
     for r in set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         // The gate first: a 0 here withholds the name however good the string is (Stealth, id 5).
@@ -74,8 +83,11 @@ pub fn load_spell_dispel_types(chain: &mut Chain) -> Result<SpellDispelTypes> {
         if let Some(name) = str_at(&set, r, 1).filter(|n| !n.is_empty()) {
             names.insert(id, name);
         }
+        if let Some(key) = str_at(&set, r, 11).filter(|n| !n.is_empty()) {
+            keys.insert(id, key);
+        }
     }
-    Ok(SpellDispelTypes { names })
+    Ok(SpellDispelTypes { names, keys })
 }
 
 #[cfg(test)]

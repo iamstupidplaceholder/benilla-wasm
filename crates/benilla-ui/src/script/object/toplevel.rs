@@ -98,61 +98,64 @@
 //! **`Frame:Lower()` is inert in build 5875** and inert here: `0x775b20` → `0x76a5c0` → `0x7652a0`,
 //! which is `xor eax,eax; ret 4` — a verified no-op stub whose frame argument is never read.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{Table, Value, Vm};
 
 use crate::layout::Rect;
 use crate::script::{Model, UiScript};
 use crate::widget::FrameHandle;
 
-use super::frame_handle_of;
+use super::frame_handle_of_context;
 
 /// Populate `m`'s toplevel/raise methods (see the module doc).
-pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm, methods: &Table) -> benilla_lua::Result<()> {
     // SetToplevel(flag) / IsToplevel() — flag word bit 0x1 (`0x775440`/`0x76a3c0`). A pure flag
     // write; the raise is entirely separate. The argument is an **optional** boolean defaulting to
     // TRUE (`0x775440` marshals it that way) — unlike `SetMovable`'s, so this takes a `Value` and
-    // reads absence as true rather than leaning on mlua's nil-is-false bool conversion.
-    m.set(
-        "SetToplevel",
-        lua.create_function(|lua, (this, flag): (Table, Option<Value>)| {
+    // reads absence as true rather than leaning on a nil-is-false bool conversion.
+    let set_toplevel = lua.create_function(
+        "Frame:SetToplevel",
+        |lua, (this, flag): (Table, Option<Value>)| {
             let on = match flag {
                 None => true,
                 Some(v) => !matches!(v, Value::Nil | Value::Boolean(false)),
             };
-            let h = frame_handle_of(lua, &this)?;
+            let h = frame_handle_of_context(lua, &this)?;
             lua.app_data_mut::<Model>()
                 .expect("model")
                 .arena
                 .set_toplevel(h, on);
             Ok(())
-        })?,
+        },
     )?;
-    m.set(
-        "IsToplevel",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(model.arena.is_toplevel(h)))
-        })?,
-    )?;
+    lua.table_set_function(methods, "SetToplevel", &set_toplevel)?;
+
+    let is_toplevel = lua.create_function("Frame:IsToplevel", |lua, this: Table| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(if model.arena.is_toplevel(h) {
+            Value::Integer(1)
+        } else {
+            Value::Nil
+        })
+    })?;
+    lua.table_set_function(methods, "IsToplevel", &is_toplevel)?;
     // Raise() — `0x775a50` → `0x76a5b0` → `0x7650f0(this, force = 1)`. Note it is legal on any
     // frame: the worker substitutes the nearest toplevel self-or-ancestor and does nothing at all
     // when there is none, so an addon calling it on a plain frame gets the reference's silence, not
     // an error.
-    m.set(
-        "Raise",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            raise(&mut model, h);
-            Ok(())
-        })?,
-    )?;
+    let raise_method = lua.create_function("Frame:Raise", |lua, this: Table| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        raise(&mut model, h);
+        Ok(())
+    })?;
+    lua.table_set_function(methods, "Raise", &raise_method)?;
     // Lower() — `0x775b20` → `0x76a5c0` → `0x7652a0` = `xor eax,eax; ret 4`. A VERIFIED no-op stub
     // in build 5875 (the frame argument is never read, and the call is direct, so this is
     // unconditionally what runs). Present because absence is a different behaviour — a nil-call
     // error where the reference silently does nothing.
-    m.set("Lower", lua.create_function(|_, _this: Table| Ok(()))?)?;
+    let lower = lua.create_function("Frame:Lower", |_, _this: Table| Ok(()))?;
+    lua.table_set_function(methods, "Lower", &lower)?;
     Ok(())
 }
 

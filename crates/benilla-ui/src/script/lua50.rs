@@ -107,7 +107,7 @@
 //!   also where the **degree-based** bare `sin`/`cos`/`tan` come from — a convention this crate's
 //!   stdlib layer had already reached independently.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 /// Members that exist in Lua 5.1 and **not** in Lua 5.0, by library.
 ///
@@ -130,25 +130,23 @@ mod table_size;
 
 /// Install the dialect. Runs **before** the WoW stdlib layer, so its aliases bind the 5.0-shaped
 /// functions rather than the 5.1 ones they replace.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
     // ── 1 · the `n`-based table library gets its 5.0 meaning back ─────────────────────────────
-    table_size::install(lua)?;
+    table_size::install(vm)?;
 
     // ── 2 · the 5.1-only members go ───────────────────────────────────────────────────────────
     for (lib, names) in REMOVED {
-        let Ok(t) = g.get::<Table>(*lib) else {
+        let Ok(t) = vm.global_table(lib) else {
             continue;
         };
         for name in *names {
-            t.set(*name, Value::Nil)?;
+            vm.table_set(&t, *name, Value::Nil)?;
         }
     }
     // `coroutine` is not in the 1.12 client's `_G` at all — not a member gap, a whole library the
     // client does not open. It was on `reference_surface`'s beyond-1.12 exception list as
     // "inherited rather than chosen"; it is now neither.
-    g.set("coroutine", Value::Nil)?;
+    vm.set_global("coroutine", Value::Nil)?;
 
     // `select` is 5.1's base library, not 5.0's, and the 1.12 client's `_G` has no row for it.
     // It sat on `reference_surface`'s beyond-1.12 exception list under a reason that expired twice
@@ -164,7 +162,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // ([`super::UiScript::arity`]). The handful that need the count *inside* Lua use 5.0's own
     // answer, `arg.n` — which this VM hands every vararg function since 2101 deleted the arm that
     // cleared `VARARG_NEEDSARG`.
-    g.set("select", Value::Nil)?;
+    vm.set_global("select", Value::Nil)?;
 
     // **The string type has NO metatable in 1.12**, so `("x"):upper()` — and `s:sub(1, 2)` for a
     // string `s` — raises `attempt to index a string value` there and quietly worked here. 5.1's
@@ -204,43 +202,41 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Same rule as `coroutine` above, one layer below `_G`: an addon writing `s:gsub(...)` or
     // testing `getmetatable("")` is asking which interpreter it is on, and the branch it should
     // get is 1.12's.
-    lua.set_type_metatable::<mlua::String>(None);
+    vm.remove_string_metatable();
 
     // ── 3 · the 5.0 compat globals the reference has and we lacked ────────────────────────────
     // `sort`/`foreach`/`foreachi` are in `reference/1.12-globals.tsv`; `setn` deliberately is not,
     // so no bare `setn` is installed even though `table.setn` now works. The client's compat set
     // is a specific subset, not "all of them".
-    let table: Table = g.get("table")?;
+    let table = vm.global_table("table")?;
     for name in ["sort", "foreach", "foreachi"] {
-        if let Ok(f) = table.get::<Value>(name) {
+        if let Ok(f) = vm.table_get(&table, name) {
             if !matches!(f, Value::Nil) {
-                g.set(name, f)?;
+                vm.set_global(name, f)?;
             }
         }
     }
     // `getn` is re-bound here rather than left to the stdlib layer's `table.getn or …` fallback,
     // so the bare global and the member are the same function and cannot drift apart.
-    g.set("getn", table.get::<Value>("getn")?)?;
+    let getn: Value = vm.table_get(&table, "getn")?;
+    vm.set_global("getn", getn)?;
 
     // ── 4 · what the binary said and nobody had asked (decision 1196) ─────────────────────────
     // `print` and `_VERSION` are **not in 1.12's `_G`** — the captured table says so and the RE
     // dispatch found why: the base library is a 36-entry array looped into `_G`, and neither is in
     // it (`_VERSION`'s literal is not even in the image). Both were on `reference_surface`'s
     // exception list as "inherited rather than chosen"; nothing of ours uses either.
-    g.set("print", Value::Nil)?;
-    g.set("_VERSION", Value::Nil)?;
+    vm.set_global("print", Value::Nil)?;
+    vm.set_global("_VERSION", Value::Nil)?;
 
     // `__pow` is a **global** in 1.12 (`function engine` in the captured table) — Lua 5.0
     // implements `^` by calling it, and 5.1 made the operator native, so the name simply
     // disappeared. Present here because an addon can see it, not because anything calls it.
-    g.set(
-        "__pow",
-        lua.create_function(|_, (a, b): (f64, f64)| Ok(a.powf(b)))?,
-    )?;
+    vm.register_function("__pow", |_, (a, b): (f64, f64)| Ok(a.powf(b)))?;
 
-    install_bit(lua)?;
-    install_gc(lua)?;
-    install_assert(lua)?;
+    install_bit(vm)?;
+    install_gc(vm)?;
+    install_assert(vm)?;
 
     Ok(())
 }
@@ -256,8 +252,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 /// Eight functions, the array's own order and its own names. Semantics are 32-bit two's
 /// complement, which is what every caller assumes (`band(flags, 0xFF)`); `arshift` is the
 /// sign-propagating shift `rshift` is not, which is the only pair anyone gets wrong.
-fn install_bit(lua: &Lua) -> mlua::Result<()> {
-    let bit = lua.create_table()?;
+fn install_bit(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let bit = vm.create_table()?;
     // Lua numbers are doubles; the client's bit ops truncate to a 32-bit int and return a signed
     // one. `as i64 as u32` is the C cast chain (`(unsigned)(int)x`) rather than a saturating one,
     // so `bnot(0)` answers -1 exactly as it does there.
@@ -267,51 +263,45 @@ fn install_bit(lua: &Lua) -> mlua::Result<()> {
     fn out(v: u32) -> i64 {
         v as i32 as i64
     }
-    bit.set(
-        "bnot",
-        lua.create_function(|_, a: f64| Ok(out(!u32_of(a))))?,
-    )?;
-    bit.set(
-        "band",
-        lua.create_function(|_, (a, b): (f64, f64)| Ok(out(u32_of(a) & u32_of(b))))?,
-    )?;
-    bit.set(
-        "bor",
-        lua.create_function(|_, (a, b): (f64, f64)| Ok(out(u32_of(a) | u32_of(b))))?,
-    )?;
-    bit.set(
-        "bxor",
-        lua.create_function(|_, (a, b): (f64, f64)| Ok(out(u32_of(a) ^ u32_of(b))))?,
-    )?;
+    let bnot = vm.create_function("bit.bnot", |_, a: f64| Ok(out(!u32_of(a))))?;
+    vm.table_set_function(&bit, "bnot", &bnot)?;
+    let band = vm.create_function("bit.band", |_, (a, b): (f64, f64)| {
+        Ok(out(u32_of(a) & u32_of(b)))
+    })?;
+    vm.table_set_function(&bit, "band", &band)?;
+    let bor = vm.create_function("bit.bor", |_, (a, b): (f64, f64)| {
+        Ok(out(u32_of(a) | u32_of(b)))
+    })?;
+    vm.table_set_function(&bit, "bor", &bor)?;
+    let bxor = vm.create_function("bit.bxor", |_, (a, b): (f64, f64)| {
+        Ok(out(u32_of(a) ^ u32_of(b)))
+    })?;
+    vm.table_set_function(&bit, "bxor", &bxor)?;
     // The shifts mask their count to 5 bits, like the x86 shift instructions the client compiles
     // to — `lshift(1, 32)` is `1`, not `0`, and an addon that shifts by a computed width relies on
     // it not trapping.
-    bit.set(
-        "lshift",
-        lua.create_function(|_, (a, n): (f64, f64)| Ok(out(u32_of(a) << (u32_of(n) & 31))))?,
-    )?;
-    bit.set(
-        "rshift",
-        lua.create_function(|_, (a, n): (f64, f64)| Ok(out(u32_of(a) >> (u32_of(n) & 31))))?,
-    )?;
-    bit.set(
-        "arshift",
-        lua.create_function(|_, (a, n): (f64, f64)| {
-            Ok(out(((u32_of(a) as i32) >> (u32_of(n) & 31)) as u32))
-        })?,
-    )?;
+    let lshift = vm.create_function("bit.lshift", |_, (a, n): (f64, f64)| {
+        Ok(out(u32_of(a) << (u32_of(n) & 31)))
+    })?;
+    vm.table_set_function(&bit, "lshift", &lshift)?;
+    let rshift = vm.create_function("bit.rshift", |_, (a, n): (f64, f64)| {
+        Ok(out(u32_of(a) >> (u32_of(n) & 31)))
+    })?;
+    vm.table_set_function(&bit, "rshift", &rshift)?;
+    let arshift = vm.create_function("bit.arshift", |_, (a, n): (f64, f64)| {
+        Ok(out(((u32_of(a) as i32) >> (u32_of(n) & 31)) as u32))
+    })?;
+    vm.table_set_function(&bit, "arshift", &arshift)?;
     // `bit.mod` — integer remainder, not `math.mod`'s float one. The library's own eighth entry.
-    bit.set(
-        "mod",
-        lua.create_function(|_, (a, b): (f64, f64)| {
-            let b = u32_of(b) as i32;
-            if b == 0 {
-                return Err(mlua::Error::runtime("bit.mod: division by zero"));
-            }
-            Ok(((u32_of(a) as i32) % b) as i64)
-        })?,
-    )?;
-    lua.globals().set("bit", bit)
+    let bit_mod = vm.create_function("bit.mod", |_, (a, b): (f64, f64)| {
+        let b = u32_of(b) as i32;
+        if b == 0 {
+            return Err(benilla_lua::Error::runtime("bit.mod: division by zero"));
+        }
+        Ok(((u32_of(a) as i32) % b) as i64)
+    })?;
+    vm.table_set_function(&bit, "mod", &bit_mod)?;
+    vm.set_global_table("bit", &bit)
 }
 
 /// The **garbage-collector pair** — `gcinfo` answers TWO numbers and `collectgarbage` answers
@@ -357,92 +347,83 @@ fn install_bit(lua: &Lua) -> mlua::Result<()> {
 /// silently prints `UNAVAILABLE` where the reference prints the number. `collectgarbage` has 14
 /// corpus call sites and every one of them is a bare `collectgarbage()` whose result is
 /// discarded, so its arity has no reach today — the argument contract is what this fixes.
-fn install_gc(lua: &Lua) -> mlua::Result<()> {
+fn install_gc(vm: &mut Vm) -> benilla_lua::Result<()> {
     /// 5.0's `GCthreshold`, in **bytes** — the registry cell standing in for `[G+0x24]`.
     const REG_GC_THRESHOLD: &str = "__benilla_gc_threshold";
     /// `lua_setgcthreshold 0x6f4400`'s unsigned bound, in kilobytes.
     const MAX_THRESHOLD_KB: i64 = 0x3f_ffff;
 
-    fn live_bytes(lua: &Lua) -> usize {
-        lua.used_memory()
-    }
     /// 5.0's post-collection rule, `luaC_collectgarbage`: `GCthreshold = 2 * nblocks`.
-    fn settle(lua: &Lua) -> mlua::Result<()> {
-        let t = u64::try_from(live_bytes(lua))
+    fn settle(lua: &mut impl LuaContext) -> benilla_lua::Result<()> {
+        let t = u64::try_from(lua.used_memory_bytes())
             .unwrap_or(u64::MAX)
             .saturating_mul(2);
-        lua.set_named_registry_value(REG_GC_THRESHOLD, t as f64)
+        lua.set_registry_value(REG_GC_THRESHOLD, Value::Number(t as f64))
     }
 
-    settle(lua)?;
+    settle(vm)?;
 
     // `gcinfo()` — no argument, two numbers, cannot raise.
-    lua.globals().set(
-        "gcinfo",
-        lua.create_function(|lua, ()| {
-            let live = live_bytes(lua);
-            let mut threshold: f64 = lua.named_registry_value(REG_GC_THRESHOLD).unwrap_or(0.0);
-            // **5.0's invariant, not just its arithmetic.** `luaC_checkGC` runs on allocation, so
-            // the instant `nblocks` reaches `GCthreshold` a collection fires and re-settles the
-            // threshold to `2 * nblocks`. A script therefore never observes a threshold at or
-            // below the live count. We have no allocation hook, so the same rule is applied on
-            // read: without it the cell set at construction goes stale as the heap grows and
-            // `gcinfo()` reports a threshold *under* its own count, a state 5.0 cannot hold.
-            if (live as f64) >= threshold {
-                settle(lua)?;
-                threshold = lua.named_registry_value(REG_GC_THRESHOLD).unwrap_or(0.0);
-            }
-            // Both shifts are the image's own `shr eax,0xa`.
-            Ok(((live >> 10) as f64, (threshold as u64 >> 10) as f64))
-        })?,
-    )?;
+    let gcinfo = vm.create_function("gcinfo", |lua, ()| {
+        let live = lua.used_memory_bytes();
+        let mut threshold: f64 = lua.get_registry(REG_GC_THRESHOLD).unwrap_or(0.0);
+        // **5.0's invariant, not just its arithmetic.** `luaC_checkGC` runs on allocation, so
+        // the instant `nblocks` reaches `GCthreshold` a collection fires and re-settles the
+        // threshold to `2 * nblocks`. A script therefore never observes a threshold at or
+        // below the live count. We have no allocation hook, so the same rule is applied on
+        // read: without it the cell set at construction goes stale as the heap grows and
+        // `gcinfo()` reports a threshold *under* its own count, a state 5.0 cannot hold.
+        if (live as f64) >= threshold {
+            settle(lua)?;
+            threshold = lua.get_registry(REG_GC_THRESHOLD).unwrap_or(0.0);
+        }
+        // Both shifts are the image's own `shr eax,0xa`.
+        Ok(((live >> 10) as f64, (threshold as u64 >> 10) as f64))
+    })?;
+    vm.set_global_function("gcinfo", &gcinfo)?;
 
     // `collectgarbage([n])` — a number, no return values, and a raise on anything that is not one.
-    lua.globals().set(
-        "collectgarbage",
-        lua.create_function(|lua, arg: Value| {
-            // `luaL_optnumber(L, 1, 0.0)`: absent or nil takes the default; a numeric STRING is
-            // coerced (the image's `lua_tonumber` runs `strtod`); anything else is a type error.
-            let n = match &arg {
-                Value::Nil => 0.0,
-                Value::Integer(i) => *i as f64,
-                Value::Number(n) => *n,
-                Value::String(s) => {
-                    match s.to_str().ok().and_then(|t| t.trim().parse::<f64>().ok()) {
-                        Some(v) => v,
-                        None => {
-                            return Err(mlua::Error::RuntimeError(format!(
-                                "bad argument #1 to `collectgarbage' (number expected, got {})",
-                                type_name(&arg)
-                            )))
-                        }
-                    }
-                }
-                other => {
-                    return Err(mlua::Error::RuntimeError(format!(
+    let collectgarbage = vm.create_function("collectgarbage", |lua, arg: Value| {
+        // `luaL_optnumber(L, 1, 0.0)`: absent or nil takes the default; a numeric STRING is
+        // coerced (the image's `lua_tonumber` runs `strtod`); anything else is a type error.
+        let n = match &arg {
+            Value::Nil => 0.0,
+            Value::Integer(i) => *i as f64,
+            Value::Number(n) => *n,
+            Value::String(s) => match s.as_str().ok().and_then(|t| t.trim().parse::<f64>().ok()) {
+                Some(v) => v,
+                None => {
+                    return Err(benilla_lua::Error::runtime(format!(
                         "bad argument #1 to `collectgarbage' (number expected, got {})",
-                        type_name(other)
+                        arg.type_name()
                     )))
                 }
-            };
-            // `_ftol` truncates toward zero; `0x6f4400`'s unsigned compare saturates a negative
-            // or oversized count to `0xffffffff` bytes.
-            let kb = n.trunc();
-            let threshold_bytes: f64 = if !(0.0..=MAX_THRESHOLD_KB as f64).contains(&kb) {
-                u32::MAX as f64
-            } else {
-                kb * 1024.0
-            };
-            lua.set_named_registry_value(REG_GC_THRESHOLD, threshold_bytes)?;
-            // `luaC_checkGC`: collect when the live count has reached the threshold, and the
-            // collection then re-settles it to `2 * nblocks`.
-            if (live_bytes(lua) as f64) >= threshold_bytes {
-                lua.gc_collect()?;
-                settle(lua)?;
+            },
+            other => {
+                return Err(benilla_lua::Error::runtime(format!(
+                    "bad argument #1 to `collectgarbage' (number expected, got {})",
+                    other.type_name()
+                )))
             }
-            Ok(())
-        })?,
-    )?;
+        };
+        // `_ftol` truncates toward zero; `0x6f4400`'s unsigned compare saturates a negative
+        // or oversized count to `0xffffffff` bytes.
+        let kb = n.trunc();
+        let threshold_bytes: f64 = if !(0.0..=MAX_THRESHOLD_KB as f64).contains(&kb) {
+            u32::MAX as f64
+        } else {
+            kb * 1024.0
+        };
+        lua.set_registry_value(REG_GC_THRESHOLD, Value::Number(threshold_bytes))?;
+        // `luaC_checkGC`: collect when the live count has reached the threshold, and the
+        // collection then re-settles it to `2 * nblocks`.
+        if (lua.used_memory_bytes() as f64) >= threshold_bytes {
+            lua.collect_garbage()?;
+            settle(lua)?;
+        }
+        Ok(())
+    })?;
+    vm.set_global_function("collectgarbage", &collectgarbage)?;
     Ok(())
 }
 
@@ -464,14 +445,14 @@ fn install_gc(lua: &Lua) -> mlua::Result<()> {
 /// 73 in the shipped FrameXML, and **zero** of them bind more than one name from the result. So
 /// this buys the contract, not a fixed addon — the same footing as `collectgarbage`'s argument
 /// (2136 §3). The next caller to write `local a, b = assert(f())` is the one that finds out.
-fn install_assert(lua: &Lua) -> mlua::Result<()> {
-    let f = lua.create_function(|lua, args: mlua::MultiValue| {
+fn install_assert(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let assert = vm.create_function("assert", |_, args: MultiValue| {
         let mut it = args.into_iter();
         // `luaL_checkany 0x6f4bb0` — an ABSENT argument 1 raises; an explicit `nil` does not, it
         // is the falsy leg below.
         let Some(v) = it.next() else {
-            return Err(mlua::Error::RuntimeError(
-                "bad argument #1 to `assert' (value expected)".into(),
+            return Err(benilla_lua::Error::runtime(
+                "bad argument #1 to `assert' (value expected)",
             ));
         };
         if matches!(v, Value::Nil | Value::Boolean(false)) {
@@ -479,35 +460,23 @@ fn install_assert(lua: &Lua) -> mlua::Result<()> {
             // raise, in 5.0's own quoting (2122).
             let msg = match it.next() {
                 None | Some(Value::Nil) => "assertion failed!".to_string(),
-                Some(other) => match lua.coerce_string(other.clone())? {
-                    Some(s) => s.to_string_lossy(),
-                    None => {
-                        return Err(mlua::Error::RuntimeError(format!(
-                            "bad argument #2 to `assert' (string expected, got {})",
-                            type_name(&other)
-                        )))
-                    }
-                },
+                Some(Value::String(s)) => s.to_string_lossy().into_owned(),
+                Some(Value::Integer(i)) => i.to_string(),
+                Some(Value::Number(n)) => crate::script::binding_abi::lua_number_text(n),
+                Some(other) => {
+                    return Err(benilla_lua::Error::runtime(format!(
+                        "bad argument #2 to `assert' (string expected, got {})",
+                        other.type_name()
+                    )));
+                }
             };
-            return Err(mlua::Error::RuntimeError(msg));
+            return Err(benilla_lua::Error::runtime(msg));
         }
         // `lua_settop(L, 1)`: the first argument, alone, whatever else was passed.
         Ok(v)
     })?;
-    lua.globals().set("assert", f)
-}
-
-fn type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Nil => "no value",
-        Value::Boolean(_) => "boolean",
-        Value::Integer(_) | Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Table(_) => "table",
-        Value::Function(_) => "function",
-        Value::Thread(_) => "thread",
-        _ => "userdata",
-    }
+    vm.set_global_function("assert", &assert)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -526,14 +495,14 @@ mod tests {
     /// `gckb`, guards it, and so prints `UNAVAILABLE` where the reference prints a number.
     #[test]
     fn gcinfo_answers_two_numbers_as_1_12_does() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.arity("gcinfo()").unwrap(),
             2,
             "`mov eax, 2` at 0x703239 — one value is 5.1's shape, not 1.12's"
         );
         assert_eq!(
-            s.eval::<Vec<String>>("local a, b = gcinfo() return { type(a), type(b) }")
+            s.eval_sequence::<String>("local a, b = gcinfo() return { type(a), type(b) }")
                 .unwrap(),
             vec!["number".to_string(), "number".to_string()],
             "(number,number) — `1.12-shapes.tsv` types the row `agree`"
@@ -565,7 +534,7 @@ mod tests {
     /// `collectgarbage`, and on this client `gcinfo()` is the only way to read the counters.
     #[test]
     fn collectgarbage_answers_nothing_and_takes_a_number() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.arity("collectgarbage()").unwrap(),
             0,
@@ -604,8 +573,8 @@ mod tests {
     /// literal the image does not contain. All four are the prefix of a player-visible error.
     #[test]
     fn a_loadstring_chunk_is_named_by_its_own_source() {
-        let s = UiScript::new().unwrap();
-        let raised = |src: &str| -> String {
+        let mut s = UiScript::new().unwrap();
+        let mut raised = |src: &str| -> String {
             s.eval::<String>(&format!(
                 "local f = loadstring({src}) local ok, e = pcall(f) return tostring(e)"
             ))
@@ -644,7 +613,7 @@ mod tests {
     /// argument can tell the two dialects apart.
     #[test]
     fn assert_answers_one_value_and_keeps_5_0_s_messages() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.arity("assert(1, 2, 3)").unwrap(),
             1,
@@ -654,7 +623,7 @@ mod tests {
         // A truthy `false`-adjacent value is still truthy: only nil and false take the raise.
         assert_eq!(s.arity("assert(0)").unwrap(), 1);
 
-        let raised = |call: &str| -> String {
+        let mut raised = |call: &str| -> String {
             s.eval::<String>(&format!(
                 "local ok, e = pcall(function() {call} end) return tostring(e)"
             ))
@@ -687,7 +656,7 @@ mod tests {
     /// with it, because the Ace/FuBar half of the ecosystem embeds this file.
     #[test]
     fn acelibrarys_own_dialect_probe_takes_the_5_0_branch_and_works() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             r#"
             local table_setn
@@ -715,7 +684,7 @@ mod tests {
     /// addons that walk the table (see [`LUA_5_0_TABLE_SIZE`]).
     #[test]
     fn getn_and_setn_remember_a_size_without_polluting_the_table() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         // No remembered size: the border, exactly as 5.1 answers.
         assert_eq!(s.eval::<i64>("return table.getn({1,2,3})").unwrap(), 3);
         // The size round-trips...
@@ -757,7 +726,7 @@ mod tests {
     /// argument one level below `_G`, and this is the test that keeps it true.
     #[test]
     fn the_5_1_only_members_are_not_offered() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         for expr in [
             "string.gmatch",
             "string.match",
@@ -786,7 +755,7 @@ mod tests {
     /// `mod` still works after `math.fmod` is removed — the stdlib layer aliased the 5.1 name.
     #[test]
     fn the_bare_math_family_survives_the_removals() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(s.eval::<f64>("return mod(7, 3)").unwrap(), 1.0);
         assert_eq!(s.eval::<f64>("return floor(2.7)").unwrap(), 2.0);
     }
@@ -796,8 +765,8 @@ mod tests {
     /// does not, and `arg` carries what `...` cannot (the module header's second vararg note).
     #[test]
     fn vararg_is_a_declaration_only() {
-        let s = UiScript::new().unwrap();
-        let parses = |src: &str| s.run(src).is_ok();
+        let mut s = UiScript::new().unwrap();
+        let mut parses = |src: &str| s.run(src).is_ok();
         // Declaration, and the 5.0 way to read what it captured.
         assert!(parses("return function(x, ...) return x end"));
         assert!(parses("return function(x, ...) return arg.n end"));
@@ -816,7 +785,7 @@ mod tests {
     /// The three compat globals the reference has and we did not.
     #[test]
     fn sort_foreach_and_foreachi_are_bare_globals_like_the_reference() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<String>("local t = {'c','a','b'} sort(t) return table.concat(t)")
                 .unwrap(),
@@ -841,7 +810,7 @@ mod tests {
     /// an addon reaching past 1.12 — it was reaching past *us*.
     #[test]
     fn the_bit_library_is_present_with_the_references_eight_functions() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         for name in [
             "bnot", "band", "bor", "bxor", "lshift", "rshift", "arshift", "mod",
         ] {
@@ -875,7 +844,7 @@ mod tests {
     /// chosen", and the third was simply missing.
     #[test]
     fn the_base_library_matches_the_captured_globals() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(s.eval::<bool>("return print == nil").unwrap());
         assert!(s.eval::<bool>("return _VERSION == nil").unwrap());
         // 5.0 implements `^` by calling `__pow`; 5.1 made it native and the global vanished.
@@ -902,7 +871,7 @@ mod tests {
     /// here in the shape the addons write it.
     #[test]
     fn the_vararg_expression_is_a_syntax_error_as_it_is_on_1_12() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(
             s.eval::<bool>(
                 r#"return (loadstring("return function(...) return ... end") and true or false) == false"#
@@ -951,7 +920,7 @@ mod tests {
     /// wow-5875-re saw it first (`system/ui/scratch/lua-dialect.md` §1).
     #[test]
     fn the_length_and_modulo_operators_are_not_in_the_grammar() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         for probe in ["return #t", "return 7 % 3", "local n = #({1,2}) return n"] {
             assert!(
                 s.eval::<bool>(&format!("return loadstring({:?}) == nil", probe))
@@ -976,7 +945,7 @@ mod tests {
     /// long strings, 1315's constructor semicolon).
     #[test]
     fn the_5_0_grammar_the_reference_writes_still_parses() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             r#"
             -- 5.0 varargs: the implicit `arg` table, the form all of 1.12 FrameXML uses.
@@ -1010,7 +979,7 @@ mod tests {
     /// a no-op the client itself ships is a transcription.
     #[test]
     fn the_debug_family_is_six_stubs_and_two_real_ones() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         // Zero values, not nil — a count is the only check that can tell them apart, and
         // `arity` is where it is taken now that `select` is gone (2171).
         for name in [
@@ -1041,7 +1010,7 @@ mod tests {
     /// that used to say otherwise, kept as the shape a reader will look for.
     #[test]
     fn table_insert_consults_the_remembered_size() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<i64>("local t = {1,2,3} table.setn(t, 0) table.insert(t, 9) return t[1]")
                 .unwrap(),
@@ -1073,7 +1042,7 @@ mod tests {
     /// its saved bag order with `pairs` and drew the keyring first, ahead of the backpack.
     #[test]
     fn a_bracketed_key_constructor_is_an_array_and_walks_in_index_order() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         // Bagnon's own table, exactly as its saved-variables file spells it.
         assert_eq!(
             s.eval::<String>(
@@ -1145,8 +1114,8 @@ mod error_quoting_tests {
     /// (`debugstack 0x703760`) rather than copied from stock 5.0's `ldblib.c`.
     #[test]
     fn errors_quote_program_elements_the_way_lua_5_0_does() {
-        let s = UiScript::new().unwrap();
-        let err = |lua: &str| {
+        let mut s = UiScript::new().unwrap();
+        let err = |s: &mut UiScript, lua: &str| {
             s.eval::<String>(&format!(
                 "local ok, e = pcall(function() {lua} end) return tostring(e)"
             ))
@@ -1154,13 +1123,13 @@ mod error_quoting_tests {
         };
 
         // luaG_typeerror.
-        let e = err("local t = nil return t.x");
+        let e = err(&mut s, "local t = nil return t.x");
         assert!(
             e.contains("attempt to index local `t' (a nil value)"),
             "typeerror keeps 5.1's quoting: {e}"
         );
         // luaL_argerror, through a library function that raises one.
-        let e = err(r#"return string.rep(nil, 2)"#);
+        let e = err(&mut s, r#"return string.rep(nil, 2)"#);
         assert!(
             e.contains("bad argument #1 to `rep'"),
             "argerror keeps 5.1's quoting: {e}"
@@ -1178,9 +1147,9 @@ mod error_quoting_tests {
         // (The closing quote is an apostrophe in both dialects, which is why this looks for the
         // opening one and not for the character.)
         for e in [
-            err("local t = nil return t.x"),
-            err("return nosuchfn()"),
-            err("return string.rep(nil, 2)"),
+            err(&mut s, "local t = nil return t.x"),
+            err(&mut s, "return nosuchfn()"),
+            err(&mut s, "return string.rep(nil, 2)"),
         ] {
             assert!(
                 !e.contains(" '") && !e.contains("('"),
@@ -1207,7 +1176,7 @@ mod error_quoting_tests {
     /// `select = select or function(idx, ...)` — a 1.12 addon's own polyfill that ours suppressed.
     #[test]
     fn select_is_not_a_1_12_global_and_arg_n_answers_instead() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(
             s.eval::<bool>("return select == nil").unwrap(),
             "`select` is 5.1's base library; `reference/1.12-globals.tsv` has no row for it"
@@ -1215,7 +1184,7 @@ mod error_quoting_tests {
 
         // 5.0's spelling, in the shape an addon writes it.
         assert_eq!(
-            s.eval::<Vec<i64>>(
+            s.eval_sequence::<i64>(
                 "local function n(...) return arg.n end \
                  local function two_with_a_nil() return 1, nil end \
                  local function nothing() end \
@@ -1250,7 +1219,7 @@ mod error_quoting_tests {
     /// **backtick open, apostrophe close**.
     #[test]
     fn the_string_type_has_no_metatable() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(
             s.eval::<bool>(r#"return getmetatable("") == nil"#).unwrap(),
             "5.1's luaopen_string ends in a createmetatable 5.0's does not have"

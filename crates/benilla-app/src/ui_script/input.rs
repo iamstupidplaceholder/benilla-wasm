@@ -8,7 +8,7 @@ use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorOptions, PrimaryWindow};
 
 use benilla_ui::script::UiScript;
 
@@ -133,7 +133,7 @@ pub(super) fn feed_ui_input(
     // Locked mouse-look keeps a stale logical cursor position in winit.  It is not a pointer over
     // that position: feeding it to the UI keeps bags and action buttons hovered while the hidden
     // cursor turns the camera.  Route it through the existing leave arm below instead.
-    let cursor_locked = cursor_options.grab_mode == CursorGrabMode::Locked;
+    let cursor_locked = crate::cursor::ui_pointer_hidden(cursor_options);
     // The engine's world-drop routing (decisions 0571 + 0574): an object pick keeps every
     // payload (the reference's object leg dispatches SELECT with the item still held), terrain
     // drops items only, nothing drops any arm.
@@ -155,8 +155,7 @@ pub(super) fn feed_ui_input(
     // for a person — which is what lets a rig run reproduce "open the map, close it, and the world
     // under it goes quiet". A person's pointer always wins; an unarmed probe answers `None` and
     // nothing here changes.
-    if let Some(cursor) = window
-        .cursor_position()
+    if let Some(cursor) = crate::cursor::position(window)
         .or_else(crate::target::hover_probe_point)
         .filter(|_| !ui_hidden && !synthetic && !cursor_locked)
     {
@@ -166,7 +165,8 @@ pub(super) fn feed_ui_input(
         let s = super::seam_scale(window.height(), ui_scale.0);
         let (x, y) = (cursor.x / s, (window.height() - cursor.y) / s);
         // `WOW_HIT_COST=1` — the hit-test lane's own meter (the resolve-lap report's W9): this
-        // call rebuilds `order::traversal` + sort + the scroll-clip map EVERY frame the cursor
+        // call walks `order::traversal`'s inputs + the scroll-clip map EVERY frame the cursor
+        // (the sorted traversal itself is cached against exact ordering inputs)
         // is inside the window, moving or not — a real-play cost every parked probe leg is
         // structurally blind to (probes park the cursor outside). One aggregate line per
         // second, census-meter posture; the number decides whether the epoch-gated skip is
@@ -174,7 +174,7 @@ pub(super) fn feed_ui_input(
         static HIT_COST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let metering =
             *HIT_COST.get_or_init(|| std::env::var("WOW_HIT_COST").as_deref() == Ok("1"));
-        let t0 = metering.then(std::time::Instant::now);
+        let t0 = metering.then(benilla_time::Instant::now);
         // The world frame is mouse-enabled by construction and so a legitimate hover target for
         // an addon's handlers, but its hit is the WORLD's (decision 1983): camera look, world
         // clicks and hover targeting stay live over it.
@@ -188,8 +188,8 @@ pub(super) fn feed_ui_input(
             static LAST: AtomicU64 = AtomicU64::new(0);
             ACC_US.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
             let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-            let now_s = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let now_s = benilla_time::SystemTime::now()
+                .duration_since(benilla_time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             if LAST.swap(now_s, Ordering::Relaxed) != now_s && calls > 1 {

@@ -300,7 +300,7 @@ impl InstanceState {
 fn lockout_text(
     line: &LockoutLine,
     map_name: Option<&str>,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     // `GetText(token, nil, ordinal)`'s own plural pick, through the shared primitive.
     let template = benilla_ui::strings::plural(line.token, line.ordinal, get)?;
@@ -569,8 +569,8 @@ fn feed_instance(
 
     for line in state.take_lines() {
         let name = line.map.map(|m| map_name(m, maps.as_deref()));
-        let get = |key: &str| script.lua().globals().get::<String>(key).ok();
-        match lockout_text(&line, name.as_deref(), &get) {
+        let mut get = |key: &str| script.global_string(key);
+        match lockout_text(&line, name.as_deref(), &mut get) {
             Some(text) => {
                 debug!("ui_instance: {} -> {text:?}", line.token);
                 chat.push_event(ChatEvent::text_only(ChatEventKind::System, text));
@@ -677,7 +677,7 @@ mod tests {
     }
 
     fn line_text(line: &LockoutLine, name: Option<&str>) -> Option<String> {
-        lockout_text(line, name, &globals)
+        lockout_text(line, name, &mut globals)
     }
 
     fn warning(message_type: u32, map: u32, reset: u32) -> Option<LockoutLine> {
@@ -851,11 +851,11 @@ mod tests {
         // Marked stand-ins rather than the shipped wording: the primitive returns a *template*,
         // so the assertion has to be readable as "which key did it reach", which is the thing
         // worth asserting (decision 2045).
-        let sparse = |key: &str| match key {
+        let mut sparse = |key: &str| match key {
             "RAID_INSTANCE_WARNING_HOURS" => Some("<bare>".to_string()),
             _ => None,
         };
-        let both = |key: &str| match key {
+        let mut both = |key: &str| match key {
             "RAID_INSTANCE_WARNING_HOURS" => Some("<bare>".to_string()),
             "RAID_INSTANCE_WARNING_HOURS_P1" => Some("<twin>".to_string()),
             "RAID_INSTANCE_WELCOME" => Some("<welcome>".to_string()),
@@ -863,21 +863,21 @@ mod tests {
         };
         let plural = benilla_ui::strings::plural;
         assert_eq!(
-            plural("RAID_INSTANCE_WARNING_HOURS", Some(5), &sparse).as_deref(),
+            plural("RAID_INSTANCE_WARNING_HOURS", Some(5), &mut sparse).as_deref(),
             Some("<bare>"),
             "no twin: GetText's own `if ( not string )` arm"
         );
         assert_eq!(
-            plural("RAID_INSTANCE_WARNING_HOURS", Some(5), &both).as_deref(),
+            plural("RAID_INSTANCE_WARNING_HOURS", Some(5), &mut both).as_deref(),
             Some("<twin>")
         );
         assert_eq!(
-            plural("RAID_INSTANCE_WARNING_HOURS", Some(1), &both).as_deref(),
+            plural("RAID_INSTANCE_WARNING_HOURS", Some(1), &mut both).as_deref(),
             Some("<bare>"),
             "exactly 1 is the bare token"
         );
         assert_eq!(
-            plural("RAID_INSTANCE_WELCOME", None, &both).as_deref(),
+            plural("RAID_INSTANCE_WELCOME", None, &mut both).as_deref(),
             Some("<welcome>"),
             "no ordinal is the bare token"
         );
@@ -1101,9 +1101,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let real = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut real = |key: &str| s.global_string(key);
 
         // Every token, and the quoted copy above is the shipped text.
         for token in [
@@ -1136,7 +1136,7 @@ mod tests {
             let twin = real(&format!("{token}_P1"));
             assert!(twin.is_some(), "{token} has a shipped plural twin");
             assert_eq!(
-                benilla_ui::strings::plural(token, Some(2), &real),
+                benilla_ui::strings::plural(token, Some(2), &mut real),
                 twin,
                 "{token} at two takes its twin"
             );
@@ -1151,7 +1151,7 @@ mod tests {
         // Every warning template names the instance and takes exactly the fills we hand it.
         for (ty, fills) in [(1u32, 1usize), (2, 1), (3, 1), (4, 3)] {
             let line = warning(ty, 409, 3_600).expect("a template");
-            let template = benilla_ui::strings::plural(line.token, line.ordinal, &real).unwrap();
+            let template = benilla_ui::strings::plural(line.token, line.ordinal, &mut real).unwrap();
             assert!(template.contains("%s"), "{} names the instance", line.token);
             assert_eq!(
                 template.matches("%d").count(),
@@ -1165,7 +1165,7 @@ mod tests {
         // Two lines end to end against the real strings — the welcome and a refusal.
         let welcome = warning(4, 409, 3 * 86_400 + 2 * 3_600 + 5 * 60).expect("type 4");
         assert_eq!(
-            lockout_text(&welcome, Some("Molten Core"), &real).as_deref(),
+            lockout_text(&welcome, Some("Molten Core"), &mut real).as_deref(),
             Some("Welcome to Molten Core. This raid instance is scheduled to reset in 3d 2h 5m.")
         );
         let mut state = InstanceState::default();
@@ -1174,7 +1174,7 @@ mod tests {
             benilla_protocol::messages::InstanceResetFailed { reason: 0, map: 36 },
         );
         assert_eq!(
-            lockout_text(&state.take_lines()[0], Some("Deadmines"), &real).as_deref(),
+            lockout_text(&state.take_lines()[0], Some("Deadmines"), &mut real).as_deref(),
             Some("Cannot reset Deadmines.  There are players still inside the instance.")
         );
     }

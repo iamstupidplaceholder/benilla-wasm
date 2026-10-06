@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
 use crate::dbc::{parse, str_at, u32_at};
 
 const STATIONERY: &str = "DBFilesClient\\Stationery.dbc";
@@ -80,7 +79,7 @@ impl StationeryCatalog {
 }
 
 /// Load `Stationery.dbc` into an id → basename map (see the module doc for the verified schema).
-pub fn load_stationery_catalog(chain: &mut Chain) -> Result<StationeryCatalog> {
+pub fn load_stationery_catalog(chain: &mut impl crate::FileSource) -> Result<StationeryCatalog> {
     let bytes = chain
         .read_file(STATIONERY)
         .context("reading Stationery.dbc")?;

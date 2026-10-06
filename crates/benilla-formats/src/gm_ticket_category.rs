@@ -43,6 +43,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 const GM_TICKET_CATEGORY: &str = "DBFilesClient\\GMTicketCategory.dbc";
@@ -93,7 +94,9 @@ fn gm_ticket_category_schema() -> Schema {
 /// A row whose name is empty is skipped rather than pushed blank: the Help window paints one
 /// button per returned pair and an unnamed button is a dead click, not a category. The shipped
 /// 5875 file has no such row — this is a guard on a locale slot, not a modelled branch.
-pub fn load_gm_ticket_categories(chain: &mut Chain) -> Result<GmTicketCategoryCatalog> {
+pub fn load_gm_ticket_categories(
+    chain: &mut impl crate::FileSource,
+) -> Result<GmTicketCategoryCatalog> {
     let bytes = chain
         .read_file(GM_TICKET_CATEGORY)
         .with_context(|| format!("reading {GM_TICKET_CATEGORY}"))?;

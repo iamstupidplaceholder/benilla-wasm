@@ -36,8 +36,10 @@ mod merge;
 use dress::{spawn_group, PartDress};
 pub(super) use merge::MergedFormsCache;
 mod preview;
+pub(super) use preview::build_dressup_preview;
 pub(crate) use preview::equip_slot;
-pub(super) use preview::{build_dressup_preview, build_glue_pet, build_glue_preview};
+pub(in crate::entities) use preview::glue_preview_spec;
+pub(super) use preview::{build_glue_pet, build_glue_preview};
 mod redress;
 
 /// The instruments' view of one body's draw population — what `WOW_DRESS_CENSUS` prints per
@@ -231,7 +233,7 @@ fn arm_sequence_clock(
             // end-of-band law (wow-re `gameobject-anim-arm.md` §2, byte-verified at
             // `0x714585`): bit0 clear loops on the modulo wrap, bit0 set plays the window and
             // then FREEZES at `end_ms`. An unconditional repeat replayed one-shot idles.
-            let active = transitions.play(&mut player, clip.node, std::time::Duration::ZERO);
+            let active = transitions.play(&mut player, clip.node, benilla_time::Duration::ZERO);
             if clip.looping {
                 active.repeat();
             }
@@ -456,6 +458,36 @@ pub(super) fn attach_entity_visuals(
         // EMPTY for them: the spawn loop draws nothing, and `named_a_model` is what keeps the unit
         // arm's debug cube off them (1403).
         if let Some(parts) = model {
+            // Resolve the real character atlas before creating joints/palette slots.
+            // In a browser a corpse has no later equipment change to repair a white
+            // first build: its death snapshot must wait for the same async compositor.
+            let look = resolve_char_look(net, dm, entity, &stores);
+            let char_mats = match look.as_ref() {
+                Some(l) => build_char_skin_materials(
+                    l,
+                    equip,
+                    worn.cloak,
+                    worn.emblem,
+                    worn.tabard_preview,
+                    displays.as_deref(),
+                    sections.as_deref(),
+                    world_assets.as_deref(),
+                    parts,
+                    &mut images,
+                    &mut skin_composites,
+                    &asset_server,
+                    &mut mats,
+                ),
+                None => (None, None, None, (None, None)),
+            };
+            if world_assets.is_none()
+                && look
+                    .as_ref()
+                    .is_some_and(|l| matches!(l.body, char_skin::BodySkin::Composite { .. }))
+                && char_mats.0.is_none()
+            {
+                continue;
+            }
             // ── Mounts (decision 0441): a mounted unit is TWO skeletons. The mount is a child
             // entity carrying a plain creature `NetEntity` — this very system builds it like any
             // beast next frame(s) — and the rider's rig then roots under the mount's attachment-0
@@ -727,7 +759,6 @@ pub(super) fn attach_entity_visuals(
             // The character look: a player takes it from the wire, a character-model NPC from its
             // display's CreatureDisplayInfoExtra (decision 0041). Both then drive the same geoset filter
             // + skin/hair materials below; a beast NPC / GameObject has no look and is unaffected.
-            let look = resolve_char_look(net, dm, entity, &stores);
             // The worn geoset selectors (decisions 0074/1864, the B1–B8 branches): a player's from the
             // resolved equipment display rows; an NPC / naked default otherwise.
             // (The helm's hide-mask row pair, RF-0083: hair/facial/ears tuck under it. For a
@@ -754,24 +785,6 @@ pub(super) fn attach_entity_visuals(
             // per-appearance over the shared model, so built here (not in the shared model cache);
             // `model_material` then dedups by texture so bodies of one look share them. `(None, None)` ⇒
             // those parts keep their built (untextured) material (no look, or tables/chain absent).
-            let char_mats = match look.as_ref() {
-                Some(l) => build_char_skin_materials(
-                    l,
-                    equip,
-                    worn.cloak,
-                    worn.emblem,
-                    worn.tabard_preview,
-                    displays.as_deref(),
-                    sections.as_deref(),
-                    world_assets.as_deref(),
-                    parts,
-                    &mut images,
-                    &mut skin_composites.0,
-                    &asset_server,
-                    &mut mats,
-                ),
-                None => (None, None, None, (None, None)),
-            };
             // Whether any spawned child armed a `PendingAppearFade` this pass — mirrored onto the unit
             // root below as `UnitAppearFade` so a held item / helm / shoulder that resolves and spawns
             // *later* (`entities::equipment::attach_held_items`, async — a template round trip, a model

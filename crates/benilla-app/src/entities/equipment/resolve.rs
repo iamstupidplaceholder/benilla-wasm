@@ -17,57 +17,10 @@ use crate::net::{NetCommands, NetEntity, ObjectStore};
 use super::super::item_glow::{self, ItemGlows};
 use super::super::Creatures;
 use super::{
-    attach_id, ensure_item_model, DisarmFreeze, Equipment, HeldItems, HeldSlot, ItemDisplays,
-    ItemModelKind, ATTACH_SLOTS, COMPOSITE_SLOTS, HELD_SLOTS, NO_GLOW, PLAYER_HELD_SLOTS,
+    attach_id, ensure_item_model, placement, DisarmFreeze, Equipment, HeldItems, HeldSlot,
+    ItemDisplays, ItemModelKind, ATTACH_SLOTS, COMPOSITE_SLOTS, HELD_SLOTS, NO_GLOW,
+    PLAYER_HELD_SLOTS,
 };
-
-/// The drawn/stowed attachment point for one held slot, or `None` when the item shows nothing (empty
-/// slot, sheath-type-less item while stowed, or an unresolved template).
-///
-/// Drawn: the unit's sheath state (`UNIT_FIELD_BYTES_2` byte 0: 0 stowed · 1 melee · 2 ranged) draws
-/// the matching slots into the hands (shield → forearm). Stowed: the **item's** sheath type picks the
-/// body point — 1 two-hander → back · 2 staff → lower back · 3 one-hander → hip · 4 shield → centre
-/// back (mainhand takes the `K−1` side of each pair — byte-verified: `0x47a070`'s `dl != 0` is the
-/// mainhand bodyslot `0xf`, wow-re `ranged-sheath-display.md`, decision 0370). A sheathed ranged
-/// weapon renders **nothing** — the client detaches it rather than re-pointing it to a body bone
-/// (byte-verified `0x7130a0`: a pure unlink/release, uniform across bow/gun/crossbow/thrown/wand;
-/// wow-re `ranged-sheath-display.md`). Drawn ranged splits by inventory type: a **bow** rides the
-/// left hand, gun/crossbow/wand/thrown the right (`0x611e10`'s invType test, same note).
-pub(in crate::entities) fn placement(
-    slot: usize,
-    inv_type: u32,
-    item_sheath: u8,
-    unit_sheath: u8,
-) -> Option<u16> {
-    use attach_id::*;
-    let shield = inv_type == 14; // INVTYPE_SHIELD
-    match slot {
-        // Ranged: in hand while ranged-drawn (bow left, everything else right), invisible otherwise.
-        2 => (unit_sheath == 2).then_some(if inv_type == 15 {
-            HAND_LEFT // INVTYPE_RANGED — bows
-        } else {
-            HAND_RIGHT
-        }),
-        // Melee/shield slots: drawn in melee sheath state, else stowed by the item's sheath type.
-        0 | 1 if unit_sheath == 1 => Some(match (slot, shield) {
-            (0, _) => HAND_RIGHT,
-            (_, true) => SHIELD,
-            (_, false) => HAND_LEFT,
-        }),
-        0 | 1 => match item_sheath {
-            1 => Some(if slot == 0 { BACK_RIGHT } else { BACK_LEFT }),
-            2 => Some(if slot == 0 {
-                BACK_LOWER_MAIN
-            } else {
-                BACK_LOWER_OFF
-            }),
-            3 => Some(if slot == 0 { HIP_MAIN } else { HIP_OFF }),
-            4 => Some(SHIELD_BACK),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 /// One held slot's enchant ids, folded to a single change-detectable number for [`DressKey`].
 ///

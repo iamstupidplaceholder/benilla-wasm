@@ -371,7 +371,7 @@ mod tests {
     /// advances by wall clock, the same basis the global-seq tests use).
     fn advance(app: &mut App, secs: f32, steps: u32) {
         for _ in 0..steps {
-            std::thread::sleep(std::time::Duration::from_secs_f32(secs / steps as f32));
+            std::thread::sleep(benilla_time::Duration::from_secs_f32(secs / steps as f32));
             app.update();
         }
     }
@@ -426,7 +426,7 @@ mod tests {
         let (mut fired_parked, mut fired_twin) = (0usize, 0usize);
         for _ in 0..6 {
             // > one full loop in total, so the keyframe is crossed whatever the phase.
-            std::thread::sleep(std::time::Duration::from_secs_f32(DUR * 0.3));
+            std::thread::sleep(benilla_time::Duration::from_secs_f32(DUR * 0.3));
             app.update();
             let messages = app.world().resource::<Messages<AnimSoundEvent>>();
             for ev in cursor.read(messages).filter(|ev| &ev.ident == b"$TST") {
@@ -518,7 +518,7 @@ mod tests {
             .get_cursor_current();
         let mut fired = 0usize;
         for _ in 0..6 {
-            std::thread::sleep(std::time::Duration::from_secs_f32(DUR * 0.3));
+            std::thread::sleep(benilla_time::Duration::from_secs_f32(DUR * 0.3));
             app.update();
             let messages = app.world().resource::<Messages<AnimSoundEvent>>();
             fired += cursor

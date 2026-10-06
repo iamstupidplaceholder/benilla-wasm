@@ -31,7 +31,7 @@
 //!
 //! (The **clamp** on slot 11 is still ours, and still deliberate — see [`PET_SLOTS`].)
 
-use mlua::Lua;
+use benilla_lua::{LuaContext, Vm};
 
 use crate::script::Model;
 
@@ -285,7 +285,7 @@ fn write_slot(model: &mut Model, target: usize, source: u32, passive: bool) -> O
 /// `PetActionBar.xml` resolves it in the one place a slot's view becomes a button.
 ///
 /// A spell word already carries a real `Interface\Icons\…` path and is left alone.
-fn resolve_token_icon(lua: &Lua) {
+fn resolve_token_icon(lua: &mut impl LuaContext) {
     let name = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         match &model.cursor {
@@ -296,7 +296,7 @@ fn resolve_token_icon(lua: &Lua) {
     let Some(name) = name else {
         return;
     };
-    let path: Option<String> = lua.globals().get(name.as_str()).unwrap_or_default();
+    let path: Option<String> = lua.get_global(name.as_str()).unwrap_or_default();
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     if let Some(CursorPayload::PetAction(p)) = &mut model.cursor {
         p.texture = path;
@@ -304,20 +304,17 @@ fn resolve_token_icon(lua: &Lua) {
 }
 
 /// Register the pet bar's one cursor global.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "PickupPetAction",
-        lua.create_function(|lua, slot: u32| {
-            let took = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                pickup_pet_action(&mut model, slot)
-            };
-            // Both halves can leave a TOKEN on the cursor — the pick-up directly, the drop through
-            // its displaced occupant — so the resolution hangs off the binding, not off either arm.
-            resolve_token_icon(lua);
-            Ok(took)
-        })?,
-    )?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("PickupPetAction", |lua, slot: u32| {
+        let took = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            pickup_pet_action(&mut model, slot)
+        };
+        // Both halves can leave a TOKEN on the cursor — the pick-up directly, the drop through
+        // its displaced occupant — so the resolution hangs off the binding, not off either arm.
+        resolve_token_icon(lua);
+        Ok(took)
+    })?;
     Ok(())
 }
 

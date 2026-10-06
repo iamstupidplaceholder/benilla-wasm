@@ -360,7 +360,7 @@ fn load_gm_ticket_dbc(
         return;
     };
     let mut chain = world_assets.chain.lock_recover();
-    match benilla_formats::load_gm_ticket_categories(&mut chain) {
+    match benilla_formats::load_gm_ticket_categories(&mut *chain) {
         Ok(cat) => {
             info!(
                 "gm ticket: GMTicketCategory.dbc loaded ({} categories)",

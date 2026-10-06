@@ -38,7 +38,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const TALENT: &str = "DBFilesClient\\Talent.dbc";
 const TALENT_TAB: &str = "DBFilesClient\\TalentTab.dbc";
@@ -175,7 +175,7 @@ fn talent_tab_schema() -> Schema {
 }
 
 /// Load the talent data plane off the patch chain.
-pub fn load_talent_catalog(chain: &mut Chain) -> Result<TalentCatalog> {
+pub fn load_talent_catalog(chain: &mut impl FileSource) -> Result<TalentCatalog> {
     let tab_bytes = chain
         .read_file(TALENT_TAB)
         .context("reading TalentTab.dbc")?;

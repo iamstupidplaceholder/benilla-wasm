@@ -26,12 +26,12 @@ fn setup() -> UiScript {
     s
 }
 
-fn visible(s: &UiScript, frame: &str) -> bool {
+fn visible(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsVisible()"))
         .unwrap()
 }
 
-fn text_of(s: &UiScript, region: &str) -> String {
+fn text_of(s: &mut UiScript, region: &str) -> String {
     s.eval::<String>(&format!("return {region}:GetText() or \"\""))
         .unwrap()
 }
@@ -137,22 +137,22 @@ fn the_fourth_tab_opens_the_raid_pane() {
         "PanelTemplates_SetNumTabs says four now — it said three while the pane did not exist"
     );
     open_raid_tab(&mut s);
-    assert!(visible(&s, "RaidFrame"), "the pane opens");
-    assert_eq!(text_of(&s, "FriendsFrameTitleText"), "Raid");
+    assert!(visible(&mut s, "RaidFrame"), "the pane opens");
+    assert_eq!(text_of(&mut s, "FriendsFrameTitleText"), "Raid");
     for other in [
         "FriendsListFrame",
         "IgnoreListFrame",
         "WhoFrame",
         "GuildFrame",
     ] {
-        assert!(!visible(&s, other), "{other} goes away");
+        assert!(!visible(&mut s, other), "{other} goes away");
     }
     // And the tab's own OnClick is wired — a tab that PanelTemplates enables but that does
     // nothing when clicked is exactly the dead tab the guild arc had to fix.
     s.run("FriendsFrameTab1:Click()").unwrap();
-    assert!(!visible(&s, "RaidFrame"));
+    assert!(!visible(&mut s, "RaidFrame"));
     s.run("FriendsFrameTab4:Click()").unwrap();
-    assert!(visible(&s, "RaidFrame"), "the tab button opens it too");
+    assert!(visible(&mut s, "RaidFrame"), "the tab button opens it too");
 }
 
 /// Closing the window closes the Raid Info flyout with it — the ref's fourth satellite.
@@ -162,10 +162,10 @@ fn hiding_the_window_closes_the_raid_info_panel() {
     let mut s = setup();
     open_raid_tab(&mut s);
     s.run("RaidInfoFrame:Show()").unwrap();
-    assert!(visible(&s, "RaidInfoFrame"));
+    assert!(visible(&mut s, "RaidInfoFrame"));
     s.run("HideUIPanel(FriendsFrame)").unwrap();
     assert!(
-        !visible(&s, "RaidInfoFrame"),
+        !visible(&mut s, "RaidInfoFrame"),
         "the flyout goes with the window"
     );
 }
@@ -181,8 +181,8 @@ fn convert_to_raid_is_live_only_for_a_party_leader() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
     open_raid_tab(&mut s);
-    assert!(visible(&s, "RaidFrameRaidDescription"), "solo: the blurb");
-    assert!(visible(&s, "RaidFrameConvertToRaidButton"));
+    assert!(visible(&mut s, "RaidFrameRaidDescription"), "solo: the blurb");
+    assert!(visible(&mut s, "RaidFrameConvertToRaidButton"));
     assert_eq!(
         s.eval::<i64>("return RaidFrameConvertToRaidButton:IsEnabled()")
             .unwrap(),
@@ -190,10 +190,10 @@ fn convert_to_raid_is_live_only_for_a_party_leader() {
         "solo there is no party to convert"
     );
     assert!(
-        !visible(&s, "RaidFrameReadyCheckButton"),
+        !visible(&mut s, "RaidFrameReadyCheckButton"),
         "and no raid verbs"
     );
-    assert!(!visible(&s, "RaidFrameAddMemberButton"));
+    assert!(!visible(&mut s, "RaidFrameAddMemberButton"));
 
     // A party we lead: `leader_index == 0` with members is the shared leads-the-group predicate.
     s.set_party(PartyState {
@@ -274,39 +274,39 @@ fn the_grid_seats_each_row_in_its_own_subgroups_next_free_slot() {
         "RaidGroupButton5"
     );
 
-    assert_eq!(text_of(&s, "RaidGroupButton1Name"), "Me");
+    assert_eq!(text_of(&mut s, "RaidGroupButton1Name"), "Me");
     assert_eq!(
-        text_of(&s, "RaidGroupButton1Rank"),
+        text_of(&mut s, "RaidGroupButton1Rank"),
         "(L)",
         "the leader token"
     );
     assert_eq!(
-        text_of(&s, "RaidGroupButton2Rank"),
+        text_of(&mut s, "RaidGroupButton2Rank"),
         "(A)",
         "the assistant token"
     );
     assert_eq!(
-        text_of(&s, "RaidGroupButton3Rank"),
+        text_of(&mut s, "RaidGroupButton3Rank"),
         "",
         "and a plain member has none"
     );
-    assert_eq!(text_of(&s, "RaidGroupButton1Level"), "60");
+    assert_eq!(text_of(&mut s, "RaidGroupButton1Level"), "60");
 
-    assert!(visible(&s, "RaidGroupButton12"), "the last real row shows");
+    assert!(visible(&mut s, "RaidGroupButton12"), "the last real row shows");
     assert!(
-        !visible(&s, "RaidGroupButton13"),
+        !visible(&mut s, "RaidGroupButton13"),
         "and the first empty one does not"
     );
     assert!(
-        visible(&s, "RaidGroup8"),
+        visible(&mut s, "RaidGroup8"),
         "all eight groups show while in a raid"
     );
 
     // Leaving the raid puts the whole grid away and brings the blurb back.
     push_raid(&mut s, Vec::new());
-    assert!(!visible(&s, "RaidGroup1"));
-    assert!(!visible(&s, "RaidGroupButton1"));
-    assert!(visible(&s, "RaidFrameRaidDescription"));
+    assert!(!visible(&mut s, "RaidGroup1"));
+    assert!(!visible(&mut s, "RaidGroupButton1"));
+    assert!(visible(&mut s, "RaidFrameRaidDescription"));
 }
 
 /// The colour ladder: offline grey beats everything, then dead red, then the class colour — and
@@ -329,7 +329,7 @@ fn a_rows_colour_is_offline_then_dead_then_class() {
             row("GoneDead", 0, 1, "Mage", false, true),
         ],
     );
-    let color = |button: &str| {
+    let mut color = |button: &str| {
         s.eval::<(f32, f32, f32)>(&format!(
             "local r, g, b = {button}Name:GetTextColor() return r, g, b"
         ))
@@ -394,7 +394,7 @@ fn a_units_health_and_level_repaint_only_that_row() {
     open_raid_tab(&mut s);
     let mut raid = twelve();
     push_raid(&mut s, raid.clone());
-    assert_eq!(text_of(&s, "RaidGroupButton3Level"), "60");
+    assert_eq!(text_of(&mut s, "RaidGroupButton3Level"), "60");
 
     // The row dies. Only the per-unit event is fired — no RAID_ROSTER_UPDATE.
     raid[2].ninth = true;
@@ -426,7 +426,7 @@ fn a_units_health_and_level_repaint_only_that_row() {
         vec![benilla_ui::script::ScriptValue::Str("player".into())],
     );
     assert_eq!(
-        text_of(&s, "RaidGroupButton3Level"),
+        text_of(&mut s, "RaidGroupButton3Level"),
         "60",
         "and nothing else moved"
     );
@@ -445,15 +445,15 @@ fn ready_check_is_the_leaders_and_add_member_is_everyones() {
     open_raid_tab(&mut s);
     push_raid(&mut s, twelve());
     assert!(
-        visible(&s, "RaidFrameReadyCheckButton"),
+        visible(&mut s, "RaidFrameReadyCheckButton"),
         "we lead, so we may ask"
     );
-    assert!(visible(&s, "RaidFrameAddMemberButton"));
+    assert!(visible(&mut s, "RaidFrameAddMemberButton"));
     assert!(
-        !visible(&s, "RaidFrameConvertToRaidButton"),
+        !visible(&mut s, "RaidFrameConvertToRaidButton"),
         "already a raid"
     );
-    assert!(!visible(&s, "RaidFrameRaidDescription"));
+    assert!(!visible(&mut s, "RaidFrameRaidDescription"));
 
     s.run("RaidFrameReadyCheckButton:Click()").unwrap();
     assert!(s
@@ -472,9 +472,9 @@ fn ready_check_is_the_leaders_and_add_member_is_everyones() {
         ..Default::default()
     });
     s.fire_event("RAID_ROSTER_UPDATE", Vec::new());
-    assert!(!visible(&s, "RaidFrameReadyCheckButton"));
+    assert!(!visible(&mut s, "RaidFrameReadyCheckButton"));
     assert!(
-        visible(&s, "RaidFrameAddMemberButton"),
+        visible(&mut s, "RaidFrameAddMemberButton"),
         "but Add Member still shows"
     );
 }
@@ -495,7 +495,7 @@ fn dragging_a_row_moves_swaps_or_springs_back() {
     open_raid_tab(&mut s);
     push_raid(&mut s, twelve());
 
-    let drag = |s: &UiScript, button: &str, onto: &str| {
+    let drag = |s: &mut UiScript, button: &str, onto: &str| {
         s.run(&format!(
             "MOVING_RAID_MEMBER = {button}; TARGET_RAID_SLOT = {onto}; \
              RaidGroupButton_OnDragStop({button})"
@@ -504,14 +504,14 @@ fn dragging_a_row_moves_swaps_or_springs_back() {
     };
 
     // Row 12 (group 3, seat 4) onto group 3's fifth seat — its OWN group. Nothing goes out.
-    drag(&s, "RaidGroupButton12", "RaidGroup3Slot5");
+    drag(&mut s, "RaidGroupButton12", "RaidGroup3Slot5");
     assert!(
         s.take_party_requests().is_empty(),
         "a drop inside the row's own group is not a move"
     );
 
     // Row 12 onto group 5's empty first seat — a MOVE, and the subgroup is the Lua 1-based one.
-    drag(&s, "RaidGroupButton12", "RaidGroup5Slot1");
+    drag(&mut s, "RaidGroupButton12", "RaidGroup5Slot1");
     assert_eq!(
         s.take_party_requests(),
         vec![PartyRequest::SetSubgroup {
@@ -521,7 +521,7 @@ fn dragging_a_row_moves_swaps_or_springs_back() {
     );
 
     // Row 12 onto group 1's second seat, which row 2 is in — a SWAP, by the two ROW indices.
-    drag(&s, "RaidGroupButton12", "RaidGroup1Slot2");
+    drag(&mut s, "RaidGroupButton12", "RaidGroup1Slot2");
     assert_eq!(
         s.take_party_requests(),
         vec![PartyRequest::SwapSubgroup {
@@ -596,7 +596,7 @@ fn the_row_menu_offers_the_rank_verbs_by_rank() {
         s.eval::<bool>("return DropDownList1:IsVisible()").unwrap(),
         "the menu opens"
     );
-    let shown = |s: &UiScript, key: &str| {
+    let shown = |s: &mut UiScript, key: &str| {
         s.eval::<bool>(&format!(
             "for i = 1, UIDROPDOWNMENU_MAXBUTTONS do \
                  local b = getglobal(\"DropDownList1Button\"..i) \
@@ -606,25 +606,25 @@ fn the_row_menu_offers_the_rank_verbs_by_rank() {
         .unwrap()
     };
     assert!(
-        shown(&s, "RAID_PROMOTE"),
+        shown(&mut s, "RAID_PROMOTE"),
         "a plain member can be made an assistant"
     );
-    assert!(!shown(&s, "RAID_DEMOTE"), "and cannot be demoted from one");
-    assert!(shown(&s, "RAID_LEADER"), "and can be handed the lead");
-    assert!(shown(&s, "RAID_REMOVE"));
+    assert!(!shown(&mut s, "RAID_DEMOTE"), "and cannot be demoted from one");
+    assert!(shown(&mut s, "RAID_LEADER"), "and can be handed the lead");
+    assert!(shown(&mut s, "RAID_REMOVE"));
 
     // Row 2 is the assistant: demote, not promote.
     s.run("HideDropDownMenu(1) RaidGroupButton2:Click(\"RightButton\")")
         .unwrap();
-    assert!(shown(&s, "RAID_DEMOTE"));
-    assert!(!shown(&s, "RAID_PROMOTE"));
+    assert!(shown(&mut s, "RAID_DEMOTE"));
+    assert!(!shown(&mut s, "RAID_PROMOTE"));
 
     // Row 1 is the leader — us. Nothing may be done to the leader.
     s.run("HideDropDownMenu(1) RaidGroupButton1:Click(\"RightButton\")")
         .unwrap();
-    assert!(!shown(&s, "RAID_LEADER"));
+    assert!(!shown(&mut s, "RAID_LEADER"));
     assert!(
-        !shown(&s, "RAID_REMOVE"),
+        !shown(&mut s, "RAID_REMOVE"),
         "the leader cannot be kicked, not even by themself"
     );
 }
@@ -637,7 +637,7 @@ fn the_menu_verbs_queue_the_right_requests() {
     let mut s = setup();
     open_raid_tab(&mut s);
     push_raid(&mut s, twelve());
-    let click = |s: &UiScript, key: &str| {
+    let click = |s: &mut UiScript, key: &str| {
         s.run(&format!(
             "for i = 1, UIDROPDOWNMENU_MAXBUTTONS do \
                  local b = getglobal(\"DropDownList1Button\"..i) \
@@ -647,7 +647,7 @@ fn the_menu_verbs_queue_the_right_requests() {
         .unwrap();
     };
     s.run("RaidGroupButton3:Click(\"RightButton\")").unwrap();
-    click(&s, "RAID_PROMOTE");
+    click(&mut s, "RAID_PROMOTE");
     assert_eq!(
         s.take_party_requests(),
         vec![PartyRequest::AssistantLeader {
@@ -658,7 +658,7 @@ fn the_menu_verbs_queue_the_right_requests() {
 
     s.run("HideDropDownMenu(1) RaidGroupButton3:Click(\"RightButton\")")
         .unwrap();
-    click(&s, "RAID_REMOVE");
+    click(&mut s, "RAID_REMOVE");
     assert_eq!(
         s.take_party_requests(),
         vec![PartyRequest::UninviteRaid(3)],
@@ -700,21 +700,21 @@ fn the_raid_info_panel_lists_the_saved_lockouts() {
     // The rows live inside the flyout, so `IsVisible` is false until it is open — open it, which
     // is what the button does, and then ask.
     s.run("RaidInfoFrame:Show()").unwrap();
-    assert!(visible(&s, "RaidInfoInstance1"));
-    assert!(visible(&s, "RaidInfoInstance2"));
+    assert!(visible(&mut s, "RaidInfoInstance1"));
+    assert!(visible(&mut s, "RaidInfoInstance2"));
     assert!(
-        !visible(&s, "RaidInfoInstance3"),
+        !visible(&mut s, "RaidInfoInstance3"),
         "rows past the list stay away"
     );
-    assert_eq!(text_of(&s, "RaidInfoInstance1Name"), "Molten Core");
-    assert_eq!(text_of(&s, "RaidInfoInstance1ID"), "1234");
+    assert_eq!(text_of(&mut s, "RaidInfoInstance1Name"), "Molten Core");
+    assert_eq!(text_of(&mut s, "RaidInfoInstance1ID"), "1234");
     assert!(
-        text_of(&s, "RaidInfoInstance1Reset").starts_with("Resets in 3 Days"),
+        text_of(&mut s, "RaidInfoInstance1Reset").starts_with("Resets in 3 Days"),
         "the reset is a REMAINING duration through SecondsToTime, not a timestamp: {:?}",
-        text_of(&s, "RaidInfoInstance1Reset")
+        text_of(&mut s, "RaidInfoInstance1Reset")
     );
     assert!(
-        !visible(&s, "RaidInfoScrollFrameScrollBar"),
+        !visible(&mut s, "RaidInfoScrollFrameScrollBar"),
         "four rows fit, so two need no bar"
     );
 
@@ -735,15 +735,15 @@ fn the_raid_info_panel_lists_the_saved_lockouts() {
     // What DOES protect the player is the line above: the button is disabled, so the flyout
     // cannot be reopened onto the stale row.
     assert!(
-        visible(&s, "RaidInfoInstance1"),
+        visible(&mut s, "RaidInfoInstance1"),
         "the reference leaves the last row standing when the count hits zero"
     );
 
     // The button toggles the flyout.
-    assert!(visible(&s, "RaidInfoFrame"));
+    assert!(visible(&mut s, "RaidInfoFrame"));
     s.run("RaidFrameRaidInfoButton:GetScript(\"OnClick\")()")
         .unwrap();
-    assert!(!visible(&s, "RaidInfoFrame"), "and closes it again");
+    assert!(!visible(&mut s, "RaidInfoFrame"), "and closes it again");
 }
 
 /// **The player with no lockouts at all** — the case that shipped broken (1561). Two answers, both
@@ -790,7 +790,7 @@ fn a_player_with_no_lockouts_loses_the_raid_info_button_on_the_second_answer() {
     // by hand.
     s.run("RaidInfoFrame:Show()").unwrap();
     assert!(
-        visible(&s, "RaidInfoInstance1") && visible(&s, "RaidInfoInstance10"),
+        visible(&mut s, "RaidInfoInstance1") && visible(&mut s, "RaidInfoInstance10"),
         "with no lockouts the reference's update never runs, so the XML's own rows stand"
     );
     s.run("RaidInfoFrame:Hide()").unwrap();
@@ -810,7 +810,7 @@ fn a_player_with_no_lockouts_loses_the_raid_info_button_on_the_second_answer() {
     s.mouse_button(bx, by, "LeftButton", false);
     s.tick(0.016);
     assert!(
-        !visible(&s, "RaidInfoFrame"),
+        !visible(&mut s, "RaidInfoFrame"),
         "a disabled button does not open the panel"
     );
 }
@@ -840,32 +840,32 @@ fn the_scroll_bar_is_seated_on_the_trough_the_panel_draws_behind_it() {
     s.fire_event("UPDATE_INSTANCE_INFO", Vec::new());
     s.run("RaidInfoFrame:Show()").unwrap();
     assert!(
-        visible(&s, "RaidInfoScrollFrameScrollBar"),
+        visible(&mut s, "RaidInfoScrollFrameScrollBar"),
         "six lockouts do not fit in four rows"
     );
 
-    let mid_x = |s: &UiScript, f: &str| -> f32 {
+    let mid_x = |s: &mut UiScript, f: &str| -> f32 {
         let l: f32 = s.eval(&format!("return {f}:GetLeft()")).unwrap();
         let r: f32 = s.eval(&format!("return {f}:GetRight()")).unwrap();
         (l + r) / 2.0
     };
-    let top = |s: &UiScript, f: &str| -> f32 { s.eval(&format!("return {f}:GetTop()")).unwrap() };
+    let top = |s: &mut UiScript, f: &str| -> f32 { s.eval(&format!("return {f}:GetTop()")).unwrap() };
 
-    let bar = mid_x(&s, "RaidInfoScrollFrameScrollBar");
-    let trough = mid_x(&s, "RaidInfoScrollFrameTop");
+    let bar = mid_x(&mut s, "RaidInfoScrollFrameScrollBar");
+    let trough = mid_x(&mut s, "RaidInfoScrollFrameTop");
     assert!(
         (bar - trough).abs() < 0.01,
         "the bar rides the middle of its trough: bar {bar} vs trough {trough}"
     );
     assert!(
-        (top(&s, "RaidInfoScrollFrameScrollBar") - (top(&s, "RaidInfoScrollFrame") - 3.0)).abs()
+        (top(&mut s, "RaidInfoScrollFrameScrollBar") - (top(&mut s, "RaidInfoScrollFrame") - 3.0)).abs()
             < 0.01,
         "and hangs 3 px under the frame's top, not the template's 16"
     );
     // The up arrow rides above the bar, so re-seating the bar is what lifts it into the trough's
     // own cap — the piece of this that is actually visible.
     assert!(
-        top(&s, "RaidInfoScrollFrameScrollBarScrollUpButton") > top(&s, "RaidInfoScrollFrame"),
+        top(&mut s, "RaidInfoScrollFrameScrollBarScrollUpButton") > top(&mut s, "RaidInfoScrollFrame"),
         "the up arrow clears the scroll frame, where the template left it 13 px inside"
     );
 }
@@ -882,14 +882,14 @@ fn the_ready_check_popup_opens_and_answers() {
     let mut s = setup();
     open_raid_tab(&mut s);
     push_raid(&mut s, twelve());
-    assert!(!visible(&s, "ReadyCheckFrame"), "nothing to answer yet");
+    assert!(!visible(&mut s, "ReadyCheckFrame"), "nothing to answer yet");
 
     s.fire_event("READY_CHECK", Vec::new());
-    assert!(visible(&s, "ReadyCheckFrame"), "UIParent's arm opens it");
+    assert!(visible(&mut s, "ReadyCheckFrame"), "UIParent's arm opens it");
     assert!(
-        text_of(&s, "ReadyCheckFrameText").starts_with("Me has initiated a ready check."),
+        text_of(&mut s, "ReadyCheckFrameText").starts_with("Me has initiated a ready check."),
         "named for the rank-2 row: {:?}",
-        text_of(&s, "ReadyCheckFrameText")
+        text_of(&mut s, "ReadyCheckFrameText")
     );
 
     s.run("ReadyCheckFrameYesButton:Click()").unwrap();
@@ -897,7 +897,7 @@ fn the_ready_check_popup_opens_and_answers() {
         s.take_party_requests(),
         vec![PartyRequest::ReadyCheckAnswer(true)]
     );
-    assert!(!visible(&s, "ReadyCheckFrame"));
+    assert!(!visible(&mut s, "ReadyCheckFrame"));
 
     s.fire_event("READY_CHECK", Vec::new());
     s.run("ReadyCheckFrameNoButton:Click()").unwrap();
@@ -909,10 +909,10 @@ fn the_ready_check_popup_opens_and_answers() {
 
     // The raid ending ends the question.
     s.fire_event("READY_CHECK", Vec::new());
-    assert!(visible(&s, "ReadyCheckFrame"));
+    assert!(visible(&mut s, "ReadyCheckFrame"));
     push_raid(&mut s, Vec::new());
     assert!(
-        !visible(&s, "ReadyCheckFrame"),
+        !visible(&mut s, "ReadyCheckFrame"),
         "the raid went, so the question went"
     );
 }
@@ -943,8 +943,8 @@ fn a_drag_carried_off_the_window_edge_ends_instead_of_gluing_the_row_to_the_curs
     push_raid(&mut s, twelve());
 
     let left_of =
-        |s: &UiScript, f: &str| -> f32 { s.eval(&format!("return {f}:GetLeft()")).unwrap() };
-    let centre = |s: &UiScript, f: &str| -> (f32, f32) {
+        |s: &mut UiScript, f: &str| -> f32 { s.eval(&format!("return {f}:GetLeft()")).unwrap() };
+    let centre = |s: &mut UiScript, f: &str| -> (f32, f32) {
         let l: f32 = s.eval(&format!("return {f}:GetLeft()")).unwrap();
         let r: f32 = s.eval(&format!("return {f}:GetRight()")).unwrap();
         let t: f32 = s.eval(&format!("return {f}:GetTop()")).unwrap();
@@ -952,8 +952,8 @@ fn a_drag_carried_off_the_window_edge_ends_instead_of_gluing_the_row_to_the_curs
         ((l + r) / 2.0, (t + b) / 2.0)
     };
 
-    let home = left_of(&s, "RaidGroupButton7");
-    let (fx, fy) = centre(&s, "RaidGroupButton7");
+    let home = left_of(&mut s, "RaidGroupButton7");
+    let (fx, fy) = centre(&mut s, "RaidGroupButton7");
     s.mouse_button(fx, fy, "LeftButton", true);
     s.mouse_move(fx + 40.0, fy + 40.0); // past the threshold ⇒ OnDragStart ⇒ StartMoving
     s.tick(0.016);
@@ -971,7 +971,7 @@ fn a_drag_carried_off_the_window_edge_ends_instead_of_gluing_the_row_to_the_curs
         "the pane's own drag state is cleared by the OnDragStop the abandon fires"
     );
     assert_eq!(
-        left_of(&s, "RaidGroupButton7"),
+        left_of(&mut s, "RaidGroupButton7"),
         home,
         "the row springs back to its slot — a drop on nothing is not a move"
     );
@@ -982,14 +982,14 @@ fn a_drag_carried_off_the_window_edge_ends_instead_of_gluing_the_row_to_the_curs
     s.mouse_move(500.0, 200.0);
     s.tick(0.016);
     assert_eq!(
-        left_of(&s, "RaidGroupButton7"),
+        left_of(&mut s, "RaidGroupButton7"),
         home,
         "…and it stays there however far the cursor travels"
     );
 
     // And the next row drags normally, which is the thing the director actually lost.
-    let (gx, gy) = centre(&s, "RaidGroupButton8");
-    let (tx, ty) = centre(&s, "RaidGroup5Slot1");
+    let (gx, gy) = centre(&mut s, "RaidGroupButton8");
+    let (tx, ty) = centre(&mut s, "RaidGroup5Slot1");
     s.mouse_button(gx, gy, "LeftButton", true);
     s.mouse_move(gx + 10.0, gy + 10.0);
     s.tick(0.016);
@@ -1034,7 +1034,7 @@ fn one_drag_does_not_cost_the_next_one() {
     }
     push_raid(&mut s, raid.clone());
 
-    let centre = |s: &UiScript, f: &str| -> (f32, f32) {
+    let centre = |s: &mut UiScript, f: &str| -> (f32, f32) {
         let l: f32 = s.eval(&format!("return {f}:GetLeft()")).unwrap();
         let r: f32 = s.eval(&format!("return {f}:GetRight()")).unwrap();
         let t: f32 = s.eval(&format!("return {f}:GetTop()")).unwrap();
@@ -1046,8 +1046,8 @@ fn one_drag_does_not_cost_the_next_one() {
         let from = format!("RaidGroupButton{row_index}");
         let seat = if group == 6 && row_index == 8 { 2 } else { 1 };
         let to = format!("RaidGroup{group}Slot{seat}");
-        let (fx, fy) = centre(&s, &from);
-        let (tx, ty) = centre(&s, &to);
+        let (fx, fy) = centre(&mut s, &from);
+        let (tx, ty) = centre(&mut s, &to);
         s.mouse_button(fx, fy, "LeftButton", true);
         s.mouse_move(fx + 10.0, fy + 10.0);
         s.tick(0.016);

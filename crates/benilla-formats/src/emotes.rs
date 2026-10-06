@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
@@ -156,7 +157,7 @@ fn schema(name: &str, n: usize, strings: &[usize]) -> Schema {
 }
 
 /// Read the three tables off the patch chain.
-pub fn load_emote_sound_catalog(chain: &mut Chain) -> Result<EmoteSoundCatalog> {
+pub fn load_emote_sound_catalog(chain: &mut impl crate::FileSource) -> Result<EmoteSoundCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\EmotesText.dbc")
         .context("reading EmotesText.dbc")?;

@@ -185,9 +185,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| s.global_string(key);
 
         // Reason 0 never reaches this table (gated at `events::decode`), so the sweep starts at 1.
         for reason in 1..=66u8 {

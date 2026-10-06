@@ -27,7 +27,7 @@ use benilla_ui::script::{QuadContent, UiScript};
 ///
 /// **A chain entry needs client data**, so a test that names one has to open with
 /// `benilla_formats::wow_data_or_skip!()`; [`BAG_UI`] is a list that always does.
-pub(crate) fn load_ui(s: &UiScript, entry: &str) -> usize {
+pub(crate) fn load_ui(s: &mut UiScript, entry: &str) -> usize {
     load_entry(s, entry, false, false)
 }
 
@@ -118,7 +118,7 @@ pub(super) fn load_ui_no_warnings(s: &UiScript, entry: &str) -> usize {
     load_entry(s, entry, false, true)
 }
 
-fn load_entry(s: &UiScript, entry: &str, strict_templates: bool, no_warnings: bool) -> usize {
+fn load_entry(s: &mut UiScript, entry: &str, strict_templates: bool, no_warnings: bool) -> usize {
     // **A kit's VM is the client's VM, and that includes the CVar table** (decision 2115). The app
     // registers `crate::cvars::REGISTERED` at startup, before any interface file loads;
     // `UiScript::new()` carries only `benilla-ui`'s own. The stock `UIOptionsFrame.xml` reads two
@@ -789,7 +789,7 @@ pub(super) const BAG_UI: &[&str] = &[
 /// (`ContainerFrame_GetOpenFrame`), so which one a bag lands in depends on what else is open —
 /// there is no `BenillaBagFrame2` to name any more, and pinning `ContainerFrame3` in a test would
 /// pin a coincidence. `IsBagOpen` is the reference's own published scan.
-pub(super) fn bag_window(s: &UiScript, id: i64) -> Option<String> {
+pub(super) fn bag_window(s: &mut UiScript, id: i64) -> Option<String> {
     s.eval::<Option<i64>>(&format!("return IsBagOpen({id})"))
         .unwrap()
         .map(|i| format!("ContainerFrame{i}"))
@@ -805,7 +805,7 @@ pub(super) fn bag_open(s: &UiScript, id: i64) -> bool {
 /// Asked of the buttons' own `GetID`, never derived: `ContainerFrame_GenerateFrame` numbers them
 /// backwards (`index = size - j + 1`, so `…Item1` is the bag's LAST slot, bottom-right), and a
 /// window generated for a different bag size numbers them differently.
-pub(super) fn bag_slot_button(s: &UiScript, id: i64, slot: u32) -> String {
+pub(super) fn bag_slot_button(s: &mut UiScript, id: i64, slot: u32) -> String {
     let w = bag_window(s, id).unwrap_or_else(|| panic!("bag {id} is not open"));
     s.eval::<String>(&format!(
         "for j = 1, MAX_CONTAINER_ITEMS do \

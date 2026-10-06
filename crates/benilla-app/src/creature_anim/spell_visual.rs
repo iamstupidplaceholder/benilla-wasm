@@ -313,7 +313,7 @@ pub(super) fn load_spell_visuals(mut commands: Commands, assets: Option<Res<Worl
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_spell_visual_catalog(&mut chain)
+        benilla_formats::load_spell_visual_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {

@@ -39,8 +39,8 @@ fn seeded() -> UiScript {
 }
 
 /// The names `GetAddOnInfo(i)` answers, in index order.
-fn by_index(s: &UiScript) -> Vec<String> {
-    s.eval::<Vec<String>>(
+fn by_index(s: &mut UiScript) -> Vec<String> {
+    s.eval_sequence::<String>(
         "local t = {} for i = 1, GetNumAddOns() do t[i] = (GetAddOnInfo(i)) end return t",
     )
     .unwrap()
@@ -58,7 +58,7 @@ fn by_index(s: &UiScript) -> Vec<String> {
 fn the_index_space_is_title_sorted_case_insensitively_and_not_registry_order() {
     let mut s = seeded();
     s.note_addon_info_reply(&[]);
-    assert_eq!(by_index(&s), vec!["Zulu", "Mike", "Alpha"]);
+    assert_eq!(by_index(&mut s), vec!["Zulu", "Mike", "Alpha"]);
 }
 
 /// **A record with no `## Title` sorts under its FOLDER name**, which is the comparator's
@@ -89,7 +89,7 @@ fn a_titleless_addon_sorts_under_its_folder_name() {
         None,
     );
     s.note_addon_info_reply(&[]);
-    assert_eq!(by_index(&s), vec!["bravo", "Yankee"]);
+    assert_eq!(by_index(&mut s), vec!["bravo", "Yankee"]);
 }
 
 /// **There is no index space until `SMSG_ADDON_INFO` arrives** — `[0xbe1b90]` is zeroed by the
@@ -99,7 +99,7 @@ fn a_titleless_addon_sorts_under_its_folder_name() {
 /// out-of-range index takes, because it *is* the same unsigned bound against a count of zero.
 #[test]
 fn there_is_no_index_space_until_the_server_answers() {
-    let s = seeded();
+    let mut s = seeded();
     assert_eq!(s.eval::<i64>("return GetNumAddOns()").ok(), Some(0));
     let raised = s
         .eval::<String>(
@@ -131,7 +131,7 @@ fn a_hidden_addon_leaves_the_index_space_but_still_answers_by_name() {
     let mut s = seeded();
     s.note_addon_info_reply(&["mike".into()]); // case-insensitive, as every name compare here is
     assert_eq!(s.eval::<i64>("return GetNumAddOns()").ok(), Some(2));
-    assert_eq!(by_index(&s), vec!["Zulu", "Alpha"]);
+    assert_eq!(by_index(&mut s), vec!["Zulu", "Alpha"]);
     assert_eq!(
         s.eval::<String>("return (GetAddOnInfo('Mike'))").ok(),
         Some("Mike".into())

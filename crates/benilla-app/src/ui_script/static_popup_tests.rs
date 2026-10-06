@@ -10,16 +10,16 @@ use super::test_ui::load_ui as load_xml;
 fn setup() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     s
 }
 
@@ -105,7 +105,7 @@ fn start_delay_gates_button1_then_swaps_the_text_in() {
 /// the death arc's RESURRECT-cancels-DEATH chain.
 #[test]
 fn showing_a_dialog_cancels_its_named_victim_with_override() {
-    let s = setup();
+    let mut s = setup();
     s.run(
         r#"victim_reason = "unset"
            StaticPopupDialogs["TEST_VICTIM"] = {
@@ -137,7 +137,7 @@ fn showing_a_dialog_cancels_its_named_victim_with_override() {
 /// non-escapable entry — the DEATH release popup's law — survives ToggleGameMenu.
 #[test]
 fn escape_skips_dialogs_without_hide_on_escape() {
-    let s = setup();
+    let mut s = setup();
     s.run(
         r#"StaticPopupDialogs["TEST_STICKY"] = {
                text = "cannot escape me", button1 = "OK", timeout = 0, whileDead = 1,
@@ -212,7 +212,7 @@ fn the_death_countdown_text_rerenders_each_tick() {
 /// kind has at most one, so its data is never consulted.
 #[test]
 fn hide_and_find_address_one_instance_by_data_only_for_a_multiple_dialog() {
-    let s = setup();
+    let mut s = setup();
     s.run(
         r#"
         StaticPopupDialogs["T_MULTI"] = { text = "multi", button1 = "Ok", multiple = 1, timeout = 0 }
@@ -271,7 +271,7 @@ fn hide_and_find_address_one_instance_by_data_only_for_a_multiple_dialog() {
 fn the_verb_dialogs_open_from_their_events_and_call_their_verbs() {
     use benilla_ui::script::ScriptValue;
     let mut s = setup();
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml"); // the arms
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml"); // the arms
     s.set_money(50_000);
     // The pet trainer's question: the dialog, its money frame at the cost, Accept → the confirm.
     s.fire_event("CONFIRM_PET_UNLEARN", vec![ScriptValue::Int(12_345)]);

@@ -25,23 +25,29 @@ struct TestCtx {
 }
 
 /// The two lookup shapes, named so the harness's fields read.
-type Getter = dyn Fn(&str) -> Option<String>;
-type Filler = dyn Fn(&str, &[i64]) -> Option<String>;
+type Getter = dyn FnMut(&str) -> Option<String>;
+type Filler = dyn FnMut(&str, &[i64]) -> Option<String>;
 
 impl TestCtx {
     fn new() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let vm = std::rc::Rc::new(benilla_ui::script::UiScript::new().expect("VM"));
-        crate::ui_script::load_ui_for_test(&vm, "Interface\\FrameXML\\GlobalStrings.lua");
+        let mut vm = benilla_ui::script::UiScript::new().expect("VM");
+        crate::ui_script::load_ui_for_test(&mut vm, "Interface\\FrameXML\\GlobalStrings.lua");
+        let vm = std::rc::Rc::new(std::cell::RefCell::new(vm));
         let (for_get, for_text) = (vm.clone(), vm);
         Self {
             items: Items::default(),
             commands: NetCommands(tx),
             _rx: rx,
-            get: Box::new(move |key| benilla_ui::strings::global(for_get.lua(), key)),
+            get: Box::new(move |key| {
+                benilla_ui::strings::global_context(for_get.borrow_mut().vm_mut(), key)
+            }),
             spell_mods: crate::spell_mods::SpellModifiers::default(),
             text: Box::new(move |key, args: &[i64]| {
-                let template = benilla_ui::strings::global(for_text.lua(), key)?;
+                let template = benilla_ui::strings::global_context(
+                    for_text.borrow_mut().vm_mut(),
+                    key,
+                )?;
                 let args: Vec<_> = args
                     .iter()
                     .map(|n| benilla_ui::strings::Arg::D(*n))
@@ -90,8 +96,8 @@ impl TestCtx {
             commands: &self.commands,
             sub_classes,
             spell_mods: &self.spell_mods,
-            get: self.get.as_ref(),
-            text: self.text.as_ref(),
+            get: self.get.as_mut(),
+            text: self.text.as_mut(),
         }
     }
 }

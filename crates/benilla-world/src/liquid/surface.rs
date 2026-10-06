@@ -29,13 +29,16 @@ use crate::lighting::WATER_SHININESS;
 use avian3d::prelude::{Collider, RigidBody};
 use benilla_assets::coords::wow_to_bevy;
 use benilla_assets::materials::{LiquidExt, LiquidMaterial};
-use benilla_assets::LockRecover;
-use benilla_assets::{liquid_frame_array, RenderConfig, WorldAssets};
-use benilla_formats::{read_texture_mip_chain, BlpMipChain, LiquidKind, LiquidMesh};
+#[cfg(target_arch = "wasm32")]
+use benilla_assets::SpriteSource;
+use benilla_assets::{liquid_frame_array, RenderConfig, SpriteRead};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::{LockRecover, WorldAssets};
+use benilla_formats::{blp_bytes_to_mip_chain, BlpMipChain, LiquidKind, LiquidMesh};
 
 /// The shared liquid materials, keyed by [`LiquidKey`]. Read by the terrain streamer (via [`spawn_liquids`] /
-/// [`spawn_wmo_liquids`]) to material the per-chunk water meshes. Absent when the client has no data
-/// (no `WorldAssets`).
+/// [`spawn_wmo_liquids`]) to material the per-chunk water meshes. Frame sets are admitted
+/// independently; geometry/query data never waits for texture delivery.
 #[derive(Resource, Default)]
 pub(crate) struct LiquidAssets {
     materials: HashMap<LiquidKey, LiquidEntry>,
@@ -175,6 +178,38 @@ impl LiquidAssets {
 #[derive(Component)]
 pub(crate) struct LiquidSurface;
 
+#[derive(Component)]
+pub(super) struct PendingLiquidMaterial(LiquidKey);
+
+fn assign_material(
+    commands: &mut Commands,
+    entity: Entity,
+    key: LiquidKey,
+    assets: Option<&LiquidAssets>,
+) {
+    if let Some(material) = assets.and_then(|a| a.material(key.kind, key.path, key.scroll)) {
+        commands.entity(entity).insert(MeshMaterial3d(material));
+    } else {
+        commands.entity(entity).insert(PendingLiquidMaterial(key));
+    }
+}
+
+pub(super) fn attach_ready_materials(
+    mut commands: Commands,
+    assets: Res<LiquidAssets>,
+    pending: Query<(Entity, &PendingLiquidMaterial)>,
+) {
+    for (entity, pending) in &pending {
+        let key = &pending.0;
+        if let Some(material) = assets.material(key.kind, key.path, key.scroll) {
+            commands
+                .entity(entity)
+                .insert(MeshMaterial3d(material))
+                .remove::<PendingLiquidMaterial>();
+        }
+    }
+}
+
 /// Attribution kill-switch: `$WOW_NO_LIQUID=1` hides every liquid **surface**, and only the surface —
 /// the swim grid, the submersion verdict, the foam and the ambient loops all stay live, because those
 /// ride sibling components on the same entity ([`WaterChunkInfo`], [`FoamPatch`],
@@ -239,9 +274,6 @@ pub(crate) fn spawn_liquids<'a>(
     meshes: &mut Assets<Mesh>,
     entities: &mut Vec<Entity>,
 ) {
-    let Some(liquid) = liquid_assets else {
-        return;
-    };
     for lq in liquids {
         // ADT liquid always takes the SCENE fog: the ADT liquid passes submit no fog block of their
         // own, so they draw under the once-a-frame scene submit (wow-re `fog-env-state` §5).
@@ -251,9 +283,6 @@ pub(crate) fn spawn_liquids<'a>(
         // ADT queue is a different kernel that hard-zeroes the v-translate ([`scrolls`]). Deriving
         // the flag from `lq.sound_nibble` here — the obvious-looking thing — would slide every
         // Searing Gorge and Burning Steppes lava pool in the game.
-        let Some(material) = liquid.material(lq.kind, LiquidPath::Adt, false) else {
-            continue; // this kind's frames failed to load (warned at setup)
-        };
         // The world-space liquid grid (MCLQ positions are already absolute WoW, so the IDENTITY
         // transform is a no-op round-trip).
         let info = wet_footprint(lq, &Transform::IDENTITY, LiquidSource::AdtChunk);
@@ -262,7 +291,6 @@ pub(crate) fn spawn_liquids<'a>(
             commands
                 .spawn((
                     Mesh3d(meshes.add(liquid_bevy_mesh(lq, None))),
-                    MeshMaterial3d(material),
                     Transform::IDENTITY,
                     LiquidSurface,
                     // **Open-world liquid is exterior scene** — the reference's ADT liquid
@@ -287,6 +315,16 @@ pub(crate) fn spawn_liquids<'a>(
                     },
                 ))
                 .id(),
+        );
+        assign_material(
+            commands,
+            *entities.last().expect("just pushed"),
+            LiquidKey {
+                kind: lq.kind,
+                path: LiquidPath::Adt,
+                scroll: false,
+            },
+            liquid_assets,
         );
         // Foam is water-only; the cells it clips against ride `info`, not the marker.
         if foam {
@@ -404,9 +442,6 @@ pub(crate) fn spawn_wmo_liquids<'a>(
     material_diff_color: &[[f32; 3]],
     entities: &mut Vec<Entity>,
 ) {
-    let Some(liquid) = liquid_assets else {
-        return;
-    };
     let path = LiquidPath::wmo(interior);
     for lq in liquids {
         // `interior` picks the fog block, not the look: an interior group's pool is drawn by the WMO
@@ -426,9 +461,6 @@ pub(crate) fn spawn_wmo_liquids<'a>(
                     .copied()
             })
             .flatten();
-        let Some(material) = liquid.material(lq.kind, path, scroll) else {
-            continue; // this kind's frames failed to load (warned at setup)
-        };
         if scroll {
             // Rare (only nibble 6/7 pools reach it) and the only outside view of a decision that is
             // otherwise invisible until you stand over the pool and watch it for ten seconds.
@@ -440,7 +472,6 @@ pub(crate) fn spawn_wmo_liquids<'a>(
         let surface = commands
             .spawn((
                 Mesh3d(meshes.add(liquid_bevy_mesh(lq, body_color))),
-                MeshMaterial3d(material),
                 transform,
                 LiquidSurface,
                 // The per-frame interior-fog lane rides `MeshTag` bit 30, written by the one
@@ -455,6 +486,16 @@ pub(crate) fn spawn_wmo_liquids<'a>(
                 },
             ))
             .id();
+        assign_material(
+            commands,
+            surface,
+            LiquidKey {
+                kind: lq.kind,
+                path,
+                scroll,
+            },
+            liquid_assets,
+        );
         // The swim/submersion grid rides EVERY kind, magma and slime included — that is what
         // makes Blackrock's lava and Undercity's slime swimmable instead of something you fall
         // through (decision 0634, bugs B24/B25). It used to be gated on `!is_fullbright()` because
@@ -504,24 +545,65 @@ const FRAME_SETS: &[(LiquidKind, &str, &str, u32)] = &[
 ];
 
 pub(super) fn setup_liquid(
-    mut commands: Commands,
     config: Option<Res<RenderConfig>>,
-    world_assets: Option<ResMut<WorldAssets>>,
+    #[cfg(not(target_arch = "wasm32"))] world_assets: Option<ResMut<WorldAssets>>,
+    #[cfg(target_arch = "wasm32")] mut files: ResMut<benilla_assets::SpriteFiles>,
+    #[cfg(target_arch = "wasm32")] server: Res<AssetServer>,
+    #[cfg(target_arch = "wasm32")] raw: Res<Assets<benilla_assets::RawFile>>,
+    light: Option<Res<crate::lighting::SharedLightBuffer>>,
+    mut assets: ResMut<LiquidAssets>,
+    mut admission: Local<FrameAdmission>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<LiquidMaterial>>,
 ) {
-    let (Some(_config), Some(mut world_assets)) = (config, world_assets) else {
-        return; // no client data → no terrain, so no water either
+    let (Some(_), Some(light)) = (config, light) else {
+        return;
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let Some(mut world_assets) = world_assets
+    else {
+        return;
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut read = |path: &str| match world_assets.chain.lock_recover().read_file(path) {
+        Ok(bytes) => SpriteRead::Bytes(bytes),
+        Err(error) => {
+            warn!("liquid: {path}: {error}");
+            SpriteRead::Missing
+        }
+    };
+    #[cfg(target_arch = "wasm32")]
+    let mut source = files.reader(&server, &raw);
+    #[cfg(target_arch = "wasm32")]
+    let mut read = |path: &str| source.read_installed(path);
     // No light seed and no per-frame push: light, fog and both water swatches come off the shared
     // global-light buffer (`lighting::global_light`), which `build_light_data` has already packed by
     // the time anything draws — the same path terrain and the models take.
-    let mut assets = LiquidAssets::default();
-    for &(kind, dir, stem, count) in FRAME_SETS {
-        let Some((frames, frame_count)) =
-            load_frame_array(&mut world_assets, &mut images, kind, dir, stem, count)
-        else {
-            warn!("liquid: no frames for {stem} — {kind:?} water will not render");
+    if admission.sets.is_empty() {
+        admission.sets = FRAME_SETS.iter().map(|_| FrameLoad::default()).collect();
+        #[cfg(target_arch = "wasm32")]
+        for &(_, dir, stem, count) in FRAME_SETS {
+            for i in 1..=count {
+                let _ = read(&format!("XTextures\\{dir}\\{stem}.{i}.blp"));
+            }
+        }
+    }
+    let started = benilla_time::Instant::now();
+    for (index, &(kind, dir, stem, count)) in FRAME_SETS.iter().enumerate() {
+        let state = &mut admission.sets[index];
+        if state.finished {
+            continue;
+        }
+        let Some((frames, frame_count)) = load_frame_array(
+            &mut read,
+            state,
+            &mut images,
+            kind,
+            dir,
+            stem,
+            count,
+            started,
+        ) else {
             continue;
         };
         // Blend state is per KIND, and this is where it is decided (VERIFIED wow-re
@@ -614,23 +696,25 @@ pub(super) fn setup_liquid(
                             1.0
                         },
                     ),
-                    light_buf: world_assets.shared_light.clone(),
+                    light_buf: light.0.clone(),
                 },
             });
             assets
                 .materials
                 .insert(LiquidKey { kind, path, scroll }, LiquidEntry { material });
         }
+        info!("liquid: loaded {stem} ({frame_count}/{count} frames)");
     }
-    // Frame SETS, not materials — a set backs every renderer/scroll variant of its kind.
-    info!(
-        "liquid: loaded {} water frame set(s)",
-        FRAME_SETS
-            .iter()
-            .filter(|(k, ..)| assets.material(*k, LiquidPath::Adt, false).is_some())
-            .count()
-    );
-    commands.insert_resource(assets);
+}
+
+#[derive(Default)]
+pub(super) struct FrameAdmission {
+    sets: Vec<FrameLoad>,
+}
+#[derive(Default)]
+struct FrameLoad {
+    frames: Vec<BlpMipChain>,
+    finished: bool,
 }
 
 /// Decode frames `1..=count` for a kind — each with its BLP **authored mip chain** — into one
@@ -639,32 +723,45 @@ pub(super) fn setup_liquid(
 /// size-mismatched frame (the on-disk sets are contiguous 256² runs). Returns the image handle + the
 /// number of frames actually loaded, or `None` if none decoded.
 fn load_frame_array(
-    world_assets: &mut WorldAssets,
+    read: &mut impl FnMut(&str) -> SpriteRead,
+    state: &mut FrameLoad,
     images: &mut Assets<Image>,
     kind: LiquidKind,
     dir: &str,
     stem: &str,
     count: u32,
+    started: benilla_time::Instant,
 ) -> Option<(Handle<Image>, u32)> {
-    let mut frames: Vec<BlpMipChain> = Vec::new();
-    let mut size = 0u32;
-    for i in 1..=count {
+    while state.frames.len() < count as usize {
+        if cfg!(target_arch = "wasm32") && started.elapsed().as_secs_f64() >= 0.004 {
+            return None;
+        }
+        let i = state.frames.len() + 1;
         let path = format!("XTextures\\{dir}\\{stem}.{i}.blp");
-        let Ok(chain) = read_texture_mip_chain(&mut world_assets.chain.lock_recover(), &path)
-        else {
-            break;
+        let bytes = match read(&path) {
+            SpriteRead::Pending => return None,
+            SpriteRead::Missing => break,
+            SpriteRead::Bytes(bytes) => bytes,
         };
-        if chain.width != chain.height {
-            break; // water frames are square; bail rather than build a ragged array
+        let chain = match blp_bytes_to_mip_chain(&bytes) {
+            Ok(chain) => chain,
+            Err(error) => {
+                warn!("liquid: {path} decode failed: {error}");
+                break;
+            }
+        };
+        if chain.width != chain.height
+            || state.frames.first().is_some_and(|f| f.width != chain.width)
+        {
+            warn!("liquid: {path} has incompatible frame dimensions");
+            break;
         }
-        if size == 0 {
-            size = chain.width;
-        } else if chain.width != size {
-            break; // a frame at a different resolution can't share the array
-        }
-        frames.push(chain);
+        state.frames.push(chain);
     }
+    state.finished = true;
+    let frames = std::mem::take(&mut state.frames);
     if frames.is_empty() {
+        warn!("liquid: no frames for {stem} — {kind:?} will not render");
         return None;
     }
     let loaded = frames.len() as u32;

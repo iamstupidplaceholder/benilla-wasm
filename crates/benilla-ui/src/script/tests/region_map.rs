@@ -42,7 +42,7 @@ fn vm() -> UiScript {
 /// because one function is written into every table that chain reaches.
 #[test]
 fn the_region_map_is_one_function_on_every_widget() {
-    let s = vm();
+    let mut s = vm();
     for m in crate::script::REGION_MAP_METHODS {
         let same: bool = s
             .eval(&format!(
@@ -59,7 +59,7 @@ fn the_region_map_is_one_function_on_every_widget() {
 /// **The bug, reduced to its four lines.** A method pulled off a frame and applied to a region.
 #[test]
 fn a_method_pulled_off_a_frame_works_on_a_texture_and_a_fontstring() {
-    let s = vm();
+    let mut s = vm();
     // Quiver's own shape: `Api._Height = WorldFrame.GetHeight`, applied to `r.Icon` (a Texture)
     // and `r.Label` (a FontString), from a table built at file scope.
     let (th, sh): (f32, f32) = s
@@ -91,7 +91,7 @@ fn a_method_pulled_off_a_frame_works_on_a_texture_and_a_fontstring() {
 /// function, so this cannot be made to work by special-casing the reported direction.
 #[test]
 fn a_method_pulled_off_a_texture_works_on_a_frame() {
-    let s = vm();
+    let mut s = vm();
     let h: f32 = s.eval("local g = Tex.GetHeight return g(Host)").unwrap();
     assert_eq!(h, 120.0);
     let name: String = s.eval("local n = Str.GetName return n(Host)").unwrap();
@@ -107,7 +107,7 @@ fn a_method_pulled_off_a_texture_works_on_a_frame() {
 /// `GetParent` is the one whose two arms genuinely differ (a region's owner is never nil).
 #[test]
 fn one_name_still_dispatches_per_kind() {
-    let s = vm();
+    let mut s = vm();
     let (f, t, g): (String, String, String) = s
         .eval("return Host:GetObjectType(), Tex:GetObjectType(), Str:GetObjectType()")
         .unwrap();
@@ -125,7 +125,7 @@ fn one_name_still_dispatches_per_kind() {
 /// exist until the map was collapsed to one implementation; the region arm shipped alone.
 #[test]
 fn get_num_points_answers_on_a_frame_too() {
-    let s = vm();
+    let mut s = vm();
     assert_eq!(s.eval::<i64>("return Host:GetNumPoints()").unwrap(), 1);
     assert_eq!(s.eval::<i64>("return Tex:GetNumPoints()").unwrap(), 1);
     s.run("Host:SetPoint(\"TOPLEFT\", nil, \"TOPLEFT\", 0, 0)")
@@ -143,7 +143,7 @@ fn get_num_points_answers_on_a_frame_too() {
 /// superset decision 1189 had to take back out.
 #[test]
 fn the_six_look_alikes_are_not_shared() {
-    let s = vm();
+    let mut s = vm();
     for m in [
         "Show",
         "Hide",
@@ -164,7 +164,7 @@ fn the_six_look_alikes_are_not_shared() {
 /// receiver before either arm runs, so this error must not be flattened into a generic one.
 #[test]
 fn a_non_widget_receiver_raises_and_names_the_reason() {
-    let s = vm();
+    let mut s = vm();
     let err = s
         .eval::<f32>("return Host.GetHeight({})")
         .unwrap_err()

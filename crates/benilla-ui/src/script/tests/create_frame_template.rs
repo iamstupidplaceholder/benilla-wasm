@@ -15,7 +15,7 @@ use crate::script::UiScript;
 
 /// Register templates by loading a small FrameXML document — the same door an addon's own `.xml`
 /// comes through, so nothing here is a test-only shortcut into the registry.
-fn register(s: &UiScript, xml: &str) {
+fn register(s: &mut UiScript, xml: &str) {
     let doc = crate::framexml::parse(xml).expect("valid FrameXML");
     let report = crate::loader::load(s, &doc, &|_| None);
     assert!(
@@ -33,7 +33,7 @@ fn a_runtime_template_brings_size_anchors_regions_and_a_fired_onload() {
     let mut s = script();
     s.set_screen_size(800.0, 600.0);
     register(
-        &s,
+        &mut s,
         r#"<Ui>
              <Frame name="Host"/>
              <Frame name="ProbeTemplate" virtual="true">
@@ -106,7 +106,7 @@ fn a_runtime_template_brings_size_anchors_regions_and_a_fired_onload() {
 fn a_nested_frames_child_is_named_against_the_caller() {
     let mut s = script();
     register(
-        &s,
+        &mut s,
         r#"<Ui>
              <Frame name="NestTemplate" virtual="true">
                <Frames>
@@ -159,7 +159,7 @@ fn a_nested_frames_child_is_named_against_the_caller() {
 fn a_comma_list_is_one_name_and_a_single_name_still_chains() {
     let mut s = script();
     register(
-        &s,
+        &mut s,
         r#"<Ui>
              <Frame name="TemplRoot" virtual="true" alpha="0.25">
                <Size><AbsDimension x="50" y="60"/></Size>
@@ -215,7 +215,7 @@ fn a_comma_list_is_one_name_and_a_single_name_still_chains() {
 fn a_template_name_is_matched_case_insensitively() {
     let mut s = script();
     register(
-        &s,
+        &mut s,
         r#"<Ui>
              <Frame name="CT_RACheckButtonTemplate" virtual="true" alpha="0.25">
                <Size><AbsDimension x="50" y="60"/></Size>
@@ -251,8 +251,8 @@ fn a_template_name_is_matched_case_insensitively() {
 /// `0x70622d`), so nothing partial is left behind — no frame, and no global.
 #[test]
 fn an_unresolvable_template_raises_and_creates_nothing() {
-    let s = script();
-    register(&s, r#"<Ui><Frame name="PlainFrame"/></Ui>"#);
+    let mut s = script();
+    register(&mut s, r#"<Ui><Frame name="PlainFrame"/></Ui>"#);
 
     for (frame, template) in [("Orphan", "NoSuchTemplate"), ("Plainer", "PlainFrame")] {
         let err = s
@@ -299,7 +299,7 @@ fn an_unresolvable_template_raises_and_creates_nothing() {
 fn a_region_template_or_a_mismatched_kind_is_named_never_fatal() {
     let mut s = script();
     register(
-        &s,
+        &mut s,
         r#"<Ui>
              <Texture name="RegionTemplate" virtual="true" file="Interface\Probe\Art">
                <Size><AbsDimension x="33" y="44"/></Size>
@@ -384,7 +384,7 @@ fn a_scroll_child_element_gives_the_frame_a_real_scroll_range() {
     let mut s = script();
     s.set_screen_size(1024.0, 768.0);
     register(
-        &s,
+        &mut s,
         r#"<Ui>
             <ScrollFrame name="Roller">
               <Size><AbsDimension x="200" y="100"/></Size>
@@ -433,7 +433,7 @@ fn the_scroll_range_is_the_childs_whole_subtree() {
     let mut s = script();
     s.set_screen_size(1024.0, 768.0);
     register(
-        &s,
+        &mut s,
         r#"<Ui>
             <ScrollFrame name="Reader">
               <Size><AbsDimension x="280" y="100"/></Size>
@@ -484,12 +484,12 @@ fn the_scroll_range_is_the_childs_whole_subtree() {
 /// one: a ScrollFrame that declares a child and has none is a typo, not a design.
 #[test]
 fn an_empty_scroll_child_is_reported() {
-    let s = script();
+    let mut s = script();
     let doc = crate::framexml::parse(
         r#"<Ui><ScrollFrame name="Hollow"><ScrollChild/></ScrollFrame></Ui>"#,
     )
     .expect("valid FrameXML");
-    let report = crate::loader::load(&s, &doc, &|_| None);
+    let report = crate::loader::load(&mut s, &doc, &|_| None);
     assert!(
         report
             .errors

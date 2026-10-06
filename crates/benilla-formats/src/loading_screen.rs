@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -50,7 +50,7 @@ fn schema() -> Schema {
 }
 
 /// Read LoadingScreens.dbc off the patch chain into a [`LoadingScreenCatalog`].
-pub fn load_loading_screens(chain: &mut Chain) -> Result<LoadingScreenCatalog> {
+pub fn load_loading_screens(chain: &mut impl FileSource) -> Result<LoadingScreenCatalog> {
     let bytes = chain
         .read_file(LOADING_SCREENS)
         .with_context(|| format!("reading {LOADING_SCREENS}"))?;

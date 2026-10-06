@@ -122,14 +122,14 @@ fn catalog() -> AnimData {
 /// regime every assertion in this file was written against (a real frame used to land here by
 /// accident). Zero is NOT equivalent: a frame with no delta never ticks a transition at all, so
 /// clips the tests expect to find mid-fade are never started.
-const FRAME_STEP: std::time::Duration = std::time::Duration::from_millis(1);
+const FRAME_STEP: benilla_time::Duration = benilla_time::Duration::from_millis(1);
 
 /// The delta [`step_clock`] will use for the next frame, when a test asked for more than
 /// [`FRAME_STEP`]. It has to travel as a resource rather than a plain pre-`update()` call on
 /// `Time`, because `Time::advance_by` *sets* the frame's delta rather than accumulating it — so a
 /// value written before `update()` is simply overwritten by the in-frame step.
 #[derive(Resource, Default)]
-struct NextStep(Option<std::time::Duration>);
+struct NextStep(Option<benilla_time::Duration>);
 
 /// The harness's whole clock, in place of `TimePlugin`'s real one (see [`app`]): one frame of
 /// [`FRAME_STEP`], or of whatever [`advance`] asked for.
@@ -141,7 +141,7 @@ fn step_clock(mut time: ResMut<Time>, mut next: ResMut<NextStep>) {
 /// [`FRAME_STEP`] (see [`app`]). Replaces `thread::sleep` + `update()`: the same intent, but the
 /// delta is the number written here rather than however long the machine happened to take.
 fn advance(app: &mut App, ms: u64) {
-    app.world_mut().resource_mut::<NextStep>().0 = Some(std::time::Duration::from_millis(ms));
+    app.world_mut().resource_mut::<NextStep>().0 = Some(benilla_time::Duration::from_millis(ms));
     app.update();
 }
 

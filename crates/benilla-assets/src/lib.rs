@@ -22,16 +22,43 @@ use bevy::prelude::*;
 
 pub mod column_grid;
 pub mod coords;
+pub mod gpu_table;
 pub mod materials;
 pub mod minimap_grid;
 mod spatial_cache;
 pub mod trace;
+pub mod web_materials;
+mod web_stats;
+pub use web_stats::{WebAssetStats, WebAssetStatsSnapshot};
+#[cfg(target_arch = "wasm32")]
+mod web_delivery;
+#[cfg(target_arch = "wasm32")]
+pub use web_delivery::{delivery_context, delivery_pending};
+#[cfg(target_arch = "wasm32")]
+mod web_reader;
+#[cfg(target_arch = "wasm32")]
+pub use web_reader::register_web_mpq_source;
+#[cfg(target_arch = "wasm32")]
+pub use web_reader::register_web_presence_source;
+#[cfg(target_arch = "wasm32")]
+pub use web_reader::register_web_metadata_source;
 
 mod anim_rng;
 pub use anim_rng::AnimRng;
 pub use spatial_cache::SpatialCache;
 mod world_assets;
 pub use world_assets::*;
+mod sprite_cache;
+mod sprite_source;
+mod sprite_store;
+pub use sprite_store::{SpriteAssets, SpriteStore};
+#[cfg(target_arch = "wasm32")]
+mod liquid_bind_group;
+pub use sprite_cache::SpriteCache;
+pub use sprite_source::{
+    decode_sprite_from_source, SpriteDecode, SpriteFileReader, SpriteFiles, SpriteRead,
+    SpriteSource,
+};
 
 mod model;
 pub use model::{
@@ -42,15 +69,23 @@ pub use model::{
     ATTRIBUTE_WOW_JOINT_WEIGHT, ATTRIBUTE_WOW_MERGED_SLOT,
 };
 mod adt;
+mod frame_xml_source;
+mod lua_source;
+mod raw_file;
+pub use raw_file::{RawFile, RawFileLoader, RawFilePlugin};
 mod terrain;
 mod wdt;
 pub use adt::{chunk_to_mesh, chunks_to_mesh, AdtLoader, AdtTile, ChunkShading};
+pub use frame_xml_source::{FrameXmlSource, FrameXmlSourceLoader};
+pub use lua_source::{LuaSource, LuaSourceLoader};
 pub use wdt::{WdtIndex, WdtIndexLoader};
 mod blp;
-pub use blp::{BlpImageLoader, BlpLoaderSettings, BlpVariant};
+pub use blp::{world_art_image, BlpImageLoader, BlpLoaderSettings, BlpVariant};
 /// Whether this run's GPU can eat WoW's stored DXT blocks, and the chain form that follows.
 mod gpu_blp;
-pub use gpu_blp::{bc_supported, for_upload, publish_bc_support, BlpGpuSupportPlugin, UploadChain};
+pub use gpu_blp::{
+    bc_supported, for_upload, publish_bc_support, BlpGpuPolicy, BlpGpuSupportPlugin, UploadChain,
+};
 mod tex_filter;
 pub use tex_filter::{publish_tex_filter, tex_filter, TexFilterSetting, ANISO_RANGE};
 mod m2;
@@ -59,7 +94,8 @@ pub use m2::{
     ModelRibbon, PortraitCamera,
 };
 mod wmo;
-pub use benilla_formats::{WmoPortalInfo, WmoPortalRef};
+pub use benilla_formats::normalize_client_path;
+pub use benilla_formats::{BlpMipChain, BlpTexels, ModelBlend, WmoPortalInfo, WmoPortalRef};
 pub use wmo::{
     cap96, collision_tri_bounds, collision_tri_grids, floor168, footprint_tri_bounds,
     footprint_tri_grids, DoodadBase, WmoGroupNav, WmoModel, WmoModelLoader,

@@ -29,10 +29,9 @@
 //! so a file is readable by, and swappable with, the reference's own.
 
 use std::collections::HashSet;
-use std::ffi::c_void;
 use std::fmt::Write as _;
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table, Value, Vm};
 
 use super::Model;
 
@@ -44,7 +43,7 @@ const MAX_DEPTH: usize = 32;
 impl super::UiScript {
     /// The registered names, in registration order — what the host writes out (the reference's
     /// own emission order, and stable across runs because the load order is).
-    pub fn saved_variable_names(&self) -> Vec<String> {
+    pub fn saved_variable_names(&mut self) -> Vec<String> {
         self.model_mut().saved_names.clone()
     }
 
@@ -55,33 +54,38 @@ impl super::UiScript {
     /// rather than written as something that would fail to load; the reference loses the same set,
     /// silently. `nil` IS written (`NAME = nil`), which is how the reference records a toggle that
     /// has never been touched.
-    pub fn saved_variables_text(&self) -> String {
-        self.saved_variables_text_for(&self.saved_variable_names())
+    pub fn saved_variables_text(&mut self) -> String {
+        let names = self.saved_variable_names();
+        self.saved_variables_text_for(&names)
     }
 
     /// [`UiScript::saved_variables_text`] over an explicit name list — an addon's own
     /// `## SavedVariables` set (1188 phase 3), which is declared in its manifest rather than
     /// through `RegisterForSave`. Same grammar, same skip rules; only the source of the names
     /// differs, which is exactly the difference between the reference's two mechanisms.
-    pub fn saved_variables_text_for(&self, names: &[String]) -> String {
-        let mut out = String::new();
-        let mut unwritable = Vec::new();
-        for name in names {
-            let value: Value = match self.lua().globals().get(name.as_str()) {
-                Ok(v) => v,
-                Err(e) => {
-                    unwritable.push(format!("{name} ({e})"));
-                    continue;
+    pub fn saved_variables_text_for(&mut self, names: &[String]) -> String {
+        let (out, unwritable) = {
+            let lua = &mut self.lua;
+            let mut out = String::new();
+            let mut unwritable = Vec::new();
+            for name in names {
+                let value: Value = match lua.get_global(name.as_str()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        unwritable.push(format!("{name} ({e})"));
+                        continue;
+                    }
+                };
+                let mut seen = HashSet::new();
+                match serialize(lua, &value, 1, &mut seen) {
+                    Some(text) => {
+                        let _ = writeln!(out, "{name} = {text}");
+                    }
+                    None => unwritable.push(name.clone()),
                 }
-            };
-            let mut seen = HashSet::new();
-            match serialize(&value, 1, &mut seen) {
-                Some(text) => {
-                    let _ = writeln!(out, "{name} = {text}");
-                }
-                None => unwritable.push(name.clone()),
             }
-        }
+            (out, unwritable)
+        };
         if !unwritable.is_empty() {
             self.model_mut().record_warning(format!(
                 "saved variables: not serializable, skipped: {}",
@@ -98,14 +102,19 @@ impl super::UiScript {
 /// starts at 1); `seen` carries the table identities on the current path — a repeat is a cycle and
 /// drops that entry. Note it is the *path*, not every table ever visited: a shared subtable is
 /// legitimately written twice (as it must be, since the file has no way to express aliasing).
-fn serialize(v: &Value, depth: usize, seen: &mut HashSet<*const c_void>) -> Option<String> {
+fn serialize(
+    lua: &mut impl LuaContext,
+    v: &Value,
+    depth: usize,
+    seen: &mut HashSet<u64>,
+) -> Option<String> {
     match v {
         Value::Nil => Some("nil".to_string()),
         Value::Boolean(b) => Some(b.to_string()),
         Value::Integer(i) => Some(i.to_string()),
         Value::Number(n) => number(*n),
         Value::String(s) => Some(quote(&s.to_string_lossy())),
-        Value::Table(t) => table(t, depth, seen),
+        Value::Table(t) => table(lua, t, depth, seen),
         // Functions, threads, userdata (every widget reference is one — a frame's Lua value is a
         // table whose `[0]` is a lightuserdata handle, RF-0023) cannot be written as a literal.
         _ => None,
@@ -158,26 +167,31 @@ fn quote(s: &str) -> String {
 /// part that `next` walks ascending. Our vendored parser was restored to that placement in decision
 /// 2111 — before it, this exact file shape came back keyed 1..n in the *hash* part and Bagnon's
 /// keyring drew first.
-fn table(t: &Table, depth: usize, seen: &mut HashSet<*const c_void>) -> Option<String> {
-    if depth > MAX_DEPTH || !seen.insert(t.to_pointer()) {
+fn table(
+    lua: &mut impl LuaContext,
+    t: &Table,
+    depth: usize,
+    seen: &mut HashSet<u64>,
+) -> Option<String> {
+    let identity = lua.table_identity(t).ok()?;
+    if depth > MAX_DEPTH || !seen.insert(identity) {
         return None;
     }
     let mut ints: Vec<(i64, String)> = Vec::new();
     let mut strs: Vec<(String, String)> = Vec::new();
-    for pair in t.pairs::<Value, Value>() {
-        let Ok((k, v)) = pair else { continue };
-        let Some(value) = serialize(&v, depth + 1, seen) else {
+    for (k, v) in lua.table_entries(t).ok()? {
+        let Some(value) = serialize(lua, &v, depth + 1, seen) else {
             continue; // an unserializable entry drops, like the reference's
         };
         match k {
             Value::Integer(i) => ints.push((i, value)),
             // A float key that is integral is the same slot as the integer in Lua 5.1.
             Value::Number(n) if n.fract() == 0.0 => ints.push((n as i64, value)),
-            Value::String(s) => strs.push((s.to_string_lossy(), value)),
+            Value::String(s) => strs.push((s.to_string_lossy().into_owned(), value)),
             _ => continue, // a table/bool/function key cannot be written as a literal
         }
     }
-    seen.remove(&t.to_pointer());
+    seen.remove(&identity);
     ints.sort_by_key(|(k, _)| *k);
     strs.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -203,17 +217,14 @@ fn table(t: &Table, depth: usize, seen: &mut HashSet<*const c_void>) -> Option<S
 /// has nothing to gate; when addon loading lands, this is one of the bindings that needs it (and
 /// an addon's own `## SavedVariables` file is the mechanism it should use instead — the `.toc`
 /// directive [`crate::toc::Toc::list`] already parses).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "RegisterForSave",
-        lua.create_function(|lua, name: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if !model.saved_names.contains(&name) {
-                model.saved_names.push(name);
-            }
-            Ok(())
-        })?,
-    )
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("RegisterForSave", |lua, name: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if !model.saved_names.contains(&name) {
+            model.saved_names.push(name);
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -233,7 +244,7 @@ mod tests {
     /// That is the director's report; the writer is unchanged and the parser is what was wrong.
     #[test]
     fn a_saved_list_still_walks_in_index_order_after_a_restart() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             r#"
             BAGS = { -2, 0, 1, 2, 3, 4 }
@@ -246,19 +257,19 @@ mod tests {
         "#,
         )
         .unwrap();
-        let walk = |vm: &UiScript| {
+        let walk = |vm: &mut UiScript| {
             vm.eval::<String>(
                 "local out = '' for _, v in pairs(BAGS) do out = out .. v .. ',' end return out",
             )
             .unwrap()
         };
-        assert_eq!(walk(&s), "0,1,2,3,4,-2,", "the live table, before any save");
+        assert_eq!(walk(&mut s), "0,1,2,3,4,-2,", "the live table, before any save");
 
         let text = s.saved_variables_text();
-        let fresh = UiScript::new().unwrap();
+        let mut fresh = UiScript::new().unwrap();
         fresh.run(&text).unwrap();
         assert_eq!(
-            walk(&fresh),
+            walk(&mut fresh),
             "0,1,2,3,4,-2,",
             "the restart must walk the same order the live session did; wrote:\n{text}"
         );
@@ -321,7 +332,7 @@ mod tests {
         assert!(s.take_warnings().is_empty(), "nothing was unserializable");
 
         // A fresh VM (the restart), the file's chunk, and every value is back.
-        let fresh = UiScript::new().unwrap();
+        let mut fresh = UiScript::new().unwrap();
         fresh.run(&text).unwrap();
         assert_eq!(
             fresh

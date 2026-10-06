@@ -197,25 +197,27 @@ pub(in crate::entities) fn attach_held_items(
                 *slot = None;
             }
         }
-        if attached.as_ref().is_some_and(|a| a.applied == next) {
+        if attached.as_ref().is_some_and(|a| {
+            a.applied == next
+                && next
+                    .slots
+                    .iter()
+                    .zip(a.spawned.iter())
+                    .all(|(slot, root)| slot.is_none() || root.is_some())
+        }) {
             continue;
         }
         let (applied, mut roots) = attached.as_ref().map_or_else(
             || (HeldItems::default(), [None; ATTACH_SLOTS]),
             |a| (a.applied.clone(), a.spawned),
         );
-        for (slot_idx, (root, (was, wants))) in roots
+        for (slot_idx, (root, (was, pending))) in roots
             .iter_mut()
-            .zip(
-                applied
-                    .slots
-                    .iter()
-                    .copied()
-                    .zip(next.slots.iter().copied()),
-            )
+            .zip(applied.slots.iter().copied().zip(next.slots.iter_mut()))
             .enumerate()
         {
-            if was == wants {
+            let wants = *pending;
+            if was == wants && (wants.is_none() || root.is_some()) {
                 continue;
             }
             // The MOVE: same item, new attach point (the sheath swap). Everything riding the root
@@ -271,6 +273,12 @@ pub(in crate::entities) fn attach_held_items(
                     &hs,
                 )
             });
+            // Built model parts are not proof of a successful attachment: the
+            // wearer may still lack its pose/anchor. Commit only a spawned root,
+            // otherwise the unchanged desired slot must retry next frame.
+            if wants.is_some() && root.is_none() {
+                *pending = None;
+            }
         }
         let applied = HeldAttached {
             applied: next,

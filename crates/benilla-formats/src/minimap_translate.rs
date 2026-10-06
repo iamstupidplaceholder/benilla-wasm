@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
-use crate::Chain;
+use crate::FileSource;
 
 const MD5_TRANSLATE: &str = "textures\\Minimap\\md5translate.trs";
 
@@ -80,7 +80,7 @@ fn parse_trs(text: &str) -> HashMap<String, String> {
 }
 
 /// Read `md5translate.trs` off the patch chain into a [`MinimapTranslate`].
-pub fn load_minimap_translate(chain: &mut Chain) -> Result<MinimapTranslate> {
+pub fn load_minimap_translate(chain: &mut impl FileSource) -> Result<MinimapTranslate> {
     let bytes = chain
         .read_file(MD5_TRANSLATE)
         .context("reading md5translate.trs")?;

@@ -296,15 +296,14 @@ pub(super) const FALL_FAR_TIME: f32 = 0.5;
 /// Skin width (yd) kept between the capsule and geometry on casts.
 pub(super) const SKIN_WIDTH: f32 = 0.02;
 
-/// Seconds of **stalled** streaming before the post-snap hold gives up (see [`Player::settling`]).
-/// A *stall* budget, not a load budget: the deadline is pushed forward while the resident world is
-/// still the departed map's (0710's fail-closed law) **and while the destination is visibly still
-/// arriving** (any load-progress counter moved — B263, decision 1303). It can therefore only fire
-/// against a stream that has made no progress at all for this long — missing data, dead IO — never
-/// against a slow machine. As a fixed load budget it was measured 0.01 s from firing on a *fast*
-/// machine (a Stormwind arrival consumed 5.99 s of the 6.00 s), which is B263: on any slower
-/// machine it released gravity mid-stream and the body fell through the not-yet-collided city.
-pub(crate) const SETTLE_TIMEOUT: f32 = 6.0;
+/// Maximum post-snap load time. Expiry aborts the session, never releases a body
+/// onto an incomplete scene. Progress counters alone cannot distinguish stalled
+/// IO from a large asset still decoding, so they no longer enable an early fall.
+/// Browser cold-cache HTTP delivery can exceed the native disk-load allowance.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const SETTLE_TIMEOUT: f32 = 30.0;
+#[cfg(target_arch = "wasm32")]
+pub(crate) const SETTLE_TIMEOUT: f32 = 180.0;
 
 /// The player body's collision capsule, built once at startup and swept by avian's `MoveAndSlide`
 /// each frame. Its origin is the capsule centre; the player's `pos` is its feet (centre −
@@ -789,6 +788,9 @@ pub(crate) struct Player {
     /// animates from nothing, and sends nothing, which is both the fix and what possession looks
     /// like from the outside (decision 1277).
     pub(crate) foreign_mover: Option<u64>,
+    /// Permission for a foreign unit is not a mover handoff until its streamed
+    /// descriptor confirms possession by us. Retain it across packet ordering gaps.
+    pub(super) pending_foreign_mover: Option<u64>,
     /// **The reins are between hands** — the body we drive has changed, and we drive *nothing*
     /// until we have adopted its pose.
     ///
@@ -846,20 +848,17 @@ pub(crate) struct Player {
     /// with gravity **off** — otherwise it falls through the not-yet-loaded city/building floor —
     /// and the loading screen waits for the release. **Released by the terrain streamer** (decision
     /// 0737) once the destination is resident — scene spawned and collider queue quiet
-    /// ([`crate::loading_screen::WorldLoadProgress`]) — or at [`SETTLE_TIMEOUT`]; **never by ground
+    /// ([`crate::loading_screen::WorldLoadProgress`]). At [`SETTLE_TIMEOUT`] the session is
+    /// aborted while the body stays held, not released. **Never by ground
     /// contact**, which a flyer, a swimmer, or a genuinely airborne teleport never produces (the
     /// old probe release ran only in the walk mover, and each other mover mode needed — and got —
     /// its own leak patch before 0737 deleted the class).
     pub(crate) settling: bool,
-    /// `Time::elapsed_secs` deadline to give up settling and release (see [`Player::settling`]).
-    /// Pushed forward by the streamer while [`Player::world_stale`] (0710's fail-closed law) and
-    /// while any load-progress counter is still moving (B263, decision 1303) — so it measures
-    /// *stall*, and a slow arrival can never exhaust it.
+    /// Deadline recorded by the snap producers. The release gate derives the hard
+    /// limit from `settle_since`; this no longer grants an unsafe stall release.
     pub(crate) settle_deadline: f32,
-    /// `Time::elapsed_secs` when the current settle hold began (the snap) — what the `sett` trace
-    /// reports the wait against. The deadline above stopped measuring this the moment it became a
-    /// stall budget: it is re-pushed all through a live stream, so "deadline minus timeout" names
-    /// the last push, not the arrival.
+    /// `Time::elapsed_secs` when the current post-snap load began. A cinematic
+    /// returning focus to the body starts a fresh load budget.
     pub(crate) settle_since: f32,
     /// **The colliders under our feet may still belong to the map we just left.** Set at every
     /// snap, cleared by the terrain streamer once the destination's own world is resident.
@@ -871,8 +870,7 @@ pub(crate) struct Player {
     /// (Zul'Gurub's pad is z 92.53 against the Stranglethorn ground you left at 92.30), which is
     /// how the pre-0710 ground probe declared the floor found on frame 0 and dropped the body
     /// 15 yd through the ZG city WMO. While this flag is set the streamer makes no release
-    /// judgement and pushes [`Player::settle_deadline`] forward, so the timeout budget measures
-    /// time waiting for the *destination's* world (decisions 0710 + 0737).
+    /// judgement. An incomplete destination can only time out by aborting the session.
     pub(crate) world_stale: bool,
     /// A same-map teleport landed: the server relocated the mover, so any in-progress self
     /// server-ride (charge/taxi) is **void** — vmangos teleports at ITS flight end (its own spline

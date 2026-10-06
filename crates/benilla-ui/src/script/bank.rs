@@ -36,7 +36,7 @@
 //!   slot" law as the doll (`crate::script::container`'s `EQUIPMENT_BAG` space). See the binding
 //!   for the four places the reference's own file pins the bag arm's numbering.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{FromLua, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -72,62 +72,45 @@ impl super::UiScript {
 }
 
 /// Register the bank globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumBankSlots() → numSlots, full (1/nil — the client's boolean shape; the reference
     // destructures `local numSlots, full = GetNumBankSlots()`). 0, nil with no bank open.
-    g.set(
-        "GetNumBankSlots",
-        lua.create_function(|lua, ()| {
-            let n = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.bank.as_ref().map_or(0, |b| b.num_purchased)
-            };
-            let full = if n >= 6 {
-                Value::Integer(1)
-            } else {
-                Value::Nil
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(i64::from(n)),
-                full,
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetNumBankSlots", |lua, ()| {
+        let n = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.bank.as_ref().map_or(0, |b| b.num_purchased)
+        };
+        let full = if n >= 6 {
+            Value::Integer(1)
+        } else {
+            Value::Nil
+        };
+        Ok(MultiValue::from([Value::Integer(i64::from(n)), full]))
+    })?;
 
     // GetBankSlotCost(numSlots) → the next slot's cost in copper (module doc: the argument is
     // decorative — the pushed state already names the next slot). 0 with no bank open.
-    g.set(
-        "GetBankSlotCost",
-        lua.create_function(|lua, _n: Option<u32>| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.bank.as_ref().map_or(0, |b| b.next_cost)))
-        })?,
-    )?;
+    lua.register_function("GetBankSlotCost", |lua, _n: Option<u32>| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.bank.as_ref().map_or(0, |b| b.next_cost)))
+    })?;
 
     // BenillaGetBankBagTexture(i) → the bank bag slot's held-bag icon path | nil (empty slot, or
     // no bank open) — benilla-named (module doc: the snapshot carries what the reference read
     // through the inventory-item API).
     // PurchaseSlot() — queue the bank-slot buy intent (the CONFIRM_BUY_BANK_SLOT popup's accept).
-    g.set(
-        "PurchaseSlot",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.bank_purchase = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("PurchaseSlot", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.bank_purchase = true;
+        Ok(())
+    })?;
 
     // CloseBankFrame() — client-side close (no packet exists, decision 0604): flag the app.
-    g.set(
-        "CloseBankFrame",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.bank_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseBankFrame", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.bank_close = true;
+        Ok(())
+    })?;
 
     // BankButtonIDToInvSlotID(id, isBag) — the pure button→live-slot map (module doc).
     //
@@ -163,21 +146,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Argument 1 is shape A ([`binding_abi::number_arg`]): `lua_isnumber` gated, truncated toward
     // zero by the `0x40a2b0` ftol, low dword only, and raising the `.data` usage string verbatim
     // — which names only `buttonID`, the reference's own omission of the second parameter.
-    g.set(
+    lua.register_function(
         "BankButtonIDToInvSlotID",
-        lua.create_function(|lua, (id, is_bag): (Value, Option<Value>)| {
-            let n = super::binding_abi::number_arg(
-                lua,
+        |_, (id, is_bag): (Value, Option<Value>)| {
+            let n = super::binding_abi::neutral_number_arg(
                 id,
                 "Usage: BankButtonIDToInvSlotID(buttonID)",
             )?;
             // Finding 2: `lua_isnumber(L, 2)`, asked of the VALUE's type — never its truthiness.
-            let is_bag = is_bag
-                .and_then(|v| lua.coerce_number(v).ok().flatten())
-                .is_some();
+            let is_bag = is_bag.and_then(|v| f64::from_lua(v).ok()).is_some();
             let step = if is_bag { 59 } else { 39 };
             Ok(i64::from(n.wrapping_add(step)))
-        })?,
+        },
     )?;
 
     Ok(())
@@ -356,7 +336,7 @@ mod tests {
     /// `0x4f8530` carve.
     #[test]
     fn bank_button_to_inv_slot() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<i64>("return BankButtonIDToInvSlotID(1)").unwrap(),
             40
@@ -394,7 +374,7 @@ mod tests {
     /// invented (wow-re `scratch/bank-button-invslot-law.md`).
     #[test]
     fn bank_button_to_inv_slot_follows_the_carved_abi() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
 
         // **`isBag` is a TYPE test** (`lua_isnumber(L,2)`), not a truthiness test. `true` is not a
         // number, so it takes the ITEM arm exactly as nil and false do; `0` and `"1"` are numbers

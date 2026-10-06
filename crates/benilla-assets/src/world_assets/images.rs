@@ -236,11 +236,16 @@ pub fn liquid_frame_array(frames: Vec<BlpMipChain>, normalize_dc: bool) -> Image
     if normalize_dc && dc_normalization_enabled() {
         flatten_frame_dc(&mut data, &spans, mip_level_count as usize);
     }
+    // Same GLES allocation adapter as terrain arrays: square 30-layer textures
+    // otherwise become CubeArray despite the explicit D2Array view. Duplicate a
+    // complete final mip chain as an unsampled physical layer; animation retains
+    // its authored logical frame count. Native allocation is unchanged.
+    let (data, physical_layers) = crate::terrain::webgl_array_payload(data, frames.len() as u32);
     let mut image = Image::new_uninit(
         Extent3d {
             width: size,
             height: size,
-            depth_or_array_layers: frames.len() as u32,
+            depth_or_array_layers: physical_layers,
         },
         TextureDimension::D2,
         color_texture_format(),

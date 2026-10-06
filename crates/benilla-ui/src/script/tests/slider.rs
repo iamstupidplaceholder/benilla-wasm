@@ -165,7 +165,7 @@ fn slider_track_press_seats_the_thumb_and_a_mouseless_slider_ignores_it() {
 
 #[test]
 fn slider_methods_exist_only_on_sliders() {
-    let s = script();
+    let mut s = script();
     let ok: bool = s
         .eval(
             r#"
@@ -186,7 +186,7 @@ fn slider_methods_exist_only_on_sliders() {
 fn slider_default_orientation_is_vertical() {
     // The load-bearing fact of decision 0250: every scrollbar omits `orientation` and is vertical,
     // so the CSimpleSlider ctor default is VERTICAL — the opposite of StatusBar's HORIZONTAL.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local sl = CreateFrame("Slider", "SlOrient")
@@ -200,7 +200,7 @@ fn slider_default_orientation_is_vertical() {
 
 #[test]
 fn slider_value_clamps_and_does_not_swap_minmax() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local sl = CreateFrame("Slider", "SlClamp")
@@ -222,7 +222,7 @@ fn slider_value_clamps_and_does_not_swap_minmax() {
 
 #[test]
 fn slider_setvalue_fires_onvaluechanged_only_on_change() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local sl = CreateFrame("Slider", "SlEvt")
@@ -249,7 +249,7 @@ fn slider_setvalue_fires_onvaluechanged_only_on_change() {
 /// fail here rather than pass by accident.
 #[test]
 fn a_slider_does_not_answer_the_buttons_enable_trio() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local sl = CreateFrame("Slider", "SlEnable")
@@ -262,7 +262,7 @@ fn a_slider_does_not_answer_the_buttons_enable_trio() {
         end
         -- The Button's own predicate is the NUMBER 1 / the NUMBER 0, never a Lua boolean — its
         -- false leg is 0 rather than nil, settled per body at `0x7800b0`'s `setne`+`fild`
-        -- (wow-re `button-enabled-state.md`; decision 2118's `binding_abi::flag` doc).
+        -- (wow-re `button-enabled-state.md`; decision 2118's `binding_abi::neutral_flag` doc).
         assert(b:IsEnabled() == 1, "1, not true")
         b:Disable()
         assert(b:IsEnabled() == 0, "0, not false and not nil")
@@ -273,7 +273,7 @@ fn a_slider_does_not_answer_the_buttons_enable_trio() {
 
 #[test]
 fn slider_get_thumb_texture_returns_a_stable_region() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local sl = CreateFrame("Slider", "SlThumb")
@@ -331,7 +331,7 @@ fn slider_value_bits_gate_the_first_fire_and_the_range_reclamp() {
     // SetMinMaxValues re-clamps through SetValue only once a value exists. Decision 2095 — Atlas's
     // option sliders raised from their own <OnLoad> because our SetMinMaxValues clamped the
     // zero-init value into (0.25, 1) and ran a handler the addon had not armed yet.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         seen = {}
@@ -380,7 +380,7 @@ fn slider_onload_range_does_not_run_an_unarmed_onvaluechanged() {
         </Ui>"#,
     )
     .unwrap();
-    let report = crate::loader::load(&s, &doc, &|_| None);
+    let report = crate::loader::load(&mut s, &doc, &|_| None);
     assert!(
         report.errors.is_empty() && s.take_errors().is_empty(),
         "an OnLoad range on a fresh slider must not run OnValueChanged: {:?}",
@@ -465,7 +465,7 @@ fn slider_setvalue_quantises_onto_the_min_anchored_lattice() {
     // truncated by `__ftol`) BEFORE it stores — so `GetValue` on a stepped slider can only ever
     // answer a lattice point, and the lattice is anchored at `min`, not at zero. Decision 2095
     // named this divergence and left it; this is it closed.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         q = CreateFrame("Slider", "SlQuant")
@@ -498,7 +498,7 @@ fn a_zero_step_leaves_the_value_continuous() {
     // The gate that keeps every scrollbar working: `UIPanelScrollBarTemplate` declares no
     // `valueStep`, so `[+0x324]` stays at the ctor's 0.0 and `0x78999c`'s `fcomp(step, 0.0)`
     // skips the quantiser outright. A stepless slider stores exactly what it was handed.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         c = CreateFrame("Slider", "SlCont")
@@ -520,7 +520,7 @@ fn the_quantised_value_is_not_re_clamped_and_may_pass_max() {
     // number of steps rounds *past* its own max at the top of the travel. This looks like a bug
     // and is the client's arithmetic; it is unreachable in the shipped UI because every stepped
     // slider the reference ships is an exact multiple of its step.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         o = CreateFrame("Slider", "SlOver")
@@ -547,7 +547,7 @@ fn a_faux_scrollframes_rows_snap_and_its_bottom_is_exact() {
     // (`UIPanelTemplates.lua:180`) and then sets that same step, so the range IS a whole number
     // of steps: every drag lands on a row boundary and the bottom of the travel is exactly max.
     // 20 items, 10 on screen, 16 units a row ⇒ range 0..160, step 16.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         f = CreateFrame("Slider", "SlFaux")
@@ -578,7 +578,7 @@ fn a_move_inside_one_step_fires_nothing() {
     // and what is stored is already quantised), so a drag that stays within one step's band
     // resolves to the same lattice point and never reaches `OnValueChanged`. Before this, every
     // pixel of a stepped drag fired.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         fires = 0
@@ -612,7 +612,7 @@ fn set_value_step_re_quantises_the_held_value_and_can_fire() {
     // `SetValueStep 0x789a60` stores the step and then re-pushes the range through
     // `SetMinMaxValues`, which re-clamps the held value through `SetValue` — onto the NEW lattice
     // (decision 2143). A step handed to a slider that already holds a value moves it and fires.
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         fires = 0
@@ -651,7 +651,7 @@ fn a_step_before_any_range_is_the_whole_call() {
     // No range is pushed, nothing is clamped, nothing fires. It is what keeps an `<OnLoad>` that
     // sets a step before a range from running a handler the addon has not armed (2095's subject,
     // one verb over).
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         fires = 0

@@ -35,7 +35,7 @@
 //! 0 until the round-trip fills them. Nothing here is load-bearing for correctness of the
 //! round-trip; it only removes the latency.
 
-use mlua::Lua;
+use benilla_lua::LuaContext;
 
 use super::{MeasureRequest, MeasuredText, Model};
 use crate::widget::RegionHandle;
@@ -65,12 +65,17 @@ pub trait TextMeasure {
 /// FontString): they already treat a key-mismatched measure as absent, so filling the cache here
 /// is invisible to them beyond the answer arriving. A no-op without a measurer, and a no-op when
 /// the stored measure is already current — which is what keeps a per-frame poll from re-measuring.
-pub(super) fn ensure_measured(lua: &Lua, rh: RegionHandle) {
+/// Backend-neutral entry to the same synchronous measure cache update.
+pub(super) fn ensure_measured(lua: &impl LuaContext, rh: RegionHandle) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    ensure_measured_model(&mut *model, rh);
+}
+
+fn ensure_measured_model(model: &mut Model, rh: RegionHandle) {
     if model.measurer.is_none() {
         return;
     }
-    let Some(req) = super::layout::measure_request_for(&mut model, rh) else {
+    let Some(req) = super::layout::measure_request_for(model, rh) else {
         return; // not a FontString, no text, or the stored measure is already this string's
     };
     // Taken out for the call and put straight back: the measurer needs `&mut self` (a font shaper
@@ -115,7 +120,7 @@ impl super::UiScript {
 
     /// Whether a [`TextMeasure`] is installed — the host's gate for skipping its own batch measure
     /// pass, which would find nothing to do anyway.
-    pub fn has_text_measurer(&self) -> bool {
+    pub fn has_text_measurer(&mut self) -> bool {
         self.model_mut().measurer.is_some()
     }
 

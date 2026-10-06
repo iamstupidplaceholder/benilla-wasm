@@ -21,7 +21,7 @@ use benilla_ui::script::{CursorPayload, UiScript};
 /// it never assigns `MacroFrame.selectedMacro`. Our retired file added a benilla-only
 /// `BenillaMacroFrame_EnsureSelection` that picked the first one, and every test here leaned on it
 /// without saying so (decision 1848). A player clicks; so do these.
-fn select_first(s: &UiScript) {
+fn select_first(s: &mut UiScript) {
     s.run("MacroButton1:Click()").unwrap();
 }
 
@@ -109,7 +109,7 @@ fn harness_with(player: &str) -> UiScript {
         r"Interface\FrameXML\ClassTrainerFrameTemplates.xml",
         r"Interface\FrameXML\MainMenuBarMicroButtons.xml", // stock `MacroFrame_OnShow`/`_OnHide` drive the micro button
     ] {
-        super::test_ui::load_ui(&s, file);
+        super::test_ui::load_ui(&mut s, file);
     }
     // The window is a LoadOnDemand addon, reached the way the app reaches it: seated off the
     // chain as a registry row (1957) and loaded by the reference's own `MacroFrame_LoadUI`
@@ -137,9 +137,9 @@ fn no_errors(s: &UiScript, step: &str) {
 #[test]
 fn new_then_pick_an_icon_then_okay_creates_the_macro() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run("ShowMacroFrame()").unwrap();
-    select_first(&s);
+    select_first(&mut s);
     no_errors(&s, "show");
 
     // OKAY starts disabled: no name, no icon.
@@ -196,7 +196,7 @@ fn typing_a_body_and_closing_the_window_commits_it() {
     let mut s = harness();
     s.run(r#"CreateMacro("Ambush", 1, "")"#).unwrap();
     s.run("ShowMacroFrame()").unwrap();
-    select_first(&s);
+    select_first(&mut s);
     s.run(r#"MacroFrameText:SetText("/cast Ambush\n/say pew")"#)
         .unwrap();
     // The window's dirty flag comes from the box's `OnTextChanged`, which the drain owes until the
@@ -233,7 +233,7 @@ fn the_character_tab_creates_in_the_second_index_range_and_switching_saves() {
     let mut s = harness();
     s.run(r#"CreateMacro("Acct", 1, "")"#).unwrap();
     s.run("ShowMacroFrame()").unwrap();
-    select_first(&s);
+    select_first(&mut s);
 
     // Type into the account macro, then switch tabs WITHOUT any explicit save.
     s.run(r#"MacroFrameText:SetText("/say account")"#).unwrap();
@@ -280,11 +280,11 @@ fn the_character_tab_creates_in_the_second_index_range_and_switching_saves() {
 #[test]
 fn delete_removes_the_macro_and_re_selects() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run(r#"CreateMacro("One", 1, "/say one")"#).unwrap();
     s.run(r#"CreateMacro("Two", 2, "/say two")"#).unwrap();
     s.run("ShowMacroFrame()").unwrap();
-    select_first(&s);
+    select_first(&mut s);
 
     s.run("MacroDeleteButton:Click()").unwrap();
     no_errors(&s, "delete");
@@ -326,7 +326,7 @@ fn dragging_a_macro_button_loads_the_cursor_with_the_macro_payload() {
     s.run(r#"CreateMacro("Ambush", 1, "/cast Ambush")"#)
         .unwrap();
     s.run("ShowMacroFrame()").unwrap();
-    select_first(&s);
+    select_first(&mut s);
 
     // A REAL drag gesture — press, then move — the way `bag_tests` drives one. Calling
     // `GetScript("OnDragStart")(button)` leaves `this` nil, and the stock handler reads it
@@ -358,9 +358,9 @@ fn dragging_a_macro_button_loads_the_cursor_with_the_macro_payload() {
 #[test]
 fn the_icon_chooser_shows_the_pushed_list_and_hides_its_tail() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run("ShowMacroFrame()").unwrap();
-    select_first(&s);
+    select_first(&mut s);
     s.run("MacroNewButton:Click()").unwrap();
     no_errors(&s, "popup");
 
@@ -426,7 +426,7 @@ fn the_two_tabs_fit_inside_the_window() {
     for (name, cap_should_bind) in [("Probe", false), ("Bartholomewthelongnamed", true)] {
         let mut s = harness_named(name);
         s.run("ShowMacroFrame()").unwrap();
-        select_first(&s);
+        select_first(&mut s);
         s.resolve();
 
         let (w1, w2, left1, label1, label2): (f64, f64, f64, f64, f64) = s
@@ -533,7 +533,7 @@ fn the_tab_row_settles_and_stays_inside_the_window() {
     // pass now rather than after a convergence.
     let mut s = harness_named("Onehunter");
     s.run("ShowMacroFrame()").unwrap();
-    select_first(&s);
+    select_first(&mut s);
 
     let mut widths = Vec::new();
     for _ in 0..12 {
@@ -586,7 +586,7 @@ fn no_character_name_can_push_the_tab_row_off_the_window() {
     for name in ["Ai", "Onehunter", "Bartholomewthethird", &"W".repeat(64)] {
         let mut s = harness_named(name);
         s.run("ShowMacroFrame()").unwrap();
-        select_first(&s);
+        select_first(&mut s);
         s.tick(0.016);
         s.resolve();
         let (right, w2): (f64, f64) = s
@@ -626,7 +626,7 @@ fn the_tab_highlight_is_exactly_its_tab() {
         // highlight tracking its tab on EVERY frame is the property, not just on the first.
         let mut s = harness_named(name);
         s.run("ShowMacroFrame()").unwrap();
-        select_first(&s);
+        select_first(&mut s);
 
         for frame in 0..12 {
             s.tick(0.016);
@@ -705,8 +705,8 @@ fn the_tab_highlight_is_exactly_its_tab() {
 #[test]
 fn the_icon_picker_opens_without_raising() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
-    select_first(&s);
+    let mut s = harness();
+    select_first(&mut s);
     let _ = s.errors();
     s.run("MacroEditButton:Click()").unwrap();
     assert!(

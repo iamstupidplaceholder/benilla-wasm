@@ -7,7 +7,7 @@ use super::common::script;
 
 #[test]
 fn positional_format_reorders_and_mix_is_an_error() {
-    let s = script();
+    let mut s = script();
     assert_eq!(
         s.eval::<String>(r#"return format("%2$s %1$s", "a", "b")"#)
             .unwrap(),
@@ -40,7 +40,7 @@ fn positional_format_reorders_and_mix_is_an_error() {
 
 #[test]
 fn stdlib_aliases_and_helpers() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         -- getglobal on a named frame
@@ -69,7 +69,7 @@ fn stdlib_aliases_and_helpers() {
 
 #[test]
 fn sandbox_removes_dangerous_globals() {
-    let s = script();
+    let mut s = script();
     let all_nil: bool = s
         .eval(
             r#"return io == nil and os == nil and package == nil and require == nil
@@ -112,7 +112,7 @@ fn sandbox_removes_dangerous_globals() {
 /// caller in another's.
 #[test]
 fn acedbs_capture_names_the_calling_addon_not_the_librarys_owner() {
-    let s = script();
+    let mut s = script();
     s.run_chunk_named(
         b"function BenillaProbeRegisterDB()
             return string.gsub(debugstack(), \".-\\n.-\\\\AddOns\\\\(.-)\\\\.*\", \"%1\")
@@ -135,7 +135,7 @@ fn acedbs_capture_names_the_calling_addon_not_the_librarys_owner() {
 /// `AceLibrary.lua:70`'s reader: the first line, whole, is a frame it can pull a file name out of.
 #[test]
 fn the_first_debugstack_line_is_a_frame() {
-    let s = script();
+    let mut s = script();
     s.run_chunk_named(
         b"function BenillaProbeFirstLine()
             local first = string.gsub(debugstack(), \"\\n.*\", \"\")
@@ -156,7 +156,7 @@ fn the_first_debugstack_line_is_a_frame() {
 /// reference's 5.0 wording is `` in function `name' ``.
 #[test]
 fn a_named_frame_uses_the_5_0_backtick_quoting() {
-    let s = script();
+    let mut s = script();
     let found: String = s
         .eval(
             "function BenillaProbeNamed()                 local _, _, f = string.find(debugstack(), \"([`<].-['>])\")                 return f or '<no match>'              end              local r = BenillaProbeNamed() return r",
@@ -179,7 +179,7 @@ fn a_named_frame_uses_the_5_0_backtick_quoting() {
 /// `"\\AddOns\\(.*)\\"` reading the LAST path in the string.
 #[test]
 fn debugstack_frames_end_in_newline_and_count1_does_not_clamp() {
-    let s = script();
+    let mut s = script();
     let trace = s.eval::<String>("return debugstack()").unwrap();
     assert!(
         trace.ends_with('\n'),
@@ -224,7 +224,7 @@ fn an_addon_chunk_is_named_the_way_the_client_names_it() {
     assert_eq!(name, "@Interface\\AddOns\\FuBar_BagFu\\FuBar_BagFu.lua");
 
     // FuBar's own pattern, run for real against a traceback from a chunk loaded under that name.
-    let s = script();
+    let mut s = script();
     s.run_chunk_named(
         b"function BenillaProbeFolder() return debugstack(1, 1, 0) end",
         &name,
@@ -250,7 +250,7 @@ fn an_addon_chunk_is_named_the_way_the_client_names_it() {
 
 #[test]
 fn loadstring_is_text_only_bytecode_rejected() {
-    let s = script();
+    let mut s = script();
     let ok: bool = s
         .eval(
             r#"
@@ -290,7 +290,7 @@ fn gettime_starts_at_zero_and_tracks_tick() {
 /// library aborted before it could register.
 #[test]
 fn the_rest_of_the_bare_globals() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         -- string family
@@ -334,7 +334,7 @@ fn the_rest_of_the_bare_globals() {
 /// one of them erroring at runtime, which is 1188's stated redirect-the-arc risk.
 #[test]
 fn the_lua_5_0_dialect_vanilla_addons_are_written_in_runs_here() {
-    let s = script();
+    let mut s = script();
     s.run(
         r##"
         -- The implicit vararg table, 5.0's spelling of what 5.1 does with `...`.
@@ -377,7 +377,7 @@ fn the_lua_5_0_dialect_vanilla_addons_are_written_in_runs_here() {
 /// conversion is checked rather than the machine's clock: 2001-09-09 01:46:40 UTC, a Sunday.
 #[test]
 fn time_is_epoch_seconds_and_date_formats_them() {
-    let s = script();
+    let mut s = script();
 
     // A plausible wall clock: after 2020, before 2100. Pins that this is not GetTime's 0-based one.
     let now: i64 = s.eval("return time()").unwrap();

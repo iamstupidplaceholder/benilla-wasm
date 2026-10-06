@@ -355,6 +355,7 @@ pub const MSG_SAVE_GUILD_EMBLEM: u16 = 0x01F1; // 497
 pub const MSG_TABARDVENDOR_ACTIVATE: u16 = 0x01F2; // 498
 pub const SMSG_CANCEL_AUTO_REPEAT: u16 = 0x029C; // 668
 pub const SMSG_SPELL_FAILED_OTHER: u16 = 0x02A6; // 678
+pub const SMSG_SPELL_FAILURE: u16 = 0x0133;
 
 /// `SMSG_SPELL_UPDATE_CHAIN_TARGETS` (VERIFIED vmangos `Opcodes_1_12_1.h`: 816) — the **only**
 /// source of the client's chain-target list, and so the only way a beam gets more than one hop.

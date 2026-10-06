@@ -24,8 +24,8 @@
 //! the works.
 
 use crate::ui_items::carried_counts;
+use benilla_time::Instant;
 use std::collections::HashMap;
-use std::time::Instant;
 
 use bevy::prelude::*;
 
@@ -862,8 +862,8 @@ mod tests {
         app.add_systems(Update, feed_action_state);
         app.update();
 
-        let script = app.world().non_send_resource::<UiScript>();
-        let usable = |action: u32| {
+        let mut script = app.world().non_send_resource::<UiScript>();
+        let mut usable = |action: u32| {
             script
                 .eval::<bool>(&format!(
                     "return (IsUsableAction({action})) and true or false"

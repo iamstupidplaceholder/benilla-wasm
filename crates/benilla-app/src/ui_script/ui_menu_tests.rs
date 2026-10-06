@@ -36,7 +36,7 @@ fn chat_menu() -> UiScript {
         r"Interface\FrameXML\UIDropDownMenu.xml",
         r"Interface\FrameXML\FloatingChatFrame.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s.set_text_measurer(Box::new(super::FixedWidthFont(8.0)));
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
@@ -115,7 +115,7 @@ fn chat_menu_rows_left_align_their_label_and_right_align_their_shortcut() {
 #[test]
 fn a_menu_rows_label_reports_the_normal_fonts_justify_and_object() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = chat_menu();
+    let mut s = chat_menu();
     s.run("ChatMenu:Show()").unwrap();
     assert_eq!(
         s.eval::<String>("return ChatMenuButton1:GetFontString():GetJustifyH()")

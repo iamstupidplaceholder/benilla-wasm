@@ -70,9 +70,9 @@
 //! `0x52e610`/`0x52b650` pair every other content binding does, so two lines were eight-plus short
 //! (wow-re `ui/scratch/trainer-service-tooltip-law.md` §4.1).
 
-use mlua::{Lua, MultiValue, Value, Variadic};
+use benilla_lua::{MultiValue, Value, Variadic, Vm};
 
-use super::binding_abi::number_arg;
+use super::binding_abi::neutral_number_arg;
 use super::item_stats::item_link;
 use super::Model;
 
@@ -290,11 +290,11 @@ fn num_recipes(model: &Model) -> usize {
 }
 
 /// An optional string as a Lua value (`nil` when absent).
-fn opt_str(lua: &Lua, s: Option<&String>) -> mlua::Result<Value> {
-    Ok(match s {
-        Some(s) => Value::String(lua.create_string(s)?),
+fn opt_str(s: Option<&String>) -> Value {
+    match s {
+        Some(s) => Value::from(s.clone()),
         None => Value::Nil,
-    })
+    }
 }
 
 /// A `bool` as the Era `1`/`nil` shape.
@@ -307,51 +307,40 @@ fn era_bool(b: bool) -> Value {
 }
 
 /// Register the craft globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetCraftName() → the window's title ("UNKNOWN" when closed — TradeSkill's own
     // GetTradeSkillLine no-window convention, since the ref gives Craft no documented closed shape of
     // its own; CraftFrameTitleText:SetText(GetCraftName()) is called unconditionally, ref l.101).
-    g.set(
-        "GetCraftName",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let name = model
-                .craft
-                .as_ref()
-                .map_or_else(|| "UNKNOWN".to_string(), |c| c.name.clone());
-            Ok(Value::String(lua.create_string(&name)?))
-        })?,
-    )?;
+    lua.register_function("GetCraftName", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let name = model
+            .craft
+            .as_ref()
+            .map_or_else(|| "UNKNOWN".to_string(), |c| c.name.clone());
+        Ok(Value::from(name))
+    })?;
 
     // GetCraftDisplaySkillLine() → name, rank, maxRank; name is NIL when closed (ref l.108-109 tests
     // it for truthiness to Show/Hide the whole rank StatusBar) — unlike GetCraftName above, which
     // always returns a string.
-    g.set(
-        "GetCraftDisplaySkillLine",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let (name, rank, max_rank) = match &model.craft {
-                Some(c) => (Some(c.name.clone()), c.rank, c.max_rank),
-                None => (None, 0, 0),
-            };
-            Ok(MultiValue::from_vec(vec![
-                opt_str(lua, name.as_ref())?,
-                Value::Integer(i64::from(rank)),
-                Value::Integer(i64::from(max_rank)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetCraftDisplaySkillLine", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let (name, rank, max_rank) = match &model.craft {
+            Some(c) => (Some(c.name.clone()), c.rank, c.max_rank),
+            None => (None, 0, 0),
+        };
+        Ok(MultiValue::from(vec![
+            opt_str(name.as_ref()),
+            Value::Integer(i64::from(rank)),
+            Value::Integer(i64::from(max_rank)),
+        ]))
+    })?;
 
     // → the number of recipes the open window offers (0 when closed).
-    g.set(
-        "GetNumCrafts",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(num_recipes(&model) as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumCrafts", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(num_recipes(&model) as i64)
+    })?;
 
     // GetCraftInfo(index) → craftName, craftSubSpellName, craftType, numAvailable, isExpanded,
     // trainingPointCost, requiredLevel (ref l.37/168/289's own 7-tuple — module doc). `craftType` is
@@ -366,32 +355,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `|cffffffff|Henchant:<spellId>|h[<spell name>]|h|r` — fixed white, the spell's id and name.
     // Any other craft type would scan the effects for CREATE_ITEM, which no shipped row carries,
     // and answer ZERO values — Beast Training's rows do.
-    g.set(
-        "GetCraftItemLink",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: GetCraftItemLink(index)")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let link = usize::try_from(index)
-                .ok()
-                .and_then(|i| recipe(&model, i))
-                .filter(|_| model.craft.as_ref().is_some_and(|c| c.craft_type == 3))
-                .map(|r| format!("|cffffffff|Henchant:{}|h[{}]|h|r", r.spell_id, r.name));
-            Ok(match link {
-                Some(l) => MultiValue::from_vec(vec![Value::String(lua.create_string(&l)?)]),
-                None => MultiValue::new(),
-            })
-        })?,
-    )?;
+    lua.register_function("GetCraftItemLink", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: GetCraftItemLink(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let link = usize::try_from(index)
+            .ok()
+            .and_then(|i| recipe(&model, i))
+            .filter(|_| model.craft.as_ref().is_some_and(|c| c.craft_type == 3))
+            .map(|r| format!("|cffffffff|Henchant:{}|h[{}]|h|r", r.spell_id, r.name));
+        Ok(match link {
+            Some(l) => MultiValue::from(vec![Value::from(l)]),
+            None => MultiValue::new(),
+        })
+    })?;
 
     // GetCraftReagentItemLink(index, reagentIndex) — `0x4f7730`, a byte-clone of the trade-skill
     // one with its own Usage: both arguments number-gated, `reagentIndex` 1-based over the
     // non-empty slots, ALWAYS one value — the reagent's `|Hitem:` link or nil.
-    g.set(
+    lua.register_function(
         "GetCraftReagentItemLink",
-        lua.create_function(|lua, (index, reagent): (Value, Value)| {
+        |lua, (index, reagent): (Value, Value)| {
             let usage = "Usage: GetCraftReagentItemLink(index, reagentIndex)";
-            let index = number_arg(lua, index, usage)?;
-            let reagent = number_arg(lua, reagent, usage)?;
+            let index = neutral_number_arg(index, usage)?;
+            let reagent = neutral_number_arg(reagent, usage)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let link = usize::try_from(index)
                 .ok()
@@ -405,169 +391,132 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         .map(|t| item_link(re.item, &t.name, t.quality))
                 });
             Ok(match link {
-                Some(l) => Value::String(lua.create_string(&l)?),
+                Some(l) => Value::from(l),
                 None => Value::Nil,
             })
-        })?,
+        },
     )?;
 
-    g.set(
-        "GetCraftInfo",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(r) = recipe(&model, index) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&r.name)?),
-                Value::String(lua.create_string(&r.sub_name)?),
-                Value::String(lua.create_string(r.difficulty.as_str())?),
-                Value::Integer(i64::from(r.num_available)),
-                Value::Nil,
-                Value::Integer(0),
-                Value::Integer(0),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetCraftInfo", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(r) = recipe(&model, index) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(r.name.clone()),
+            Value::from(r.sub_name.clone()),
+            Value::from(r.difficulty.as_str()),
+            Value::Integer(i64::from(r.num_available)),
+            Value::Nil,
+            Value::Integer(0),
+            Value::Integer(0),
+        ]))
+    })?;
 
     // GetCraftIcon(index) → icon texture path (nil while in flight / OOB).
-    g.set(
-        "GetCraftIcon",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            opt_str(lua, recipe(&model, index).and_then(|r| r.icon.as_ref()))
-        })?,
-    )?;
+    lua.register_function("GetCraftIcon", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(opt_str(recipe(&model, index).and_then(|r| r.icon.as_ref())))
+    })?;
 
     // GetCraftDescription(index) → the pre-substituted description, or nil (no description / OOB) —
     // ref l.312 tests this return for truthiness before painting it.
-    g.set(
-        "GetCraftDescription",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            opt_str(
-                lua,
-                recipe(&model, index).and_then(|r| r.description.as_ref()),
-            )
-        })?,
-    )?;
+    lua.register_function("GetCraftDescription", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(opt_str(
+            recipe(&model, index).and_then(|r| r.description.as_ref()),
+        ))
+    })?;
 
     // GetCraftNumReagents(index) → this recipe's reagent count (0 when OOB / no window).
-    g.set(
-        "GetCraftNumReagents",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(recipe(&model, index).map_or(0, |r| r.reagents.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("GetCraftNumReagents", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(recipe(&model, index).map_or(0, |r| r.reagents.len()) as i64)
+    })?;
 
     // GetCraftReagentInfo(index, reagentIndex) → name, icon, need, have (a single nil when the
     // recipe/reagent index is OOB) — TradeSkill's own GetTradeSkillReagentInfo shape, verbatim.
-    g.set(
+    lua.register_function(
         "GetCraftReagentInfo",
-        lua.create_function(|lua, (index, reagent_index): (usize, usize)| {
+        |lua, (index, reagent_index): (usize, usize)| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let Some(reagent) = recipe(&model, index)
                 .and_then(|r| reagent_index.checked_sub(1).and_then(|n| r.reagents.get(n)))
             else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
+                return Ok(MultiValue::from(vec![Value::Nil]));
             };
-            Ok(MultiValue::from_vec(vec![
-                opt_str(lua, reagent.name.as_ref())?,
-                opt_str(lua, reagent.icon.as_ref())?,
+            Ok(MultiValue::from(vec![
+                opt_str(reagent.name.as_ref()),
+                opt_str(reagent.icon.as_ref()),
                 Value::Integer(i64::from(reagent.need)),
                 Value::Integer(i64::from(reagent.have)),
             ]))
-        })?,
+        },
     )?;
 
     // GetCraftSpellFocus(index) → an alternating (name, has) multivalue, one pair per Requirements
     // tool (e.g. "Runed Copper Rod", 1) — fed into BuildColoredListString (ref l.361), TradeSkill's
     // own GetTradeSkillTools shape. Empty when the recipe has no tools / index is OOB.
-    g.set(
-        "GetCraftSpellFocus",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::new();
-            if let Some(r) = recipe(&model, index) {
-                for (name, have) in &r.tools {
-                    out.push(Value::String(lua.create_string(name)?));
-                    out.push(era_bool(*have));
-                }
+    lua.register_function("GetCraftSpellFocus", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::new();
+        if let Some(r) = recipe(&model, index) {
+            for (name, have) in &r.tools {
+                out.push(Value::from(name.clone()));
+                out.push(era_bool(*have));
             }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // GetCraftButtonToken() → "CREATE" (v1 constant): the ref resolves the Create button's label via
     // getglobal(GetCraftButtonToken()) (ref l.106), swapping to a "TRAIN" token for Beast Training —
     // out of scope (module doc), so this always returns the one token.
-    g.set(
-        "GetCraftButtonToken",
-        lua.create_function(|lua, ()| Ok(Value::String(lua.create_string("CREATE")?)))?,
-    )?;
+    lua.register_function("GetCraftButtonToken", |_lua, ()| Ok(Value::from("CREATE")))?;
 
     // GetCraftSelectionIndex() / SelectCraft(index) — the engine-held selection (1-based, 0 = none).
     // Out-of-range selects clear it; the getter clamps to the current recipe count — TradeSkill's own
     // selection contract, verbatim.
-    g.set(
-        "SelectCraft",
-        lua.create_function(|lua, index: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let count = num_recipes(&model) as u32;
-            model.craft_selection = if index >= 1 && index <= count {
-                index
-            } else {
-                0
-            };
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "GetCraftSelectionIndex",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let count = num_recipes(&model) as u32;
-            let sel = model.craft_selection;
-            Ok(i64::from(if sel >= 1 && sel <= count { sel } else { 0 }))
-        })?,
-    )?;
+    lua.register_function("SelectCraft", |lua, index: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let count = num_recipes(&model) as u32;
+        model.craft_selection = if index >= 1 && index <= count {
+            index
+        } else {
+            0
+        };
+        Ok(())
+    })?;
+    lua.register_function("GetCraftSelectionIndex", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let count = num_recipes(&model) as u32;
+        let sel = model.craft_selection;
+        Ok(i64::from(if sel >= 1 && sel <= count { sel } else { 0 }))
+    })?;
 
     // DoCraft(index) — queue the recipe's SPELL ID (no count, module doc). Out of range → ignored.
-    g.set(
-        "DoCraft",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if let Some(spell_id) = recipe(&model, index).map(|r| r.spell_id) {
-                model.craft_dos.push(spell_id);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("DoCraft", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if let Some(spell_id) = recipe(&model, index).map(|r| r.spell_id) {
+            model.craft_dos.push(spell_id);
+        }
+        Ok(())
+    })?;
 
     // CloseCraft() — client-side close (no packet, vanilla): flag it so the app clears its local
     // state.
-    g.set(
-        "CloseCraft",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.craft_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseCraft", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.craft_close = true;
+        Ok(())
+    })?;
 
     // Expand/CollapseCraftSkillLine(index) — no-ops in v1: the recipe list is flat (the header law
     // landed for TradeSkill, decision 0446, but was never ported here — module doc), so the ported
     // XML's header-click handlers have nothing to fold — TradeSkill's own
     // Expand/CollapseTradeSkillSubClass precedent.
-    g.set(
-        "ExpandCraftSkillLine",
-        lua.create_function(|_, _args: Variadic<Value>| Ok(()))?,
-    )?;
-    g.set(
-        "CollapseCraftSkillLine",
-        lua.create_function(|_, _args: Variadic<Value>| Ok(()))?,
-    )?;
+    lua.register_function("ExpandCraftSkillLine", |_, _args: Variadic<Value>| Ok(()))?;
+    lua.register_function("CollapseCraftSkillLine", |_, _args: Variadic<Value>| Ok(()))?;
 
     Ok(())
 }

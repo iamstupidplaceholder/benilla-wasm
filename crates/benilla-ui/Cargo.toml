@@ -10,7 +10,10 @@ workspace = true
 
 [dependencies]
 roxmltree = "0.20"
-# The embedded Lua runtime for the script host (decision 0068). `lua51` = Classic Era's Lua
-# version; `vendored` builds PUC-Rio Lua from source (no system dependency). 0.11 matches the
-# runtime that decision 0068's probe A verified (mlua + the LUAI_MAXCSTACK=8000 finding).
-mlua = { version = "0.11", features = ["lua51", "vendored"] }
+benilla-framexml = { path = "../benilla-framexml" }
+# One VM boundary: rilua on every target. `mlua-backend` stays available inside
+# `benilla-lua` as an opt-in comparison mode, but nothing outside that crate may
+# enable it or depend on `mlua` — backend selection belongs only to `benilla-lua`.
+benilla-lua = { path = "../benilla-lua" }
+benilla-time.workspace = true
+benilla-settings = { path = "../benilla-settings" }

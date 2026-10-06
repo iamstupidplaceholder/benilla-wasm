@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, RecordSet, Schema, SchemaField};
 
@@ -262,7 +262,7 @@ fn catalog_from_records(rs: RecordSet) -> ItemDisplayCatalog {
 }
 
 /// Load `ItemDisplayInfo.dbc` off the patch chain into an [`ItemDisplayCatalog`].
-pub fn load_item_display_catalog(chain: &mut Chain) -> Result<ItemDisplayCatalog> {
+pub fn load_item_display_catalog(chain: &mut impl FileSource) -> Result<ItemDisplayCatalog> {
     let bytes = chain
         .read_file(ITEM_DISPLAY_INFO)
         .with_context(|| format!("reading {ITEM_DISPLAY_INFO}"))?;

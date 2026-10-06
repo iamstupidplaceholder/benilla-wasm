@@ -1194,7 +1194,7 @@ mod tests {
             .insert_resource(NetCommands(tx))
             .add_systems(Update, feed_loot_rolls);
 
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script
             .run(
                 "STARTS = {}\n\
@@ -1212,7 +1212,7 @@ mod tests {
 
     /// `rollID:rollTime:name` for each `START_LOOT_ROLL` seen so far, in order.
     fn starts(app: &mut App) -> Vec<String> {
-        let script = app.world_mut().non_send_resource_mut::<UiScript>();
+        let mut script = app.world_mut().non_send_resource_mut::<UiScript>();
         let n = script.eval::<i64>("return getn(STARTS)").unwrap();
         (1..=n)
             .map(|i| {
@@ -1226,7 +1226,7 @@ mod tests {
     fn advance(app: &mut App, ms: u64) {
         app.world_mut()
             .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_millis(ms));
+            .advance_by(benilla_time::Duration::from_millis(ms));
     }
 
     fn sent(rx: &crossbeam_channel::Receiver<ClientCommand>) -> Vec<ClientCommand> {

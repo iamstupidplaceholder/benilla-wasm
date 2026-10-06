@@ -144,7 +144,7 @@ fn take_pet(s: &mut UiScript) {
 #[test]
 fn shipped_pet_page_loads_clean() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     let mut pet_frames = 0;
     for f in super::test_ui::CHARACTER_UI {
         let n = super::test_ui::load_ui_strict(&s, f);
@@ -219,7 +219,7 @@ fn the_pet_tab_rises_and_falls_with_the_pet_and_the_next_tab_closes_the_gap() {
 #[test]
 fn asking_for_the_pet_page_without_a_pet_does_nothing() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = load_pet_page();
+    let mut s = load_pet_page();
     s.run(r#"ToggleCharacter("PetPaperDollFrame")"#).unwrap();
     assert!(
         !s.eval::<bool>("return CharacterFrame:IsVisible()").unwrap(),
@@ -525,7 +525,7 @@ fn hovering_the_diet_icon_lists_what_the_pet_eats() {
 #[test]
 fn build_list_string_is_a_plain_comma_join_that_nils_on_nothing() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = load_pet_page();
+    let mut s = load_pet_page();
     assert_eq!(
         s.eval::<String>("return BuildListString('Meat', 'Fish', 'Cheese')")
             .unwrap(),

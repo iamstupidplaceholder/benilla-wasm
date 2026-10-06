@@ -23,22 +23,27 @@ use bevy::prelude::*;
 
 use benilla_formats::SheatheSoundCatalog;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::creature_anim::{SheathSwapMessage, Wielded};
 use crate::net::NetEntity;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::kit::{play_kit, KitRef, SoundCategory, SoundKits};
 use super::{AudioListener, SoundConfig, SoundOutput};
 
 #[derive(Resource)]
-struct SheatheSounds(SheatheSoundCatalog);
+pub(super) struct SheatheSounds(pub(super) SheatheSoundCatalog);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_sheathe_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_sheathe_sound_catalog(&mut chain)
+        benilla_formats::load_sheathe_sound_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -110,6 +115,7 @@ fn sheathe_sounds(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, load_sheathe_sounds.after(AssetSet::Open))
-        .add_systems(Update, sheathe_sounds.in_set(WorldStage::Present));
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_sheathe_sounds.after(AssetSet::Open));
+    app.add_systems(Update, sheathe_sounds.in_set(WorldStage::Present));
 }

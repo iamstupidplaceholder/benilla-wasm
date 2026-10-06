@@ -55,7 +55,7 @@ fn backdrop_installs_and_extracts_pieces_with_colors() {
 // ctor default does not just read wrong, it round-trips wrong.
 #[test]
 fn get_backdrop_reconstructs_from_the_struct() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         local f = CreateFrame("Frame", "GB")
@@ -197,7 +197,7 @@ fn set_backdrop_nil_tears_down() {
 /// rendering fault rather than an API bug and is the reason this test names both halves.
 #[test]
 fn backdrop_colors_coerce_rgb_but_default_alpha_opaque() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         f = CreateFrame("Frame", "Plate2")

@@ -49,7 +49,31 @@ const BUYBACK_SLOT_FIRST: u32 = 69;
 /// with the entity catalogs ([`crate::entities`]). Optional resource — absent, every repair cost
 /// displays 0 and the repair-all button stays disabled (the wire still works).
 #[derive(Resource)]
-pub(crate) struct RepairTables(pub(crate) benilla_formats::DurabilityTables);
+pub(crate) struct RepairTables(pub(crate) std::sync::Arc<RepairCatalog>);
+
+pub(crate) struct RepairCatalog(pub(crate) benilla_formats::DurabilityTables);
+
+impl std::ops::Deref for RepairCatalog {
+    type Target = benilla_formats::DurabilityTables;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl benilla_ui::script::RepairCostCatalog for RepairCatalog {
+    fn repair_cost(
+        &self,
+        points: u32,
+        level: u32,
+        quality: u32,
+        class: u32,
+        subclass: u32,
+        discount: f32,
+    ) -> u32 {
+        self.0
+            .repair_cost(points, level, quality, class, subclass, discount)
+    }
+}
 
 /// The open merchant, filled by the net bridge ([`crate::net`]) and read by [`feed_merchant`]. Holds
 /// the vendor guid and its rows exactly as the wire delivered them (`SMSG_LIST_INVENTORY`); the feed
@@ -468,7 +492,7 @@ fn feed_merchant(
                 MerchantRefusal::Buy(r) => buy_error_key(r)?,
                 MerchantRefusal::Sell(r) => sell_error_key(r)?,
             };
-            crate::ui_action::keyed_line(&script, key)
+            crate::ui_action::keyed_line(&mut script, key)
         })
         .collect();
     crate::ui_action::show_messages(&mut script, &mut sink, "ui_merchant", refusals);
@@ -519,6 +543,12 @@ fn feed_merchant(
     if fresh == *last && !name_changed && !switched {
         return;
     }
+    let repair_changed = match (&*last, &fresh) {
+        (Some(old), Some(new)) => {
+            old.repair_all_cost != new.repair_all_cost || old.can_repair != new.can_repair
+        }
+        _ => false,
+    };
     script.set_merchant(fresh.clone());
     let name_arg = || vec![ScriptValue::Str(vendor_name.clone().unwrap_or_default())];
     if switched {
@@ -536,6 +566,28 @@ fn feed_merchant(
             (Some(_), Some(_)) => script.fire_event("MERCHANT_UPDATE", name_arg()),
             (Some(_), None) => script.fire_event("MERCHANT_CLOSED", vec![]),
             (None, None) => {}
+        }
+    }
+    // Original MerchantFrame only sets this state in OnShow, not in its
+    // MERCHANT_UPDATE handler. Refresh after authoritative durability/cost
+    // publication, never optimistically on the repair request itself.
+    if repair_changed && !switched {
+        if let Err(error) = script.run(
+            r#"
+            if MerchantFrame and MerchantFrame:IsVisible()
+                and MerchantRepairAllIcon and MerchantRepairAllButton then
+                local cost, canRepair = GetRepairAllCost()
+                if canRepair then
+                    SetDesaturation(MerchantRepairAllIcon, nil)
+                    MerchantRepairAllButton:Enable()
+                else
+                    SetDesaturation(MerchantRepairAllIcon, 1)
+                    MerchantRepairAllButton:Disable()
+                end
+            end
+        "#,
+        ) {
+            warn!("merchant repair state refresh failed: {error}");
         }
     }
     *last = fresh;

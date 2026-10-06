@@ -191,9 +191,10 @@ fn watch_pipelines(
             if covered {
                 debug!("pipeline compiled (covered) [{id}] {line}");
             } else {
-                // THE TRIPWIRE: after 0837, a live compile is a stall the director can feel —
-                // this line in a session log means the warm pass has a coverage hole.
-                warn!("pipeline compiled LIVE [{id}] {line}");
+                // Variant identity is developer diagnostics, not a user-facing
+                // warning. Keep it available at debug and in WOW_PIPE_TRACE;
+                // PipelineCache still reports actual shader compilation failures.
+                debug!("pipeline compiled LIVE [{id}] {line}");
             }
             if let Ok(path) = std::env::var("WOW_PIPE_TRACE") {
                 use std::io::Write;

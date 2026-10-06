@@ -63,7 +63,7 @@
 
 use std::collections::VecDeque;
 
-use mlua::{IntoLua, Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -206,7 +206,7 @@ impl super::UiScript {
 
     /// Forget the retained rows (the player's "I've read these"). See [`DiagnosticLog::clear`] for
     /// why the numbering is deliberately *not* reset.
-    pub fn clear_diagnostics(&self) {
+    pub fn clear_diagnostics(&mut self) {
         self.model_mut().diagnostics.clear();
     }
 
@@ -222,8 +222,8 @@ impl super::UiScript {
     /// longer *total*: the failure is retained and readable, it just does not seize the screen.
     ///
     /// The caller still logs its own line; this is the retention half, not a replacement for it.
-    pub fn report_load_failure(&self, msg: &str) {
-        record_load_failure(&self.lua, msg);
+    pub fn report_load_failure(&mut self, msg: &str) {
+        record_load_failure(&mut self.lua, msg);
     }
 
     /// Retain one non-fatal warning the HOST caught and has already logged — a loader warning off
@@ -233,8 +233,8 @@ impl super::UiScript {
     /// own `warn!` line, and putting the message on [`Model::warnings`] as well would double it at
     /// the app's next per-frame drain. For a warning the ENGINE raises, the door is
     /// [`Model::record_warning`], which owns both halves.
-    pub fn report_warning(&self, msg: &str) {
-        record_warning(&self.lua, msg);
+    pub fn report_warning(&mut self, msg: &str) {
+        record_warning(&mut self.lua, msg);
     }
 }
 
@@ -254,7 +254,7 @@ impl super::UiScript {
 /// and the enclosing `.toc`/document keeps loading. Nothing on that path reaches the Lua error
 /// handler, which is why this never dispatches (1495) and why 1450 made it a WARN: a broken
 /// package is the *package's* defect, and ERROR means "the client is broken".
-pub(crate) fn record_load_failure(lua: &Lua, msg: &str) {
+pub(crate) fn record_load_failure(lua: &impl LuaContext, msg: &str) {
     lua.app_data_mut::<Model>()
         .expect("model app_data set")
         .diagnostics
@@ -268,7 +268,7 @@ pub(crate) fn record_load_failure(lua: &Lua, msg: &str) {
 /// [`Model::record_warning`]; the difference is only which of the two channels the caller still
 /// owes. A host caller has already written its own log line and wants retention only; an engine
 /// caller wants both.
-pub(crate) fn record_warning(lua: &Lua, msg: &str) {
+pub(crate) fn record_warning(lua: &impl LuaContext, msg: &str) {
     lua.app_data_mut::<Model>()
         .expect("model app_data set")
         .diagnostics
@@ -281,48 +281,39 @@ pub(crate) fn record_warning(lua: &Lua, msg: &str) {
 /// `tests::reference_surface` enforces it (1254: a name we invent must not collide, a name the
 /// reference owns must not be hidden). 1.12 has no error-log API to shadow, so there is nothing
 /// here an addon could have meant by a bare name.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // BenillaGetNumScriptErrors() -> retained, totalEverRecorded
-    lua.globals().set(
-        "BenillaGetNumScriptErrors",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok((model.diagnostics.len(), model.diagnostics.total()))
-        })?,
-    )?;
+    lua.register_function("BenillaGetNumScriptErrors", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok((model.diagnostics.len(), model.diagnostics.total()))
+    })?;
     // BenillaGetScriptErrorInfo(index) -> seq, kind, message, count   (1-based, oldest first;
     // nil for an out-of-range index, so a stale row index during a repaint reads as "gone"
     // rather than erroring inside the very frame that lists errors.)
-    lua.globals().set(
-        "BenillaGetScriptErrorInfo",
-        lua.create_function(|lua, index: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(row) = usize::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_sub(1))
-                .and_then(|i| model.diagnostics.rows().nth(i))
-            else {
-                return Ok(MultiValue::new());
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(row.seq as i64),
-                lua.create_string(row.kind.tag())?.into_lua(lua)?,
-                lua.create_string(&row.message)?.into_lua(lua)?,
-                Value::Integer(i64::from(row.count)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("BenillaGetScriptErrorInfo", |lua, index: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(row) = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| model.diagnostics.rows().nth(i))
+        else {
+            return Ok(MultiValue::new());
+        };
+        Ok(MultiValue::from(vec![
+            Value::Integer(row.seq as i64),
+            Value::from(row.kind.tag()),
+            Value::from(row.message.clone()),
+            Value::Integer(i64::from(row.count)),
+        ]))
+    })?;
     // BenillaClearScriptErrors()
-    lua.globals().set(
-        "BenillaClearScriptErrors",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .diagnostics
-                .clear();
-            Ok(())
-        })?,
-    )
+    lua.register_function("BenillaClearScriptErrors", |lua, ()| {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .diagnostics
+            .clear();
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -376,7 +367,7 @@ mod tests {
         // byte-indexed by design, so a slice through a multi-byte character is a string an addon
         // really does hand to `SetText` — and mlua's `String` conversion raised on it, killing the
         // handler. A stray byte costs a glyph.
-        let s = crate::script::UiScript::new().expect("vm");
+        let mut s = crate::script::UiScript::new().expect("vm");
         s.run(
             r#"
             f = CreateFrame("Frame", "BytesFrame")

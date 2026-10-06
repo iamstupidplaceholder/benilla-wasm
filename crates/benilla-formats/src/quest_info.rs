@@ -45,7 +45,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::chain::Chain;
+use crate::FileSource;
 use crate::dbc::load_id_name_table;
 
 /// The resolved `Type → tag name` lookup ([`load_quest_tag_names`]).
@@ -73,7 +73,7 @@ impl QuestTagNames {
 }
 
 /// Load the tag names through the patch chain.
-pub fn load_quest_tag_names(chain: &mut Chain) -> Result<QuestTagNames> {
+pub fn load_quest_tag_names(chain: &mut impl FileSource) -> Result<QuestTagNames> {
     Ok(QuestTagNames(load_id_name_table(
         chain,
         "DBFilesClient\\QuestInfo.dbc",

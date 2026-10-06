@@ -92,12 +92,31 @@ const CRIT_KEYFRAMES: [(f32, f32, f32, f32); 3] = [
 
 /// The localized outcome WORDS, indexed by the client's outcome code 1–11 (`0x86582c` key table →
 /// `FrameScript_GetText`) — which is bit-for-bit vmangos's `SpellMissInfo` (`SpellDefines.h:160`).
-/// Strings are the shipped enUS `GlobalStrings.lua` values (patch-2.MPQ), hardcoded like the rest
-/// of our enUS-only data.
+/// These are stable internal outcome tokens. The common spawn boundary resolves
+/// their original GlobalStrings keys in the active VM before measuring/drawing.
 const WORDS: [&str; 11] = [
     "Miss", "Resist", "Dodge", "Parry", "Block", "Evade", "Immune", "Immune", "Deflect", "Absorb",
     "Reflect",
 ];
+
+/// The English words above are internal outcome tokens, not displayed translations.
+/// Resolve at the common spawn boundary so every producer (including delayed
+/// missiles, full absorbs and resists) uses the original active GlobalStrings.
+pub(super) fn outcome_key(token: &str) -> Option<&'static str> {
+    match token {
+        "Miss" => Some("MISS"),
+        "Resist" => Some("RESIST"),
+        "Dodge" => Some("DODGE"),
+        "Parry" => Some("PARRY"),
+        "Block" => Some("BLOCK"),
+        "Evade" => Some("EVADE"),
+        "Immune" => Some("IMMUNE"),
+        "Deflect" => Some("DEFLECT"),
+        "Absorb" => Some("ABSORB"),
+        "Reflect" => Some("REFLECT"),
+        _ => None,
+    }
+}
 
 /// Outcome code (1–11) → `(word, category)`: category 3 for every word except ABSORB → 1 (the
 /// parallel category table `0x80c48c`).

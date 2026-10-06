@@ -6,47 +6,22 @@
 
 use std::collections::HashSet;
 
-use mlua::{Function, Lua, MultiValue, Table, Value};
+use benilla_lua::{
+    Function as LuaFunction, LuaContext, MultiValue as LuaMultiValue, Table as LuaTable,
+    Value as LuaValue, Vm,
+};
 
-use crate::script::binding_abi::optional_string;
-use crate::script::region::region_wrapper;
+use crate::script::region::region_wrapper_context;
 use crate::script::{Model, RegionData, REG_SCRIPTS, SCRIPT_KINDS};
 use crate::widget::RegionKind;
 
-use super::{decode_id, draw_layer_from_str, frame_handle_of, publish_global};
+use super::{
+    decode_id_context, draw_layer_from_str, frame_handle_of_context, publish_global_context,
+};
 
 /// Populate `m`'s event/script and region-creation methods (see the module doc).
-pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm, methods: &LuaTable) -> benilla_lua::Result<()> {
     // Events + scripts
-    m.set(
-        "RegisterEvent",
-        lua.create_function(|lua, (this, event): (Table, String)| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            // Ordered listener list (the client's SignalEvent walks a LIST — order is law);
-            // re-register keeps the original position (no duplicate fire).
-            let list = model.event_to_frames.entry(event.clone()).or_default();
-            if !list.contains(&h) {
-                list.push(h);
-            }
-            model.frame_events.entry(h).or_default().insert(event);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "UnregisterEvent",
-        lua.create_function(|lua, (this, event): (Table, String)| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            if let Some(list) = model.event_to_frames.get_mut(&event) {
-                list.retain(|x| x != &h);
-            }
-            if let Some(set) = model.frame_events.get_mut(&h) {
-                set.remove(&event);
-            }
-            Ok(())
-        })?,
-    )?;
     // `RegisterAllEvents()` — this frame's `OnEvent` receives EVERY event that is dispatched
     // (`0x774c20`, table `0x878ec0`, argc 1, arity 0). Cleared by `UnregisterAllEvents` below, and
     // by nothing else: there is no `UnregisterAllEvents`-less way back out, which is exactly how
@@ -65,57 +40,12 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //
     // Registered as a FLAG (the frame joins `Model::all_event_frames`), never as an expansion into
     // a name list — see that field for why, and `tick::fire_event_into` for the dispatch.
-    m.set(
-        "RegisterAllEvents",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            // Registration order, and re-registering keeps the original position — the same law
-            // `RegisterEvent` above holds, for the same reason.
-            if !model.all_event_frames.contains(&h) {
-                model.all_event_frames.push(h);
-            }
-            Ok(())
-        })?,
-    )?;
     // `UnregisterAllEvents()` — drop every registration this frame holds, in one call.
     //
     // 10 corpus addons stop on it (decision 1195), and the idiom is why: an addon's "disable me"
     // path is `self.frame:UnregisterAllEvents()`, and a library that pools frames calls it before
     // handing one out. Unregistering them one by one is not equivalent — the caller does not know
     // what it registered, which is the whole point of the verb.
-    m.set(
-        "UnregisterAllEvents",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            // Take the frame's OWN set first, then walk only the events it actually held — the
-            // alternative (sweeping every listener list in the model) is O(all events) per call,
-            // and libraries call this in loops over a frame pool.
-            let events = model.frame_events.remove(&h).unwrap_or_default();
-            for event in events {
-                if let Some(list) = model.event_to_frames.get_mut(&event) {
-                    list.retain(|x| x != &h);
-                }
-            }
-            // …and the all-events registration, which is a registration like any other. See
-            // `RegisterAllEvents` above: AceEvent-2.0's own re-registration path depends on this.
-            model.all_event_frames.retain(|x| x != &h);
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "SetScript",
-        lua.create_function(
-            |lua, (this, name, func): (Table, String, Option<Function>)| {
-                set_script(lua, &this, &name, func)
-            },
-        )?,
-    )?;
-    m.set(
-        "GetScript",
-        lua.create_function(|lua, (this, name): (Table, String)| get_script(lua, &this, &name))?,
-    )?;
     // HasScript(name) — "can this widget carry that script kind at all", NOT "does it have one
     // set". The distinction is the whole point of the verb: every caller in the corpus uses it to
     // decide whether it is safe to hook, then reads the current handler separately.
@@ -143,14 +73,6 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //
     // 1/nil, not a Lua boolean: the reference's row is `(nil) | (number)` like every other
     // predicate (decision 2118).
-    m.set(
-        "HasScript",
-        lua.create_function(|_, (_this, name): (Table, String)| {
-            Ok(crate::script::binding_abi::flag(
-                SCRIPT_KINDS.iter().any(|k| k.eq_ignore_ascii_case(&name)),
-            ))
-        })?,
-    )?;
     // RegisterForDrag(...varargs of button names) — the drag-gesture twin of `RegisterForClicks`
     // (decision 0216 §3), but on the SHARED table: any Frame can be a drag source, not just a
     // Button. Replace-the-set semantics (empty varargs clears); `crate::script::cursor`'s
@@ -158,57 +80,28 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // precedent). Pruning on frame destroy: see [`Model::drag_registered`]'s doc — nothing in
     // this engine destroys a frame yet, so this map is in the same boat as `scripts`/
     // `frame_events`.
-    m.set(
-        "RegisterForDrag",
-        lua.create_function(|lua, (this, args): (Table, MultiValue)| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut set = HashSet::new();
-            for v in args.iter() {
-                if let Value::String(s) = v {
-                    set.insert(s.to_str()?.to_string());
-                }
-            }
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            model.drag_registered.insert(h, set);
-            Ok(())
-        })?,
-    )?;
     // Regions
     // `CreateTexture(name, layer, inheritsFrom)` — the third argument accepted for the same reason
     // and with the same resolver, though the demand is a rounding error beside FontString's: of
     // 1329 corpus call sites exactly TWO pass a third argument, and one of those passes `nil`
     // (CustomNameplates:437, a four-argument later-client form). Accepted rather than skipped
     // because dropping it silently is the very class this fixes, and one real site is still a site.
-    m.set(
-        // **The three argument positions are NOT one rule, and the fourth is the odd one.** Verified
-        // together in wow-re `ui/scratch/xml-template-name-lookup.md` §5.2:
-        //
-        //  · `name` and `layer` go through `0x6f3510` (is-number-**or**-string) then `0x6f3690`, and
-        //    **the result is never tested** — so a table is simply absent (unnamed / the pre-staged
-        //    default layer), and a NUMBER is accepted and stringified.
-        //  · `inherits` is gated by a raw `lua_type(L, 4) == LUA_TSTRING` (`0x773d28` / `0x773b06`)
-        //    asked BEFORE anything reads the slot — so a table AND a number are both ignored, and the
-        //    non-string leg jumps to the very block the two template-HIT legs jump to, with both
-        //    template handles NULL. It is the success path, not a bolted-on case.
-        //
-        // **Nothing here raises.** This mattered: benilla typed all three `Option<String>`, so mlua
-        // raised `bad argument #4: error converting Lua table to String` — and pfUI, the most-installed
-        // 1.12 addon, builds every buff-stack label as
-        // `f.buffs[i]:CreateFontString(nil, "OVERLAY", f.buffs[i])`, passing the BUTTON as the third
-        // argument. The real client constructs it, ignores the argument, and logs nothing.
-        "CreateTexture",
-        lua.create_function(
-            |lua, (this, name, layer, inherits): (Table, Value, Value, Value)| {
-                let name = optional_string(lua, &name);
-                let layer = optional_string(lua, &layer);
-                let wrapper = create_region(lua, &this, RegionKind::Texture, name, layer)?;
-                if let Some(from) = strict_string_arg(&inherits).filter(|s| !s.is_empty()) {
-                    apply_region_inherits(lua, &wrapper, &from)?;
-                }
-                Ok(wrapper)
-            },
-        )?,
-    )?;
+    // **The three argument positions are NOT one rule, and the fourth is the odd one.** Verified
+    // together in wow-re `ui/scratch/xml-template-name-lookup.md` §5.2:
+    //
+    //  · `name` and `layer` go through `0x6f3510` (is-number-**or**-string) then `0x6f3690`, and
+    //    **the result is never tested** — so a table is simply absent (unnamed / the pre-staged
+    //    default layer), and a NUMBER is accepted and stringified.
+    //  · `inherits` is gated by a raw `lua_type(L, 4) == LUA_TSTRING` (`0x773d28` / `0x773b06`)
+    //    asked BEFORE anything reads the slot — so a table AND a number are both ignored, and the
+    //    non-string leg jumps to the very block the two template-HIT legs jump to, with both
+    //    template handles NULL. It is the success path, not a bolted-on case.
+    //
+    // **Nothing here raises.** This mattered: benilla typed all three `Option<String>`, so mlua
+    // raised `bad argument #4: error converting Lua table to String` — and pfUI, the most-installed
+    // 1.12 addon, builds every buff-stack label as
+    // `f.buffs[i]:CreateFontString(nil, "OVERLAY", f.buffs[i])`, passing the BUTTON as the third
+    // argument. The real client constructs it, ignores the argument, and logs nothing.
     // ── The title region: Frame:CreateTitleRegion() / GetTitleRegion() ──────────────────────────
     //
     // wow-re `system/ui/scratch/widget-api-batch-benilla.md` Q6 (`0x773910` / `0x773820`). Four
@@ -235,10 +128,9 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // addon that FEATURE-DETECTS would see a method the real client does not have. Splitting the
     // metatable is the fix; it is not free, and nothing in the corpus asks, so this is recorded
     // rather than hidden.
-    m.set(
-        "CreateTitleRegion",
-        lua.create_function(|lua, this: Table| {
-            let owner = frame_handle_of(lua, &this)?;
+    let create_title_region =
+        lua.create_function("Frame:CreateTitleRegion", |lua, this: LuaTable| {
+            let owner = frame_handle_of_context(lua, &this)?;
             let existing = {
                 let model = lua.app_data_ref::<Model>().expect("model");
                 model.arena.frame(owner).and_then(|f| f.title_region)
@@ -254,10 +146,10 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     }
                     model.region_id(rh)
                 };
-                return region_wrapper(lua, id);
+                return region_wrapper_context(lua, id);
             }
-            let wrapper = create_region(lua, &this, RegionKind::Title, None, None)?;
-            let id = decode_id(&wrapper)?;
+            let wrapper = create_region_context(lua, &this, RegionKind::Title, None, None)?;
+            let id = decode_id_context(lua, &wrapper)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             let rh = *model
                 .id_to_region
@@ -267,27 +159,26 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 f.title_region = Some(rh);
             }
             Ok(wrapper)
-        })?,
-    )?;
-    m.set(
-        "GetTitleRegion",
-        lua.create_function(|lua, this: Table| {
-            let owner = frame_handle_of(lua, &this)?;
-            let found = {
-                let mut model = lua.app_data_mut::<Model>().expect("model");
-                model
-                    .arena
-                    .frame(owner)
-                    .and_then(|f| f.title_region)
-                    .map(|rh| model.region_id(rh))
-            };
-            match found {
-                Some(id) => Ok(Value::Table(region_wrapper(lua, id)?)),
-                // ONE value, and it is nil — not zero values. See the `GetBackdrop` asymmetry above.
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+        })?;
+    lua.table_set_function(methods, "CreateTitleRegion", &create_title_region)?;
+
+    let get_title_region = lua.create_function("Frame:GetTitleRegion", |lua, this: LuaTable| {
+        let owner = frame_handle_of_context(lua, &this)?;
+        let found = {
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            model
+                .arena
+                .frame(owner)
+                .and_then(|f| f.title_region)
+                .map(|rh| model.region_id(rh))
+        };
+        match found {
+            Some(id) => Ok(LuaValue::Table(region_wrapper_context(lua, id)?)),
+            // ONE value, and it is nil — not zero values. See the `GetBackdrop` asymmetry above.
+            None => Ok(LuaValue::Nil),
+        }
+    })?;
+    lua.table_set_function(methods, "GetTitleRegion", &get_title_region)?;
 
     // The THIRD argument is `inheritsFrom`, and we were dropping it on the floor.
     //
@@ -304,22 +195,150 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // the `SetFontObject` binding rather than reaching into the model, which is the same call the
     // XML `<FontString inherits=>` path makes — one implementation of "apply a font object", not
     // two that can drift.
-    m.set(
-        "CreateFontString",
-        lua.create_function(
-            |lua, (this, name, layer, inherits): (Table, Value, Value, Value)| {
-                let name = optional_string(lua, &name);
-                let layer = optional_string(lua, &layer);
-                let wrapper = create_region(lua, &this, RegionKind::FontString, name, layer)?;
-                if let Some(from) = strict_string_arg(&inherits).filter(|s| !s.is_empty()) {
-                    apply_region_inherits(lua, &wrapper, &from)?;
-                }
-                Ok(wrapper)
-            },
-        )?,
-    )?;
+    install_event_script_methods(lua, methods)
+}
 
-    Ok(())
+fn install_event_script_methods(lua: &mut Vm, methods: &LuaTable) -> benilla_lua::Result<()> {
+    let create_texture = lua.create_function(
+        "Frame:CreateTexture",
+        |lua, (this, name, layer, inherits): (LuaTable, LuaValue, LuaValue, LuaValue)| {
+            let name = optional_string_context(&name);
+            let layer = optional_string_context(&layer);
+            let wrapper = create_region_context(lua, &this, RegionKind::Texture, name, layer)?;
+            if let Some(from) = strict_string_arg_context(&inherits).filter(|s| !s.is_empty()) {
+                apply_region_inherits_context(lua, &wrapper, &from)?;
+            }
+            Ok(wrapper)
+        },
+    )?;
+    lua.table_set_function(&methods, "CreateTexture", &create_texture)?;
+
+    let create_font_string = lua.create_function(
+        "Frame:CreateFontString",
+        |lua, (this, name, layer, inherits): (LuaTable, LuaValue, LuaValue, LuaValue)| {
+            let name = optional_string_context(&name);
+            let layer = optional_string_context(&layer);
+            let wrapper = create_region_context(lua, &this, RegionKind::FontString, name, layer)?;
+            if let Some(from) = strict_string_arg_context(&inherits).filter(|s| !s.is_empty()) {
+                apply_region_inherits_context(lua, &wrapper, &from)?;
+            }
+            Ok(wrapper)
+        },
+    )?;
+    lua.table_set_function(&methods, "CreateFontString", &create_font_string)?;
+
+    let register_event = lua.create_function(
+        "Frame:RegisterEvent",
+        |lua, (this, event): (LuaTable, String)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            let list = model.event_to_frames.entry(event.clone()).or_default();
+            if !list.contains(&h) {
+                list.push(h);
+            }
+            model.frame_events.entry(h).or_default().insert(event);
+            Ok(())
+        },
+    )?;
+    lua.table_set_function(&methods, "RegisterEvent", &register_event)?;
+
+    let unregister_event = lua.create_function(
+        "Frame:UnregisterEvent",
+        |lua, (this, event): (LuaTable, String)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            if let Some(list) = model.event_to_frames.get_mut(&event) {
+                list.retain(|x| x != &h);
+            }
+            if let Some(set) = model.frame_events.get_mut(&h) {
+                set.remove(&event);
+            }
+            Ok(())
+        },
+    )?;
+    lua.table_set_function(&methods, "UnregisterEvent", &unregister_event)?;
+
+    let register_all = lua.create_function("Frame:RegisterAllEvents", |lua, this: LuaTable| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        if !model.all_event_frames.contains(&h) {
+            model.all_event_frames.push(h);
+        }
+        Ok(())
+    })?;
+    lua.table_set_function(&methods, "RegisterAllEvents", &register_all)?;
+
+    let unregister_all =
+        lua.create_function("Frame:UnregisterAllEvents", |lua, this: LuaTable| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            let events = model.frame_events.remove(&h).unwrap_or_default();
+            for event in events {
+                if let Some(list) = model.event_to_frames.get_mut(&event) {
+                    list.retain(|x| x != &h);
+                }
+            }
+            model.all_event_frames.retain(|x| x != &h);
+            Ok(())
+        })?;
+    lua.table_set_function(&methods, "UnregisterAllEvents", &unregister_all)?;
+
+    let set_script = lua.create_function(
+        "Frame:SetScript",
+        |lua, (this, name, function): (LuaTable, String, Option<LuaFunction>)| {
+            set_script_context(lua, &this, &name, function)
+        },
+    )?;
+    lua.table_set_function(&methods, "SetScript", &set_script)?;
+
+    let get_script = lua.create_function(
+        "Frame:GetScript",
+        |lua, (this, name): (LuaTable, String)| get_script_context(lua, &this, &name),
+    )?;
+    lua.table_set_function(&methods, "GetScript", &get_script)?;
+
+    let has_script =
+        lua.create_function("Frame:HasScript", |_, (_this, name): (LuaTable, String)| {
+            Ok(
+                if SCRIPT_KINDS
+                    .iter()
+                    .any(|kind| kind.eq_ignore_ascii_case(&name))
+                {
+                    LuaValue::Integer(1)
+                } else {
+                    LuaValue::Nil
+                },
+            )
+        })?;
+    lua.table_set_function(&methods, "HasScript", &has_script)?;
+
+    let register_for_drag = lua.create_function(
+        "Frame:RegisterForDrag",
+        |lua, (this, arguments): (LuaTable, LuaMultiValue)| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let mut buttons = HashSet::new();
+            for value in arguments {
+                if let LuaValue::String(value) = value {
+                    buttons.insert(
+                        value
+                            .as_str()
+                            .map_err(|error| {
+                                benilla_lua::Error::runtime(format!(
+                                    "drag button is not valid UTF-8: {error}"
+                                ))
+                            })?
+                            .to_owned(),
+                    );
+                }
+            }
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .drag_registered
+                .insert(h, buttons);
+            Ok(())
+        },
+    )?;
+    lua.table_set_function(&methods, "RegisterForDrag", &register_for_drag)
 }
 
 /// `SetScript(name, func)` — store the closure against one of [`SCRIPT_KINDS`], or **raise**.
@@ -369,31 +388,35 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
 ///   from a sequence's natural completion (`0x76cdc0`, mode 0 — once per arm, a loop's first
 ///   pass included). The shipped
 ///   `Cooldown.xml` and `MainMenuBarBagButtons.xml` declare both.
-fn set_script(lua: &Lua, this: &Table, name: &str, func: Option<Function>) -> mlua::Result<()> {
+fn set_script_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    name: &str,
+    function: Option<LuaFunction>,
+) -> benilla_lua::Result<()> {
     let kind = SCRIPT_KINDS
         .iter()
         .copied()
-        .find(|&k| k.eq_ignore_ascii_case(name))
-        .ok_or_else(|| mlua::Error::runtime(format!("SetScript: unsupported script '{name}'")))?;
-    let h = frame_handle_of(lua, this)?;
+        .find(|&kind| kind.eq_ignore_ascii_case(name))
+        .ok_or_else(|| {
+            benilla_lua::Error::runtime(format!("SetScript: unsupported script '{name}'"))
+        })?;
+    let h = frame_handle_of_context(lua, this)?;
     let id = lua.app_data_mut::<Model>().expect("model").frame_id(h);
 
-    // Store the closure Lua-side (REG_SCRIPTS[id][kind]); update the Rust presence mirror.
-    let scripts: Table = lua.named_registry_value(REG_SCRIPTS)?;
-    let per: Table = match scripts.get::<Value>(id)? {
-        Value::Table(t) => t,
+    let scripts: LuaTable = lua.get_registry(REG_SCRIPTS)?;
+    let per = match lua.table_get(&scripts, id)? {
+        LuaValue::Table(table) => table,
         _ => {
-            let t = lua.create_table()?;
-            scripts.set(id, t.clone())?;
-            t
+            let table = lua.create_table()?;
+            lua.table_set(&scripts, id, table.clone())?;
+            table
         }
     };
-    match func {
-        Some(f) => {
-            per.set(kind, f)?;
+    match function {
+        Some(function) => {
+            lua.table_set(&per, kind, function)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
-            // `insert` answering true = this frame did not have the kind before — the tick's
-            // OnUpdate list rides that edge (decision 1446; `scripts` has no other writer).
             if model.scripts.entry(h).or_default().insert(kind) {
                 match kind {
                     "OnUpdate" => model.on_update_frames.push(h),
@@ -404,16 +427,18 @@ fn set_script(lua: &Lua, this: &Table, name: &str, func: Option<Function>) -> ml
             }
         }
         None => {
-            per.set(kind, Value::Nil)?;
+            lua.table_set(&per, kind, LuaValue::Nil)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             if let Some(set) = model.scripts.get_mut(&h) {
                 if set.remove(&kind) {
                     match kind {
-                        "OnUpdate" => model.on_update_frames.retain(|&x| x != h),
+                        "OnUpdate" => model.on_update_frames.retain(|&frame| frame != h),
                         "OnSizeChanged" => {
-                            model.on_size_changed_frames.retain(|&x| x != h);
+                            model.on_size_changed_frames.retain(|&frame| frame != h);
                         }
-                        "OnUpdateModel" => model.on_update_model_frames.retain(|&x| x != h),
+                        "OnUpdateModel" => {
+                            model.on_update_model_frames.retain(|&frame| frame != h);
+                        }
                         _ => {}
                     }
                 }
@@ -423,20 +448,23 @@ fn set_script(lua: &Lua, this: &Table, name: &str, func: Option<Function>) -> ml
     Ok(())
 }
 
-fn get_script(lua: &Lua, this: &Table, name: &str) -> mlua::Result<Value> {
-    let kind = match SCRIPT_KINDS
+fn get_script_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    name: &str,
+) -> benilla_lua::Result<LuaValue> {
+    let Some(kind) = SCRIPT_KINDS
         .iter()
         .copied()
-        .find(|&k| k.eq_ignore_ascii_case(name))
-    {
-        Some(k) => k,
-        None => return Ok(Value::Nil),
+        .find(|&kind| kind.eq_ignore_ascii_case(name))
+    else {
+        return Ok(LuaValue::Nil);
     };
-    let id = decode_id(this)?;
-    let scripts: Table = lua.named_registry_value(REG_SCRIPTS)?;
-    match scripts.get::<Value>(id)? {
-        Value::Table(t) => t.get::<Value>(kind),
-        _ => Ok(Value::Nil),
+    let id = decode_id_context(lua, this)?;
+    let scripts: LuaTable = lua.get_registry(REG_SCRIPTS)?;
+    match lua.table_get(&scripts, id)? {
+        LuaValue::Table(per) => lua.table_get(&per, kind),
+        _ => Ok(LuaValue::Nil),
     }
 }
 
@@ -454,11 +482,15 @@ fn get_script(lua: &Lua, this: &Table, name: &str) -> mlua::Result<Value> {
 /// template node onto an existing region is a different mechanism from applying a font object. It
 /// warns and leaves the region usable — the distinction 1253 drew between *the lookup missing* and
 /// *the result being unusable*. Zero corpus callers reach it.
-fn apply_region_inherits(lua: &Lua, wrapper: &Table, from: &str) -> mlua::Result<()> {
-    use mlua::ObjectLike;
+fn apply_region_inherits_context(
+    lua: &mut impl LuaContext,
+    wrapper: &LuaTable,
+    from: &str,
+) -> benilla_lua::Result<()> {
     // The font object is applied through the binding the XML path uses, so there is one
     // implementation of "apply a font object" rather than two that can drift apart.
-    if wrapper.call_method::<()>("SetFontObject", from).is_ok() {
+    let applied: benilla_lua::Result<()> = lua.call_method(wrapper, "SetFontObject", from);
+    if applied.is_ok() {
         return Ok(());
     }
     let is_template = {
@@ -473,7 +505,7 @@ fn apply_region_inherits(lua: &Lua, wrapper: &Table, from: &str) -> mlua::Result
         ));
         return Ok(());
     }
-    Err(mlua::Error::runtime(format!(
+    Err(benilla_lua::Error::runtime(format!(
         "Couldn't find inherited node \"{from}\""
     )))
 }
@@ -482,27 +514,36 @@ fn apply_region_inherits(lua: &Lua, wrapper: &Table, from: &str) -> mlua::Result
 /// region constructors' `inherits` argument and nowhere else (`0x773d28` for `CreateFontString`,
 /// `0x773b06` for `CreateTexture`).
 ///
-/// Strictly narrower than [`optional_string`]: a **number is refused here**, because the tag is
+/// Strictly narrower than [`optional_string_context`]: a **number is refused here**, because the tag is
 /// tested raw with no coercion. That one-argument difference is the whole reason
 /// `f:CreateTexture(nil, nil, 5)` silently ignores the 5 while `CreateFrame("Frame", nil, nil, 5)`
 /// **raises** `Couldn't find inherited node "5"` — `CreateFrame` runs `lua_tostring(L, 4)` BEFORE
 /// its own `cmp 4`, and that retags the number's stack slot in place, so it arrives as a string.
 /// Same value, opposite outcome, from argument order alone.
-fn strict_string_arg(v: &Value) -> Option<String> {
+fn strict_string_arg_context(v: &LuaValue) -> Option<String> {
     match v {
-        Value::String(s) => s.to_str().ok().map(|s| s.to_owned()),
+        LuaValue::String(s) => s.as_str().ok().map(str::to_owned),
         _ => None,
     }
 }
 
-fn create_region(
-    lua: &Lua,
-    this: &Table,
+fn optional_string_context(value: &LuaValue) -> Option<String> {
+    match value {
+        LuaValue::String(value) => Some(value.to_string_lossy().into_owned()),
+        LuaValue::Number(value) => Some(value.to_string()),
+        LuaValue::Integer(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn create_region_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     kind: RegionKind,
     name: Option<String>,
     layer: Option<String>,
-) -> mlua::Result<Table> {
-    let owner = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<LuaTable> {
+    let owner = frame_handle_of_context(lua, this)?;
     let dl = layer
         .as_deref()
         .and_then(draw_layer_from_str)
@@ -513,12 +554,14 @@ fn create_region(
         let rh = model
             .arena
             .create_region(owner, kind, dl, 0)
-            .ok_or_else(|| mlua::Error::runtime("CreateTexture/FontString: dead owner frame"))?;
+            .ok_or_else(|| {
+                benilla_lua::Error::runtime("CreateTexture/FontString: dead owner frame")
+            })?;
         model.region_data.insert(rh, RegionData::default());
         model.region_id(rh)
     };
 
-    let wrapper = region_wrapper(lua, id)?;
+    let wrapper = region_wrapper_context(lua, id)?;
     if let Some(name) = name {
         // **A leading `$parent` in the NAME is expanded, here as in XML** — `CreateTexture
         // 0x773a20` and `CreateFontString 0x773c30` build a synthetic node carrying
@@ -534,7 +577,7 @@ fn create_region(
             let model = lua.app_data_ref::<Model>().expect("model");
             crate::framexml::resolve_name(&name, &super::parent_token_base(&model, Some(owner)))
         };
-        publish_global(lua, &name, &wrapper)?;
+        publish_global_context(lua, &name, &wrapper)?;
         // Publish into the region-name registry too (first-wins, the frame rule) — this is what
         // lets a sibling region's SetPoint name us as its `relativeTo` (see `resolve_target`).
         let mut model = lua.app_data_mut::<Model>().expect("model");

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -68,7 +68,7 @@ impl ShapeshiftForm {
 /// Battle(17)→1, Defensive(18)→2, Berserker(19)→3, Stealth(30)→1, everything else 0.
 /// **flags1** feeds the form gate (`0x612480`, [`SpellDisplay::usable_in_form`]).
 /// 32 records × 14 fields (56 B), verified on the extracted file.
-pub fn load_shapeshift_forms(chain: &mut Chain) -> Result<HashMap<u32, ShapeshiftForm>> {
+pub fn load_shapeshift_forms(chain: &mut impl FileSource) -> Result<HashMap<u32, ShapeshiftForm>> {
     let bytes = chain
         .read_file(SHAPESHIFT_FORM)
         .context("reading SpellShapeshiftForm.dbc")?;

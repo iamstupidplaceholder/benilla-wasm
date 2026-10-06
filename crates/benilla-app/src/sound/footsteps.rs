@@ -63,11 +63,14 @@ use bevy::prelude::*;
 use benilla_assets::coords::bevy_to_wow;
 use benilla_formats::FootstepCatalog;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::creature_anim::{is_footstep_sound, move_flags, AnimSoundEvent, MovementState};
 use crate::entities::{CollisionHeight, Creatures};
 use crate::items::Items;
 use crate::net::{NetCommands, NetEntity, ObjectStore};
 use crate::player::swim_enter_depth;
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 use benilla_protocol::EntityKind;
 use benilla_world::schedule::WorldStage;
@@ -87,11 +90,12 @@ pub(crate) struct Footsteps(pub(crate) FootstepCatalog);
 /// (`benilla_assets::coords`), so this adds to `translation.y`.
 const FOLEY_HEIGHT: f32 = 2.0;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_footsteps(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_footstep_catalog(&mut chain)
+        benilla_formats::load_footstep_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -264,6 +268,7 @@ fn footstep_sounds(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, load_footsteps.after(AssetSet::Open))
-        .add_systems(Update, footstep_sounds.in_set(WorldStage::Present));
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_footsteps.after(AssetSet::Open));
+    app.add_systems(Update, footstep_sounds.in_set(WorldStage::Present));
 }

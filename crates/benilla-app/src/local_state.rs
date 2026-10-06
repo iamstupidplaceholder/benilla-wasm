@@ -36,8 +36,9 @@
 //! a deterministic capture must not read one machine's saved settings or write anything back
 //! (the harness owns its inputs; decision 0008's reproducibility posture).
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+pub(crate) use benilla_settings::{read_to_string, remove_file, write_atomic};
 
 /// The folder's name, everywhere. **Not** `benilla/`, which is what 0954 called it and what 1175
 /// §4 assumed it would keep: beside the binary that name collides with the binary itself, which is
@@ -49,71 +50,14 @@ use std::path::{Path, PathBuf};
 /// answer — `WoW.exe` keeps its state in `WTF/`, named for what it is (and `WTF/` is exactly why we
 /// cannot borrow that name: drop benilla into a real install and it is already taken).
 /// The director's call, 2026-08-10.
-const STATE_DIR: &str = "benilla-config";
+#[cfg(test)]
+const STATE_DIR: &str = benilla_settings::STATE_DIR;
 
 /// The one benilla-state folder, or `None` when persistence is off (a hermetic capture run, or a
 /// platform with no discoverable executable path). Existence is NOT guaranteed — [`write_atomic`]
 /// creates it on first write; readers just try their file and treat absent as defaults.
 pub(crate) fn home() -> Option<PathBuf> {
-    if std::env::var_os("WOW_CAPTURE").is_some() {
-        return None; // hermetic: captures neither read nor write player state
-    }
-    if let Some(over) = std::env::var_os("BENILLA_HOME") {
-        return Some(PathBuf::from(over));
-    }
-    // 2 · the project folder, dev builds only — see [`dev_project_root`] for why that is the
-    // PRIMARY checkout and not the worktree this binary was built in. `None` in a player build,
-    // where there is no source tree to name (`run_mode::dev_source_dir`).
-    if let Some(root) = dev_project_root() {
-        return Some(root.join(STATE_DIR));
-    }
-    // 3 · beside the binary. A dev build never reaches here — that is what step 2 means by "one
-    // predictable place", and it is why the release path is proven with a player build, not a
-    // dev one.
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(Path::to_path_buf))
-        .map(|dir| dir.join(STATE_DIR))
-}
-
-/// The project folder a dev build keeps its state in: **the primary checkout**, whichever worktree
-/// this binary was actually built in.
-///
-/// This is the one place 1175's §4 needed a correction on contact with how we work. `benilla/` used
-/// to hang off `$WOW_DATA`, and every pool slot symlinks `WoW` to the same install — so there has
-/// always been exactly ONE settings folder no matter which of the eight slots built the binary.
-/// Resolving to `CARGO_MANIFEST_DIR` instead would give eight, and the director's keybinds, macros
-/// and camera pose would appear to reset whenever a session happened to claim a different slot.
-/// That is a silent, recurring surprise, and it is not what "one predictable place" meant.
-///
-/// A linked worktree's `.git` is a **file** reading `gitdir: <primary>/.git/worktrees/<slot>`, so
-/// the primary is derivable with no git binary and no build script: walk up to the common dir and
-/// take its parent. In the primary checkout `.git` is an ordinary directory and the answer is the
-/// crate root's grandparent, unchanged. Anything unexpected falls back to that same answer rather
-/// than to `None` — a wrong-but-present settings folder beats losing persistence entirely.
-fn dev_project_root() -> Option<PathBuf> {
-    let here = crate::run_mode::dev_source_dir()?.ancestors().nth(2)?;
-    let dot_git = here.join(".git");
-    // A linked worktree: `.git` is a file pointing at `<primary>/.git/worktrees/<name>`.
-    if dot_git.is_file() {
-        if let Some(gitdir) = std::fs::read_to_string(&dot_git).ok().and_then(|s| {
-            s.trim()
-                .strip_prefix("gitdir:")
-                .map(|p| p.trim().to_owned())
-        }) {
-            // …/.git/worktrees/<name> → …/.git → the primary checkout.
-            if let Some(primary) = Path::new(&gitdir)
-                .ancestors()
-                .nth(2)
-                .and_then(|d| d.parent())
-            {
-                if primary.is_dir() {
-                    return Some(primary.to_path_buf());
-                }
-            }
-        }
-    }
-    Some(here.to_path_buf())
+    benilla_settings::home(crate::run_mode::dev_source_dir())
 }
 
 /// `benilla-config/config.toml` — the CVar overrides (the `Config.wtf` analog; see `crate::cvars`).
@@ -215,6 +159,19 @@ pub(crate) fn saved_account_path() -> Option<PathBuf> {
     home().map(|h| h.join("account"))
 }
 
+/// Browser-only, opt-in plaintext credential paired with its account name. Never
+/// written to native disk; the settings adapter maps this path to localStorage.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn saved_password_path() -> Option<PathBuf> {
+    home().map(|h| h.join("password"))
+}
+
+/// Browser language preference; currently not an active asset/protocol locale.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn locale_choice_path() -> Option<PathBuf> {
+    home().map(|h| h.join("locale"))
+}
+
 /// `benilla-config/chat/<realm>-<character>.txt` — the chat windows' saved state (decision 1589):
 /// the background tint, the background alpha, the font size a chat tab's right-click menu sets,
 /// and the window's lock. **Character-scoped**, where the reference keeps the same four inside its
@@ -262,10 +219,12 @@ pub(crate) fn layout_character_path(realm: &str, character: &str) -> Option<Path
 /// realm another realm's names. The reference gets away with it because a 1.12 install typically
 /// saw one realm.
 pub(crate) fn name_cache_path(realm: &str) -> Option<PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    let realm = format!("{}-{}", realm, crate::web_config::active_locale());
     Some(
         home()?
             .join("cache")
-            .join(format!("{}.tsv", file_token(realm))),
+            .join(format!("{}.tsv", file_token(&realm))),
     )
 }
 
@@ -335,27 +294,7 @@ fn file_token(s: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    if t.is_empty() {
-        "unknown".into()
-    } else {
-        t
-    }
-}
-
-/// Write a state file atomically: parent dirs created, contents to `<path>.tmp`, then rename —
-/// a crash mid-write leaves the old file intact, never a truncated one. The one write path for
-/// every resident of the folder.
-pub(crate) fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(contents.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
+    if t.is_empty() { "unknown".into() } else { t }
 }
 
 /// Shared test plumbing for anything that toggles the persistence env vars: `std::env::set_var`
@@ -391,7 +330,7 @@ pub(crate) mod test_env {
 
 #[cfg(test)]
 mod tests {
-    use super::test_env::{EnvGuard, ENV_LOCK};
+    use super::test_env::{ENV_LOCK, EnvGuard};
     use super::*;
 
     /// The residents' layout, exercised through the override — which is the *only* step of

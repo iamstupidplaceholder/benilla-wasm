@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -120,7 +120,7 @@ fn n_u32_schema(name: &str, n: usize, string_fields: &[usize]) -> Schema {
 }
 
 /// Read the three tables off the patch chain.
-pub fn load_footstep_catalog(chain: &mut Chain) -> Result<FootstepCatalog> {
+pub fn load_footstep_catalog(chain: &mut impl FileSource) -> Result<FootstepCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\GroundEffectTexture.dbc")
         .context("reading GroundEffectTexture.dbc")?;
@@ -182,7 +182,7 @@ pub fn load_footstep_catalog(chain: &mut Chain) -> Result<FootstepCatalog> {
 /// `textures\Footsteps\BaseFootprint`), the table `CreatureModelData.FootprintTextureID`
 /// indexes. Shipped 5875 data: 6 rows (1 Base, 3 Cloven, 4 Bare, 5 Claw, 6 Hoof, 7 Paw), all
 /// 32×32 pure-black-RGB BLPs under a soft alpha — the print decal's ink.
-pub fn load_footprint_textures(chain: &mut Chain) -> Result<HashMap<u32, String>> {
+pub fn load_footprint_textures(chain: &mut impl FileSource) -> Result<HashMap<u32, String>> {
     let bytes = chain
         .read_file("DBFilesClient\\FootprintTextures.dbc")
         .context("reading FootprintTextures.dbc")?;

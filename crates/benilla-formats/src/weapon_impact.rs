@@ -30,6 +30,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 /// The impact-slot indices (module docs — pinned by the 5875 kit names).
@@ -86,7 +87,9 @@ fn schema() -> Schema {
 }
 
 /// Read `WeaponImpactSounds.dbc` off the patch chain.
-pub fn load_weapon_impact_catalog(chain: &mut Chain) -> Result<WeaponImpactCatalog> {
+pub fn load_weapon_impact_catalog(
+    chain: &mut impl crate::FileSource,
+) -> Result<WeaponImpactCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\WeaponImpactSounds.dbc")
         .context("reading WeaponImpactSounds.dbc")?;

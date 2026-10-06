@@ -31,7 +31,9 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
+#[cfg(test)]
 use crate::Chain;
+use crate::FileSource;
 
 const LANGUAGES: &str = "DBFilesClient\\Languages.dbc";
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
@@ -123,7 +125,7 @@ impl Languages {
     }
 }
 
-pub fn load_languages(chain: &mut Chain) -> Result<Languages> {
+pub fn load_languages(chain: &mut impl FileSource) -> Result<Languages> {
     let bytes = chain
         .read_file(LANGUAGES)
         .with_context(|| format!("reading {LANGUAGES}"))?;
@@ -141,7 +143,7 @@ pub fn load_languages(chain: &mut Chain) -> Result<Languages> {
 }
 
 /// Load and join both tables into the race → language-name map.
-pub fn load_default_languages(chain: &mut Chain) -> Result<DefaultLanguages> {
+pub fn load_default_languages(chain: &mut impl FileSource) -> Result<DefaultLanguages> {
     let lang_bytes = chain
         .read_file(LANGUAGES)
         .with_context(|| format!("reading {LANGUAGES}"))?;
@@ -287,7 +289,7 @@ fn language_words_schema() -> Schema {
 ///
 /// Word length is counted in **bytes**, which is what the reference's index build uses
 /// (`0x4982c0` takes `strlen`); see [`LanguagePool::by_len`].
-pub fn load_language_words(chain: &mut Chain) -> Result<LanguageWords> {
+pub fn load_language_words(chain: &mut impl FileSource) -> Result<LanguageWords> {
     let bytes = chain
         .read_file(LANGUAGE_WORDS)
         .with_context(|| format!("reading {LANGUAGE_WORDS}"))?;

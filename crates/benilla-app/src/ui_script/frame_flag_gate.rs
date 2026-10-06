@@ -467,7 +467,7 @@ fn the_shipped_frames_carry_the_references_flags() {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     s.resolve();
 

@@ -159,7 +159,7 @@ fn map_row_view(
 ///
 /// `None` when a DBC fails to load — the caller disables the map window and says so.
 pub(crate) fn build_catalog(
-    chain: &mut benilla_formats::Chain,
+    chain: &mut impl benilla_formats::FileSource,
     areas: &benilla_formats::AreaTableCatalog,
     maps: &MapCatalogRes,
 ) -> Option<(Vec<WorldMapContinentView>, WorldMapUiData)> {
@@ -390,7 +390,7 @@ fn build_catalog_from_world(world: &World) -> Option<(Vec<WorldMapContinentView>
     let maps = world.get_resource::<MapCatalogRes>()?;
     let areas = world.get_resource::<crate::area::AreaTableRes>()?;
     let mut chain = assets.chain.lock_recover();
-    build_catalog(&mut chain, &areas.0, maps)
+    build_catalog(&mut *chain, &areas.0, maps)
 }
 
 /// Which of the map's levels is displayed — the reference's three selection cells
@@ -993,7 +993,7 @@ fn dev_map_jump(
     let (Some(script), Some(data), Ok(window)) = (script, data, windows.single()) else {
         return;
     };
-    let Some(cursor) = window.cursor_position() else {
+    let Some(cursor) = crate::cursor::position(window) else {
         return;
     };
     // Window px (y-down) → the VM's y-up 768-virtual units, exactly as the pointer feed converts

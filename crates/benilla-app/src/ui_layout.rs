@@ -88,7 +88,7 @@ use crate::ui_script::VmMemo;
 /// How long a moved window sits before the save fires — [`crate::cvars`]'s own constant and its own
 /// reasoning, which a drag fits exactly: long enough to coalesce one gesture, short enough that a
 /// crash costs a gesture rather than a session.
-const SAVE_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
+const SAVE_QUIET: benilla_time::Duration = benilla_time::Duration::from_secs(1);
 
 /// The screen root's spelling in the file — where `GetPoint` answers `nil`. A literal `-` rather
 /// than `UIParent`, because benilla has a real frame by that name (`UIParent.xml`) and the two
@@ -116,7 +116,7 @@ pub(crate) struct LayoutFile {
     /// doc: a `bool` that outlived its VM could compose the file from a tree with nothing placed
     /// in it.
     dirty: VmMemo<bool>,
-    last_change: Option<std::time::Instant>,
+    last_change: Option<benilla_time::Instant>,
 }
 
 /// Render the cache exactly as [`parse`] reads it, frames in the order the engine hands them
@@ -235,7 +235,7 @@ pub(crate) fn load_layout(
     let Some(path) = file.path.clone() else {
         return; // hermetic capture, or no state folder — session-only
     };
-    let text = match std::fs::read_to_string(&path) {
+    let text = match crate::local_state::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
@@ -266,7 +266,7 @@ fn watch_layout(script: Option<NonSendMut<UiScript>>, mut file: ResMut<LayoutFil
         return;
     }
     *file.dirty.get(&script) = true;
-    file.last_change = Some(std::time::Instant::now());
+    file.last_change = Some(benilla_time::Instant::now());
 }
 
 /// Dirty + one quiet second → rewrite the file atomically. **The crash writer, and only that**

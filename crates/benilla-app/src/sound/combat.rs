@@ -130,8 +130,11 @@ use bevy::prelude::*;
 
 use benilla_formats::{impact_slot, WeaponImpactCatalog};
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::creature_anim::{AnimSoundEvent, SwingImpact, SwingMessage, Wielded};
 use crate::net::{Embodied, NetEntity};
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 use benilla_protocol::EntityKind;
 use benilla_world::schedule::WorldStage;
@@ -207,11 +210,12 @@ const UNARMED_SUBCLASS: u32 = 13;
 #[derive(Resource)]
 pub(crate) struct WeaponSwings(pub(crate) benilla_formats::WeaponSwingCatalog);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_weapon_swings(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_weapon_swing_catalog(&mut chain)
+        benilla_formats::load_weapon_swing_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => commands.insert_resource(WeaponSwings(cat)),
@@ -222,11 +226,12 @@ fn load_weapon_swings(mut commands: Commands, assets: Option<Res<WorldAssets>>) 
 #[derive(Resource)]
 pub(crate) struct WeaponImpacts(pub(crate) WeaponImpactCatalog);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_weapon_impacts(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_weapon_impact_catalog(&mut chain)
+        benilla_formats::load_weapon_impact_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -896,11 +901,12 @@ fn combat_sounds(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
+    #[cfg(not(target_arch = "wasm32"))]
     app.add_systems(
         Startup,
         (load_weapon_impacts, load_weapon_swings).after(AssetSet::Open),
-    )
-    .add_systems(Update, combat_sounds.in_set(WorldStage::Present));
+    );
+    app.add_systems(Update, combat_sounds.in_set(WorldStage::Present));
 }
 
 #[cfg(test)]

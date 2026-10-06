@@ -1,4 +1,4 @@
-use mlua::{ObjectLike, Table};
+use benilla_lua::{LuaContext, Table};
 
 use crate::framexml::{self, Element};
 use crate::script::LabelFont;
@@ -8,7 +8,7 @@ use super::{
     abs_dim, abs_value, children_named, children_named_any, color_of, tex_coords_of, Loader,
 };
 
-impl Loader<'_> {
+impl<C: LuaContext> Loader<'_, C> {
     /// `<StatusBar>` LoadXML extras (RF-28, byte-verified table `0x782ef0`): `minValue`/`maxValue`
     /// (a reversed pair is swapped — SetMinMaxValues normalizes identically), `defaultValue` →
     /// SetValue, `orientation`, and the `<BarTexture>`/`<BarColor>` children; the element's
@@ -142,7 +142,7 @@ impl Loader<'_> {
                 // alphaMode / <Size> / <Anchors> / <TexCoords> apply to the region the setter just
                 // created — fetch it back through the matching getter and use the region methods.
                 let getter = method.replacen("Set", "Get", 1);
-                if let Ok(region) = wrapper.call_method::<Table>(getter.as_str(), ()) {
+                if let Ok(region) = this.call_table(wrapper, getter.as_str(), ()) {
                     if let Some(mode) = t.attr("alphaMode") {
                         this.call_region(&region, "SetBlendMode", mode.to_string(), dbg);
                     }
@@ -155,7 +155,7 @@ impl Loader<'_> {
                     // standing (the slot law) and weld an anchored state texture to the button.
                     this.call_region(&region, "ClearAllPoints", (), dbg);
                     this.apply_region_layout(t, &region, self_name, dbg, FontAttrs::Own);
-                    if let Err(e) = crate::script::implicit_creation_anchor_lua(this.lua, &region) {
+                    if let Err(e) = this.implicit_region_anchor(&region) {
                         this.report
                             .errors
                             .push(format!("{dbg}: implicit anchor: {e}"));
@@ -173,8 +173,7 @@ impl Loader<'_> {
                         // `relativeTo` resolves through — the stock trainer row hangs its label
                         // off `$parentHighlight`'s RIGHT, and a name that lives only in `_G`
                         // sent that label to the button's edge instead (1957).
-                        crate::script::region::publish_region_name(this.lua(), &rname, &region);
-                        if let Err(e) = this.lua().globals().set(rname.clone(), region) {
+                        if let Err(e) = this.publish_region(&region, &rname) {
                             this.report
                                 .warnings
                                 .push(format!("{dbg}: state-texture global '{rname}': {e}"));
@@ -250,8 +249,7 @@ impl Loader<'_> {
             // answered nil, which is wrong for any addon that asks.
             let bt_name = bt.name().map(|raw| framexml::resolve_name(raw, self_name));
             if let Some(rname) = bt_name.clone() {
-                match wrapper
-                    .call_method::<Table>("CreateFontString", (rname, Option::<String>::None))
+                match self.call_table(wrapper, "CreateFontString", (rname, Option::<String>::None))
                 {
                     Ok(fs) => self.call(wrapper, "SetFontString", fs, dbg),
                     Err(e) => self
@@ -261,7 +259,7 @@ impl Loader<'_> {
                 }
             }
             self.call(wrapper, "SetText", label, dbg);
-            if let Ok(region) = wrapper.call_method::<Table>("GetFontString", ()) {
+            if let Ok(region) = self.call_table(wrapper, "GetFontString", ()) {
                 // Same clear→layout→implicit order as the state textures above (decision 1310):
                 // SetText materialized the label with the runtime path's implicit anchor; the XML
                 // path re-derives it AFTER the element's own `<Anchors>` apply, which is where
@@ -288,7 +286,7 @@ impl Loader<'_> {
                 // only where the label is born from `text=` or Lua `SetText`.
                 self.call_region(&region, "ClearAllPoints", (), dbg);
                 self.apply_region_layout(bt, &region, self_name, dbg, font_attrs);
-                if let Err(e) = crate::script::implicit_creation_anchor_lua(self.lua, &region) {
+                if let Err(e) = self.implicit_region_anchor(&region) {
                     self.report
                         .errors
                         .push(format!("{dbg}: implicit anchor: {e}"));
@@ -298,8 +296,7 @@ impl Loader<'_> {
                 // (PanelTemplates_TabResize's `getglobal(tabName.."Text")`).
                 if let Some(rname) = bt_name {
                     // The registry too, for the same reason as the state textures below (1957).
-                    crate::script::region::publish_region_name(self.lua(), &rname, &region);
-                    if let Err(e) = self.lua().globals().set(rname.clone(), region) {
+                    if let Err(e) = self.publish_region(&region, &rname) {
                         self.report
                             .warnings
                             .push(format!("{dbg}: ButtonText global '{rname}': {e}"));
@@ -379,9 +376,10 @@ impl Loader<'_> {
                 if let Some(j) = f.attr("justifyH") {
                     match crate::justify::parse_h(j) {
                         crate::justify::Set::To(jh) => {
-                            if let Err(e) = crate::script::set_label_font_justify_h_lua(
+                            let applied = crate::script::set_label_font_justify_h_context(
                                 self.lua, wrapper, which, jh,
-                            ) {
+                            );
+                            if let Err(e) = applied {
                                 self.report
                                     .errors
                                     .push(format!("{dbg}: <{}> justifyH: {e}", f.tag));
@@ -418,7 +416,7 @@ impl Loader<'_> {
     /// the attribute appears at all.
     /// `<TextInsets>` maps to `SetTextInsets`; `blinkSpeed` → SetBlinkSpeed (the caret
     /// half-period, `E+0x370`). A declared `<FontString>` is ASSIGNED as the box's text region by
-    /// the special-fontstring pass (`adopt_text_region` — the engine's LoadXML slot, never a
+    /// the special-fontstring pass (`adopt_text_region_context` — the engine's LoadXML slot, never a
     /// search).
     pub(super) fn apply_editbox(&mut self, el: &Element, wrapper: &Table, dbg: &str) {
         if !el.tag.eq_ignore_ascii_case("EditBox") {
@@ -505,7 +503,9 @@ impl Loader<'_> {
             .attr("minimapPlayerModel")
             .filter(|s| !s.is_empty())
             .unwrap_or(crate::widget::MINIMAP_DEFAULT_PLAYER_MODEL);
-        if let Err(e) = crate::script::apply_minimap_model_attrs(self.lua, wrapper, arrow, player) {
+        let applied =
+            crate::script::apply_minimap_model_attrs_context(self.lua, wrapper, arrow, player);
+        if let Err(e) = applied {
             self.warn_once(
                 "minimap:models",
                 format!("{dbg}: <Minimap> model attributes: {e}"),
@@ -610,7 +610,7 @@ impl Loader<'_> {
             // alphaMode / <Size> / <Anchors> / <TexCoords> apply to the thumb region the setter just
             // created — fetch it back through the getter and use the region methods (same shape as a
             // Button's state textures).
-            if let Ok(region) = wrapper.call_method::<Table>("GetThumbTexture", ()) {
+            if let Ok(region) = self.call_table(wrapper, "GetThumbTexture", ()) {
                 if let Some(mode) = tt.attr("alphaMode") {
                     self.call_region(&region, "SetBlendMode", mode.to_string(), dbg);
                 }
@@ -619,8 +619,7 @@ impl Loader<'_> {
                     self.call_region(&region, "SetTexCoord", tc, dbg);
                 }
                 if let Some(rname) = tt.name().map(|raw| framexml::resolve_name(raw, self_name)) {
-                    crate::script::region::publish_region_name(self.lua(), &rname, &region);
-                    if let Err(e) = self.lua().globals().set(rname.clone(), region) {
+                    if let Err(e) = self.publish_region(&region, &rname) {
                         self.report
                             .warnings
                             .push(format!("{dbg}: thumb-texture global '{rname}': {e}"));
@@ -684,7 +683,7 @@ impl Loader<'_> {
                     // The file-less form — create the region and leave it for the renderer.
                     self.call(wrapper, setter, (), dbg);
                 }
-                if let Ok(region) = wrapper.call_method::<Table>(getter, ()) {
+                if let Ok(region) = self.call_table(wrapper, getter, ()) {
                     if let Some(mode) = tt.attr("alphaMode") {
                         self.call_region(&region, "SetBlendMode", mode.to_string(), dbg);
                     }
@@ -697,8 +696,7 @@ impl Loader<'_> {
                         // Into the region-name registry as well as `_G`: `<ColorValueTexture>`
                         // anchors to `ColorPickerWheel` BY NAME, and a name that only reaches the
                         // globals resolves to nothing there.
-                        crate::script::region::publish_region_name(self.lua(), &rname, &region);
-                        if let Err(e) = self.lua().globals().set(rname.clone(), region) {
+                        if let Err(e) = self.publish_region(&region, &rname) {
                             self.report
                                 .warnings
                                 .push(format!("{dbg}: {tag} global '{rname}': {e}"));
@@ -785,14 +783,15 @@ impl Loader<'_> {
             Some(path) => {
                 let height = children_named(el, "FontHeight").last().and_then(abs_value);
                 let outline = el.attr("outline").map(str::to_string);
-                if let Err(e) = crate::script::apply_simplehtml_font_parts(
+                let applied = crate::script::apply_simplehtml_font_parts_context(
                     self.lua,
                     wrapper,
                     elem,
                     Some(path.to_string()),
                     height,
                     outline,
-                ) {
+                );
+                if let Err(e) = applied {
                     self.report
                         .errors
                         .push(format!("{dbg}: <SimpleHTML> {name} font attrs: {e}"));

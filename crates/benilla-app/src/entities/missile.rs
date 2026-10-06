@@ -837,8 +837,8 @@ pub(super) fn move_missiles(
 /// director's live NPC-caster runs instead.
 #[cfg(test)]
 mod tests {
+    use benilla_time::Duration;
     use std::collections::HashMap;
-    use std::time::Duration;
 
     use bevy::asset::AssetPlugin;
 

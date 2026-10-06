@@ -222,8 +222,8 @@ fn ambience_schema() -> Schema {
 }
 
 /// Read the four tables off the patch chain.
-pub fn load_area_sound_catalog(chain: &mut Chain) -> Result<AreaSoundCatalog> {
-    let read = |chain: &mut Chain, file: &str, schema: Schema, what: &str| {
+pub fn load_area_sound_catalog<S: crate::FileSource>(chain: &mut S) -> Result<AreaSoundCatalog> {
+    let read = |chain: &mut S, file: &str, schema: Schema, what: &str| {
         let bytes = chain
             .read_file(file)
             .with_context(|| format!("reading {file}"))?;

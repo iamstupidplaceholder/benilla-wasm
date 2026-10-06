@@ -38,7 +38,7 @@
 //! `setn` gap it was meant to fix. The invisibility of the side store is load-bearing, and its
 //! test is below.
 
-use mlua::{Function, Lua, MultiValue, Table, Value};
+use benilla_lua::{Function, LuaContext, MultiValue, Table, Value, Vm};
 
 /// Where the weak-keyed side store lives. 5.0 keeps it in registry slot 2; mlua's registry is
 /// its own, so it gets a name instead — the property that matters is that it is reachable from
@@ -76,26 +76,26 @@ const MAX_SHIFT: i64 = 1_000_000;
 /// operator at all (decision 2101) and the two disagree on a table with holes, where `#` is
 /// explicitly undefined. It costs O(n) — exactly as it does in the reference, and only until
 /// the first `insert`/`setn` remembers a size for that table.
-fn get_n(sizes: &Table, t: &Table) -> mlua::Result<i64> {
-    if let Some(n) = as_size(&t.raw_get::<Value>("n")?) {
+fn get_n(lua: &mut impl LuaContext, sizes: &Table, t: &Table) -> benilla_lua::Result<i64> {
+    if let Some(n) = as_size(&lua.table_get_raw_value(t, Value::from("n"))?) {
         return Ok(n);
     }
-    if let Some(n) = as_size(&sizes.raw_get::<Value>(t.clone())?) {
+    if let Some(n) = as_size(&lua.table_get_raw_value(sizes, Value::Table(t.clone()))?) {
         return Ok(n);
     }
     let mut i = 1i64;
-    while !matches!(t.raw_get::<Value>(i)?, Value::Nil) {
+    while !matches!(lua.table_get_raw_value(t, Value::Integer(i))?, Value::Nil) {
         i += 1;
     }
     Ok(i - 1)
 }
 
 /// `luaL_setn 0x6f4ea0` — into `t.n` when the table already carries one, else out of sight.
-fn set_n(sizes: &Table, t: &Table, n: i64) -> mlua::Result<()> {
-    if as_size(&t.raw_get::<Value>("n")?).is_some() {
-        t.raw_set("n", n)
+fn set_n(lua: &mut impl LuaContext, sizes: &Table, t: &Table, n: i64) -> benilla_lua::Result<()> {
+    if as_size(&lua.table_get_raw_value(t, Value::from("n"))?).is_some() {
+        lua.table_set_raw_value(t, Value::from("n"), Value::Integer(n))
     } else {
-        sizes.raw_set(t.clone(), n)
+        lua.table_set_raw_value(sizes, Value::Table(t.clone()), Value::Integer(n))
     }
 }
 
@@ -107,138 +107,151 @@ fn set_n(sizes: &Table, t: &Table, n: i64) -> mlua::Result<()> {
 /// function for sorting`) and the sort algorithm that a Rust re-write would have to reproduce —
 /// including *not* handing a Lua comparator to Rust's `sort_by`, which panics on an
 /// inconsistent one.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-    let store = lua.create_table()?;
-    let meta = lua.create_table()?;
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let store = vm.create_table()?;
+    let meta = vm.create_table()?;
     // Weak KEYS: a table nobody else holds must still be collectable, and 5.0's own `getsizes`
     // builds exactly this metatable.
-    meta.set("__mode", "k")?;
-    store.set_metatable(Some(meta))?;
+    vm.table_set(&meta, "__mode", "k")?;
+    vm.table_set_metatable(&store, Some(&meta))?;
     // Kept in the registry so it survives for the VM's life and nothing an addon can reach
     // names it — and captured by every closure below, so the hottest function in the whole UI
     // (`table.insert`) costs two raw gets rather than a registry walk per call.
-    lua.set_named_registry_value(SIZES, store.clone())?;
+    vm.set_named_registry_value(SIZES, &store)?;
     let sizes = store;
 
-    let t: Table = g.get("table")?;
+    let t = vm.global_table("table")?;
 
     let getn_sizes = sizes.clone();
-    t.set(
-        "getn",
-        lua.create_function(move |_, t: Table| get_n(&getn_sizes, &t))?,
-    )?;
+    let getn = vm.create_function("table.getn", move |lua, t: Table| {
+        get_n(lua, &getn_sizes, &t)
+    })?;
+    vm.table_set_function(&t, "getn", &getn)?;
     // `table.setn 0x7fb670` — 0 results.
     let setn_sizes = sizes.clone();
-    t.set(
-        "setn",
-        lua.create_function(move |_, (t, n): (Table, i64)| set_n(&setn_sizes, &t, n))?,
-    )?;
+    let setn = vm.create_function("table.setn", move |lua, (t, n): (Table, i64)| {
+        set_n(lua, &setn_sizes, &t, n)
+    })?;
+    vm.table_set_function(&t, "setn", &setn)?;
 
     // `table.insert 0x7fb6a0` — `n = getn(t) + 1`; with a position argument the position may
     // GROW n past it; `setn` first, then shift up from n down to pos, then store.
     let insert_sizes = sizes.clone();
-    t.set(
-        "insert",
-        lua.create_function(move |_, args: MultiValue| {
-            let argc = args.len();
-            let mut it = args.into_iter();
-            let Some(Value::Table(t)) = it.next() else {
-                return Err(mlua::Error::runtime(
-                    "bad argument #1 to 'insert' (table expected)",
-                ));
-            };
-            let mut n = get_n(&insert_sizes, &t)? + 1;
-            // The 2-vs-3 argument split is `lua_gettop`, so an explicit trailing nil counts:
-            // `insert(t, 4, nil)` writes nil at 4, it does not append the 4.
-            let (pos, v) = if argc <= 2 {
-                (n, it.next().unwrap_or(Value::Nil))
-            } else {
-                let pos = match it.next() {
-                    Some(Value::Integer(i)) => i,
-                    #[allow(clippy::cast_possible_truncation)]
-                    Some(Value::Number(x)) => x as i64,
-                    _ => {
-                        return Err(mlua::Error::runtime(
-                            "bad argument #2 to 'insert' (number expected)",
-                        ))
-                    }
-                };
-                if pos > n {
-                    n = pos;
+    let insert = vm.create_function("table.insert", move |lua, args: MultiValue| {
+        let argc = args.len();
+        let mut it = args.into_iter();
+        let Some(Value::Table(t)) = it.next() else {
+            return Err(benilla_lua::Error::runtime(
+                "bad argument #1 to 'insert' (table expected)",
+            ));
+        };
+        let mut n = get_n(lua, &insert_sizes, &t)? + 1;
+        // The 2-vs-3 argument split is `lua_gettop`, so an explicit trailing nil counts:
+        // `insert(t, 4, nil)` writes nil at 4, it does not append the 4.
+        let (pos, v) = if argc <= 2 {
+            (n, it.next().unwrap_or(Value::Nil))
+        } else {
+            let pos = match it.next() {
+                Some(Value::Integer(i)) => i,
+                #[allow(clippy::cast_possible_truncation)]
+                Some(Value::Number(x)) => x as i64,
+                _ => {
+                    return Err(benilla_lua::Error::runtime(
+                        "bad argument #2 to 'insert' (number expected)",
+                    ))
                 }
-                (pos, it.next().unwrap_or(Value::Nil))
             };
-            if n.saturating_sub(pos) > MAX_SHIFT {
-                return Err(mlua::Error::runtime("table too big to insert into"));
+            if pos > n {
+                n = pos;
             }
-            set_n(&insert_sizes, &t, n)?;
-            while n > pos {
-                let above: Value = t.raw_get(n - 1)?;
-                t.raw_set(n, above)?;
-                n -= 1;
-            }
-            t.raw_set(pos, v)
-        })?,
-    )?;
+            (pos, it.next().unwrap_or(Value::Nil))
+        };
+        if n.saturating_sub(pos) > MAX_SHIFT {
+            return Err(benilla_lua::Error::runtime("table too big to insert into"));
+        }
+        set_n(lua, &insert_sizes, &t, n)?;
+        while n > pos {
+            let above = lua.table_get_raw_value(&t, Value::Integer(n - 1))?;
+            lua.table_set_raw_value(&t, Value::Integer(n), above)?;
+            n -= 1;
+        }
+        lua.table_set_raw_value(&t, Value::Integer(pos), v)
+    })?;
+    vm.table_set_function(&t, "insert", &insert)?;
 
     // `table.remove 0x7fb750` — an empty table (remembered size <= 0) returns NO value and
     // touches nothing; otherwise `setn(n-1)`, take `t[pos]`, close the gap, nil the tail.
     let remove_sizes = sizes.clone();
-    t.set(
-        "remove",
-        lua.create_function(move |_, (t, pos): (Table, Option<i64>)| {
-            let n = get_n(&remove_sizes, &t)?;
+    let remove = vm.create_function(
+        "table.remove",
+        move |lua, (t, pos): (Table, Option<i64>)| {
+            let n = get_n(lua, &remove_sizes, &t)?;
             let pos = pos.unwrap_or(n);
             if n <= 0 {
                 return Ok(MultiValue::new());
             }
             if n.saturating_sub(pos) > MAX_SHIFT {
-                return Err(mlua::Error::runtime("table too big to remove from"));
+                return Err(benilla_lua::Error::runtime("table too big to remove from"));
             }
-            set_n(&remove_sizes, &t, n - 1)?;
-            let taken: Value = t.raw_get(pos)?;
+            set_n(lua, &remove_sizes, &t, n - 1)?;
+            let taken = lua.table_get_raw_value(&t, Value::Integer(pos))?;
             for i in pos..n {
-                let next: Value = t.raw_get(i + 1)?;
-                t.raw_set(i, next)?;
+                let next = lua.table_get_raw_value(&t, Value::Integer(i + 1))?;
+                lua.table_set_raw_value(&t, Value::Integer(i), next)?;
             }
-            t.raw_set(n, Value::Nil)?;
-            Ok(MultiValue::from_vec(vec![taken]))
-        })?,
+            lua.table_set_raw_value(&t, Value::Integer(n), Value::Nil)?;
+            Ok(MultiValue::from(vec![taken]))
+        },
     )?;
+    vm.table_set_function(&t, "remove", &remove)?;
 
     // `table.foreachi 0x7fb4e0` — 1..getn, stop and hand back the first non-nil result.
     let foreachi_sizes = sizes.clone();
-    t.set(
-        "foreachi",
-        lua.create_function(move |_, (t, f): (Table, Function)| {
-            let n = get_n(&foreachi_sizes, &t)?;
+    let foreachi =
+        vm.create_function("table.foreachi", move |lua, (t, f): (Table, Function)| {
+            let n = get_n(lua, &foreachi_sizes, &t)?;
             for i in 1..=n {
-                let v: Value = t.raw_get(i)?;
-                let r: Value = f.call((i, v))?;
+                let v = lua.table_get_raw_value(&t, Value::Integer(i))?;
+                let r = lua
+                    .call_function_values(&f, vec![Value::Integer(i), v])?
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Value::Nil);
                 if !matches!(r, Value::Nil) {
-                    return Ok(MultiValue::from_vec(vec![r]));
+                    return Ok(MultiValue::from(vec![r]));
                 }
             }
             Ok(MultiValue::new())
-        })?,
-    )?;
+        })?;
+    vm.table_set_function(&t, "foreachi", &foreachi)?;
 
     // `table.concat 0x7fb860` — `j` defaults to getn, everything else is 5.1's own body.
     let concat_sizes = sizes.clone();
-    let concat: Function = t.get("concat")?;
-    t.set(
-        "concat",
-        lua.create_function(
-            move |_, (t, sep, i, j): (Table, Option<String>, Option<i64>, Option<i64>)| {
-                let j = match j {
-                    Some(j) => j,
-                    None => get_n(&concat_sizes, &t)?,
-                };
-                concat.call::<Value>((t, sep.unwrap_or_default(), i.unwrap_or(1), j))
-            },
-        )?,
+    let concat = vm.table_get_function(&t, "concat")?;
+    let concat_fn = vm.create_function(
+        "table.concat",
+        move |lua, (t, sep, i, j): (Table, Option<String>, Option<i64>, Option<i64>)| {
+            let j = match j {
+                Some(j) => j,
+                None => get_n(lua, &concat_sizes, &t)?,
+            };
+            let out: Value = lua
+                .call_function_values(
+                    &concat,
+                    vec![
+                        Value::Table(t),
+                        Value::from(sep.unwrap_or_default()),
+                        Value::from(i.unwrap_or(1)),
+                        Value::from(j),
+                    ],
+                )?
+                .into_iter()
+                .next()
+                .unwrap_or(Value::Nil);
+            Ok(out)
+        },
     )?;
+    vm.table_set_function(&t, "concat", &concat_fn)?;
 
     // `table.sort 0x7fb900` — sorts `1..getn`, where 5.1's sorts `1..#t`. The two agree unless
     // a remembered size is SHORTER than the array border, which is the only case that needs
@@ -247,54 +260,63 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // comparing against nils and raising; we sort the border instead — a knowing divergence
     // from an error path, not from a mechanism.)
     let sort_sizes = sizes.clone();
-    let sort: Function = t.get("sort")?;
-    t.set(
-        "sort",
-        lua.create_function(move |_, (t, cmp): (Table, Option<Function>)| {
-            let n = get_n(&sort_sizes, &t)?;
-            let border = i64::try_from(t.raw_len()).unwrap_or(i64::MAX);
+    let sort = vm.table_get_function(&t, "sort")?;
+    let sort_fn = vm.create_function(
+        "table.sort",
+        move |lua, (t, cmp): (Table, Option<Function>)| {
+            let n = get_n(lua, &sort_sizes, &t)?;
+            let border = i64::try_from(lua.table_raw_len(&t)?).unwrap_or(i64::MAX);
             if n >= border {
-                return sort.call::<()>((t, cmp));
+                lua.call_function_values(&sort, vec![Value::Table(t), Value::from(cmp)])?;
+                return Ok(());
             }
             let tail: Vec<Value> = ((n + 1)..=border)
-                .map(|i| t.raw_get::<Value>(i))
-                .collect::<mlua::Result<_>>()?;
+                .map(|i| lua.table_get_raw_value(&t, Value::Integer(i)))
+                .collect::<benilla_lua::Result<_>>()?;
             for i in (n + 1)..=border {
-                t.raw_set(i, Value::Nil)?;
+                lua.table_set_raw_value(&t, Value::Integer(i), Value::Nil)?;
             }
-            let sorted = sort.call::<()>((t.clone(), cmp));
+            let sorted: () = {
+                lua.call_function_values(&sort, vec![Value::Table(t.clone()), Value::from(cmp)])?;
+            };
             for (k, v) in tail.into_iter().enumerate() {
-                t.raw_set(n + 1 + i64::try_from(k).unwrap_or(0), v)?;
+                lua.table_set_raw_value(
+                    &t,
+                    Value::Integer(n + 1 + i64::try_from(k).unwrap_or(0)),
+                    v,
+                )?;
             }
-            sorted
-        })?,
+            Ok(sorted)
+        },
     )?;
+    vm.table_set_function(&t, "sort", &sort_fn)?;
 
     // Base `unpack 0x703080` — `1..getn(t)`, by `rawgeti`. The reference takes only the table
     // and ignores anything after it, so no 1.12 caller can pass a range meaningfully; we keep
     // 5.1's optional `i`/`j` because two of this crate's OWN stdlib helpers pass an explicit
     // range to carry embedded nils (`tostringall`, the positional-`format` shim), and nothing
     // an addon can write distinguishes the two.
-    g.set(
+    let unpack = vm.create_function(
         "unpack",
-        lua.create_function(move |_, (t, i, j): (Table, Option<i64>, Option<i64>)| {
+        move |lua, (t, i, j): (Table, Option<i64>, Option<i64>)| {
             let i = i.unwrap_or(1);
             let j = match j {
                 Some(j) => j,
-                None => get_n(&sizes, &t)?,
+                None => get_n(lua, &sizes, &t)?,
             };
             // The reference's `luaL_checkstack(n, "table too big to unpack")`, at the same
             // bound the shifts take.
             if j.saturating_sub(i) >= MAX_SHIFT {
-                return Err(mlua::Error::runtime("too many results to unpack"));
+                return Err(benilla_lua::Error::runtime("too many results to unpack"));
             }
             let mut out = Vec::new();
             for k in i..=j {
-                out.push(t.raw_get::<Value>(k)?);
+                out.push(lua.table_get_raw_value(&t, Value::Integer(k))?);
             }
-            Ok(MultiValue::from_vec(out))
-        })?,
+            Ok(MultiValue::from(out))
+        },
     )?;
+    vm.set_global_function("unpack", &unpack)?;
 
     Ok(())
 }
@@ -312,7 +334,7 @@ mod tests {
     /// a `drew=nothing(0)` harness row that read like an addon with nothing to draw.
     #[test]
     fn a_wipe_then_setn_zero_then_insert_is_countable_again() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<i64>(
                 r#"
@@ -337,7 +359,7 @@ mod tests {
     /// mixin walk errors on a stray `n` (this module's header).
     #[test]
     fn the_remembered_size_round_trips_and_never_appears_as_a_key() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(s.eval::<i64>("return table.getn({1,2,3})").unwrap(), 3);
         assert_eq!(
             s.eval::<i64>("local t = {1,2,3} table.setn(t, 7) return table.getn(t)")
@@ -376,7 +398,7 @@ mod tests {
     /// it is why `table.getn` is not a way to count returns on 1.12.
     #[test]
     fn the_fallback_count_stops_at_the_first_hole() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<i64>("local t = {} t[1] = 'a' t[3] = 'c' return table.getn(t)")
                 .unwrap(),
@@ -388,7 +410,7 @@ mod tests {
     /// `insert` with a position, and `remove` — the two that write the size back.
     #[test]
     fn insert_and_remove_maintain_the_size_the_way_the_reference_does() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         // A position past the remembered size GROWS it (`if (pos > n) n = pos`).
         assert_eq!(
             s.eval::<String>(
@@ -432,7 +454,7 @@ mod tests {
     /// and base `unpack` (wow-re's call-site census, this module's header).
     #[test]
     fn concat_sort_foreachi_and_unpack_all_read_the_remembered_size() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<String>("local t = {'a','b','c'} table.setn(t, 2) return table.concat(t, '')")
                 .unwrap(),
@@ -492,7 +514,7 @@ mod tests {
     /// by the stdlib layer, which runs after this one — are the new bodies rather than 5.1's.
     #[test]
     fn the_bare_aliases_bind_the_5_0_bodies() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert!(s.eval::<bool>("return getn == table.getn").unwrap());
         assert!(s.eval::<bool>("return tinsert == table.insert").unwrap());
         assert!(s.eval::<bool>("return tremove == table.remove").unwrap());

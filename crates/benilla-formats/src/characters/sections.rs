@@ -5,7 +5,9 @@ use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
 use crate::items::ItemDisplay;
-use crate::{read_texture_mip_chain, BlpMipChain, Chain};
+#[cfg(test)]
+use crate::read_texture_mip_chain;
+use crate::{read_texture_mip_chain_from, BlpMipChain, FileSource};
 
 const CHAR_SECTIONS: &str = "DBFilesClient\\CharSections.dbc";
 
@@ -24,6 +26,11 @@ const HAIR_SUBSTITUTE_VARIATION: u8 = 1;
 
 /// An atlas rect `(x, y, w, h)` in pixels — a composite destination tile.
 type Tile = (u32, u32, u32, u32);
+
+struct BodyCompositePlan {
+    base: String,
+    steps: Vec<(Vec<String>, Tile)>,
+}
 
 /// The body-atlas tiles the head + underwear overlays composite into — four of the RF-0062 static 256²
 /// partition's 10 rects. g8/g9 are the head strip (left column, Y 160–256: g8 the 32-tall upper band, g9
@@ -223,6 +230,93 @@ impl CharSections {
             .filter(|s| !s.is_empty())
     }
 
+    fn body_plan(
+        &self,
+        race: u8,
+        sex: u8,
+        skin: u8,
+        face: u8,
+        facial_hair: u8,
+        hair_style: u8,
+        hair_color: u8,
+        equipment: [Option<&ItemDisplay>; 8],
+        emblem: Option<GuildEmblem>,
+        tabard_preview: bool,
+    ) -> Option<BodyCompositePlan> {
+        let base = self.skin_texture(race, sex, skin)?.to_string();
+        let mut steps = Vec::new();
+        let overlays: [(u8, u8, u8, usize, Tile); 6] = [
+            (SECTION_FACE, face, skin, 0, TILE_G9),
+            (SECTION_FACE, face, skin, 1, TILE_G8),
+            (SECTION_FACIAL_HAIR, facial_hair, hair_color, 0, TILE_G9),
+            (SECTION_FACIAL_HAIR, facial_hair, hair_color, 1, TILE_G8),
+            (SECTION_HAIR, hair_style, hair_color, 1, TILE_G9),
+            (SECTION_HAIR, hair_style, hair_color, 2, TILE_G8),
+        ];
+        for (ty, var, color, col, tile) in overlays {
+            if let Some(path) = self.tex(race, sex, ty, var, color, col) {
+                steps.push((vec![path.to_string()], tile));
+            }
+        }
+
+        let equipment_plan = equip_blits(&equipment, emblem, tabard_preview);
+        for (col, layer, tested) in UNDERWEAR_TILES {
+            if equipment_plan
+                .iter()
+                .any(|step| step.layer == layer && step.column < tested)
+            {
+                continue;
+            }
+            if let Some(path) = self.tex(race, sex, SECTION_UNDERWEAR, 0, skin, col) {
+                steps.push((vec![path.to_string()], EQUIP_TILES[layer]));
+            }
+        }
+        for step in &equipment_plan {
+            steps.push((step.candidates(sex), EQUIP_TILES[step.layer]));
+        }
+        Some(BodyCompositePlan { base, steps })
+    }
+
+    /// The ordered BLP candidate groups the ordinary body-atlas compositor may read for this
+    /// appearance. The first group is the required base; every following group is one overlay
+    /// operation whose first decodable candidate wins.
+    ///
+    /// Browser hosts use this exact production plan to prefetch the inputs asynchronously, then
+    /// call [`Self::composite_body`] over an in-memory [`FileSource`]. Candidate fallbacks are all
+    /// included; the compositor retains authority over which first decodable candidate wins.
+    pub fn body_texture_candidates(
+        &self,
+        race: u8,
+        sex: u8,
+        skin: u8,
+        face: u8,
+        facial_hair: u8,
+        hair_style: u8,
+        hair_color: u8,
+        equipment: [Option<&ItemDisplay>; 8],
+        emblem: Option<GuildEmblem>,
+        tabard_preview: bool,
+    ) -> Vec<Vec<String>> {
+        let Some(plan) = self.body_plan(
+            race,
+            sex,
+            skin,
+            face,
+            facial_hair,
+            hair_style,
+            hair_color,
+            equipment,
+            emblem,
+            tabard_preview,
+        ) else {
+            return Vec::new();
+        };
+        std::iter::once(vec![plan.base])
+            .chain(plan.steps.into_iter().map(|(paths, _)| paths))
+            .filter(|paths| !paths.is_empty())
+            .collect()
+    }
+
     /// Composite a character's full body-skin atlas: the base 256² skin with the face / facial-hair /
     /// hair / underwear region overlays blended in at their fixed atlas tiles, returned as one mip
     /// pyramid ready to upload (decision 0044). `Ok(None)` if the base skin row is absent; a missing or
@@ -246,7 +340,7 @@ impl CharSections {
     /// 2/3/4 over the garment's own — see [`equip_blits`] for when it installs and when it does not.
     pub fn composite_body(
         &self,
-        chain: &mut Chain,
+        source: &mut impl FileSource,
         race: u8,
         sex: u8,
         skin: u8,
@@ -258,71 +352,35 @@ impl CharSections {
         emblem: Option<GuildEmblem>,
         tabard_preview: bool,
     ) -> Result<Option<BlpMipChain>> {
-        let Some(base_path) = self.skin_texture(race, sex, skin) else {
+        let Some(plan) = self.body_plan(
+            race,
+            sex,
+            skin,
+            face,
+            facial_hair,
+            hair_style,
+            hair_color,
+            equipment,
+            emblem,
+            tabard_preview,
+        ) else {
             return Ok(None);
         };
-        let mut atlas = read_texture_mip_chain(chain, base_path)
-            .with_context(|| format!("reading base skin '{base_path}'"))?;
-        // The head overlays: (sectionType, variation, color, texColumn, destTile) — the verified fan-out
-        // (RF-0067 §"section → cell core" + RF-0074 head map). Within a tile, order matters (later
-        // overwrites/blends over earlier): base skin (already the canvas) → face → facial hair → hair.
-        // Note the columns differ by section: face/facial-hair use TextureName[0]/[1] (lower/upper),
-        // hair uses [1]/[2]. Hair is blank for e.g. Human male (its texid columns are empty), so those
-        // reads no-op there; included so the path is correct for races whose hairline does composite
-        // into the head.
-        let overlays: [(u8, u8, u8, usize, Tile); 6] = [
-            (SECTION_FACE, face, skin, 0, TILE_G9),
-            (SECTION_FACE, face, skin, 1, TILE_G8),
-            (SECTION_FACIAL_HAIR, facial_hair, hair_color, 0, TILE_G9),
-            (SECTION_FACIAL_HAIR, facial_hair, hair_color, 1, TILE_G8),
-            (SECTION_HAIR, hair_style, hair_color, 1, TILE_G9),
-            (SECTION_HAIR, hair_style, hair_color, 2, TILE_G8),
-        ];
-        for (ty, var, color, col, tile) in overlays {
-            let Some(path) = self.tex(race, sex, ty, var, color, col) else {
-                continue;
-            };
-            if let Ok(overlay) = read_texture_mip_chain(chain, path) {
-                blit_over(&mut atlas, &overlay, tile);
-            }
-        }
-        // The equipment plan, built once: the blits below consume it, and the underwear reads it as its
-        // gate. One plan, so "what dresses this tile?" has a single answer (decision 0074's `equip_blits`).
-        let plan = equip_blits(&equipment, emblem, tabard_preview);
-        // The underwear ([`UNDERWEAR_TILES`]) — the tile's fallback, not an under-layer: a contribution
-        // in any of the group's TESTED columns and the client draws no underwear there at all, leaving
-        // the base skin it already blitted. Drawn before the equipment because the untested columns (the
-        // belt, the tabard) still stack on top of it.
-        for (col, layer, tested) in UNDERWEAR_TILES {
-            if plan.iter().any(|s| s.layer == layer && s.column < tested) {
-                continue;
-            }
-            let Some(path) = self.tex(race, sex, SECTION_UNDERWEAR, 0, skin, col) else {
-                continue;
-            };
-            if let Ok(overlay) = read_texture_mip_chain(chain, path) {
-                blit_over(&mut atlas, &overlay, EQUIP_TILES[layer]);
-            }
-        }
-        // The equipment layers (decision 0074) and the guild tabard's three (decision 1704), in the
-        // one order [`equip_blits`] decides, each taking the first of its own
-        // [`EquipBlit::candidates`] that decodes. A name that resolves to nothing is skipped —
-        // best-effort, like the skin overlays; on the model it reads as a garment that stops early,
-        // which is what the instrument's `MISSING` line is for.
-        for step in &plan {
-            if let Some(overlay) = step
-                .candidates(sex)
+        let mut atlas = read_texture_mip_chain_from(source, &plan.base)
+            .with_context(|| format!("reading base skin '{}'", plan.base))?;
+        for (candidates, tile) in plan.steps {
+            if let Some(overlay) = candidates
                 .iter()
-                .find_map(|path| read_texture_mip_chain(chain, path).ok())
+                .find_map(|path| read_texture_mip_chain_from(source, path).ok())
             {
-                blit_over(&mut atlas, &overlay, EQUIP_TILES[step.layer]);
+                blit_over(&mut atlas, &overlay, tile);
             }
         }
         Ok(Some(atlas))
     }
 
     /// Load CharSections.dbc from the patch chain.
-    pub fn load(chain: &mut Chain) -> Result<Self> {
+    pub fn load(chain: &mut impl FileSource) -> Result<Self> {
         let bytes = chain
             .read_file(CHAR_SECTIONS)
             .with_context(|| format!("reading {CHAR_SECTIONS}"))?;

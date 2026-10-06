@@ -18,10 +18,15 @@
 //! path and the facing, and the app's model-pane arm paints the arrow sprite there
 //! (`ui_script/extract`).
 
-use mlua::{Lua, MultiValue, ObjectLike, Table, Value};
+use benilla_lua::{
+    FromLua, LuaContext, MultiValue as LuaMultiValue, Table as LuaTable, Value as LuaValue, Vm,
+};
 
 use super::binding_abi::bool_or_default;
-use super::object::{create_frame, decode_id, frame_handle_of, frame_wrapper, point_from_str};
+use super::object::{
+    create_frame_context, decode_id_context, frame_handle_of_context, frame_wrapper_context,
+    point_from_str,
+};
 use super::Model;
 
 /// The arrow's model — `0x8453c0`, and NOT `Rotating-MinimapArrow`.
@@ -111,33 +116,39 @@ fn arrow_scale(model: &Model, which: Arrow) -> f32 {
 }
 
 /// `lua_isstring`: a string, or a number (which `lua_tostring` would print).
-fn is_string(v: &Value) -> bool {
-    matches!(v, Value::String(_) | Value::Integer(_) | Value::Number(_))
+fn is_string(v: &LuaValue) -> bool {
+    matches!(
+        v,
+        LuaValue::String(_) | LuaValue::Integer(_) | LuaValue::Number(_)
+    )
 }
 
-fn as_string(v: &Value) -> mlua::Result<String> {
+fn as_string(v: &LuaValue) -> benilla_lua::Result<String> {
     match v {
-        Value::String(s) => Ok(s.to_str()?.to_string()),
-        Value::Integer(i) => Ok(i.to_string()),
-        Value::Number(n) => Ok(super::binding_abi::lua_number_text(*n)),
+        LuaValue::String(s) => s
+            .as_str()
+            .map(str::to_owned)
+            .map_err(|error| benilla_lua::Error::runtime(error.to_string())),
+        LuaValue::Integer(i) => Ok(i.to_string()),
+        LuaValue::Number(n) => Ok(super::binding_abi::lua_number_text(*n)),
         _ => Ok(String::new()),
     }
 }
 
 /// `lua_isnumber`: a number, or a string that parses as one.
-fn as_number(lua: &Lua, v: &Value) -> Option<f64> {
-    lua.coerce_number(v.clone()).ok().flatten()
+fn as_number(v: &LuaValue) -> Option<f64> {
+    f64::from_lua(v.clone()).ok()
 }
 
-fn create(lua: &Lua, which: Arrow, parent: Value) -> mlua::Result<()> {
-    let Value::Table(t) = parent else {
-        return Err(mlua::Error::runtime(which.usage_create()));
+fn create(lua: &mut impl LuaContext, which: Arrow, parent: LuaValue) -> benilla_lua::Result<()> {
+    let LuaValue::Table(t) = parent else {
+        return Err(benilla_lua::Error::runtime(which.usage_create()));
     };
-    if decode_id(&t).is_err() {
-        return Err(mlua::Error::runtime(which.no_this()));
+    if decode_id_context(lua, &t).is_err() {
+        return Err(benilla_lua::Error::runtime(which.no_this()));
     }
-    if frame_handle_of(lua, &t).is_err() {
-        return Err(mlua::Error::runtime(which.not_a_frame()));
+    if frame_handle_of_context(lua, &t).is_err() {
+        return Err(benilla_lua::Error::runtime(which.not_a_frame()));
     }
     {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -145,11 +156,11 @@ fn create(lua: &Lua, which: Arrow, parent: Value) -> mlua::Result<()> {
             return Ok(()); // the singleton exists: the parent is not even read (§2.1)
         }
     }
-    let wrapper = create_frame(
+    let wrapper = create_frame_context(
         lua,
-        ("Model".to_string(), None, Some(Value::Table(t)), None),
+        ("Model".to_string(), None, Some(LuaValue::Table(t)), None),
     )?;
-    let id = decode_id(&wrapper)?;
+    let id = decode_id_context(lua, &wrapper)?;
     let scale = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         arrow_scale(&model, which)
@@ -165,12 +176,12 @@ fn create(lua: &Lua, which: Arrow, parent: Value) -> mlua::Result<()> {
         .app_data_mut::<Model>()
         .expect("model app_data")
         .model_facts_for(ARROW_MODEL);
-    super::modelframe::with_model(lua, &wrapper, |m| {
+    super::modelframe::with_model_context(lua, &wrapper, |m| {
         m.set_file(ARROW_MODEL.to_string(), facts.as_deref());
         m.scale = scale;
         m.position = centre_of(facts.as_deref());
     })?;
-    let h = frame_handle_of(lua, &wrapper)?;
+    let h = frame_handle_of_context(lua, &wrapper)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     model.apply_implicit_rect(h);
     which.set_slot(&mut model, id);
@@ -178,20 +189,23 @@ fn create(lua: &Lua, which: Arrow, parent: Value) -> mlua::Result<()> {
 }
 
 /// The singleton's wrapper, or `None` while it does not exist.
-fn arrow_wrapper(lua: &Lua, which: Arrow) -> mlua::Result<Option<Table>> {
+fn arrow_wrapper_context(
+    lua: &mut impl LuaContext,
+    which: Arrow,
+) -> benilla_lua::Result<Option<LuaTable>> {
     let id = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         which.slot(&model)
     };
-    id.map(|id| frame_wrapper(lua, id)).transpose()
+    id.map(|id| frame_wrapper_context(lua, id)).transpose()
 }
 
 /// `UpdateWorldMapArrowFrames()` (§2.3): for each existing arrow, re-centre the model on its
 /// rect and copy the camera-tracked object's facing — the player's, which the app pushes with
 /// the world-map feed — into its rotation about +Z. No player → neither facing moves.
-fn update(lua: &Lua) -> mlua::Result<()> {
+fn update(lua: &mut impl LuaContext) -> benilla_lua::Result<()> {
     for which in [Arrow::World, Arrow::Mini] {
-        let Some(wrapper) = arrow_wrapper(lua, which)? else {
+        let Some(wrapper) = arrow_wrapper_context(lua, which)? else {
             continue;
         };
         let (facing, tracked, facts) = {
@@ -202,7 +216,7 @@ fn update(lua: &Lua) -> mlua::Result<()> {
                 model.model_facts_for(ARROW_MODEL),
             )
         };
-        super::modelframe::with_model(lua, &wrapper, |m| {
+        super::modelframe::with_model_context(lua, &wrapper, |m| {
             m.position = centre_of(facts.as_deref());
             if tracked {
                 m.facing = facing;
@@ -218,44 +232,47 @@ fn update(lua: &Lua) -> mlua::Result<()> {
 /// expanded against the arrow's parent, then `_G` — else `Couldn't find frame named '%s'`, and
 /// the arrow itself `Error: %s is anchored to itself`; a non-string third argument means
 /// `relativePoint = point` and zero offsets with no error; offsets only when both are numbers.
-fn position(lua: &Lua, which: Arrow, args: [Value; 5]) -> mlua::Result<()> {
-    let Some(arrow) = arrow_wrapper(lua, which)? else {
+fn position(
+    lua: &mut impl LuaContext,
+    which: Arrow,
+    args: [LuaValue; 5],
+) -> benilla_lua::Result<()> {
+    let Some(arrow) = arrow_wrapper_context(lua, which)? else {
         return Ok(());
     };
     let [point, frame, rel, x, y] = args;
     if !is_string(&point) || !is_string(&frame) {
-        return Err(mlua::Error::runtime(which.usage_position()));
+        return Err(benilla_lua::Error::runtime(which.usage_position()));
     }
     let point_name = as_string(&point)?;
     if point_from_str(&point_name).is_none() {
-        return Err(mlua::Error::runtime("Unknown frame point"));
+        return Err(benilla_lua::Error::runtime("Unknown frame point"));
     }
     let frame_name = as_string(&frame)?;
     let resolved = if let Some(rest) = frame_name.strip_prefix("$parent") {
         // The first NAMED ancestor of the arrow — its parent frame, or that frame's own parent.
-        let parent_name: Option<String> = arrow
-            .call_method::<Option<Table>>("GetParent", ())?
-            .and_then(|p| {
-                p.call_method::<Option<String>>("GetName", ())
-                    .ok()
-                    .flatten()
-            });
+        let parent: Option<LuaTable> = lua.call_method(&arrow, "GetParent", ())?;
+        let parent_name = parent.and_then(|p| {
+            lua.call_method::<_, Option<String>>(&p, "GetName", ())
+                .ok()
+                .flatten()
+        });
         parent_name.map(|p| format!("{p}{rest}"))
     } else {
         Some(frame_name.clone())
     };
-    let target: Option<Table> = resolved
+    let target = resolved
         .as_deref()
-        .and_then(|n| lua.globals().get::<Option<Table>>(n).ok().flatten())
-        .filter(|t| frame_handle_of(lua, t).is_ok());
+        .and_then(|n| lua.get_global::<Option<LuaTable>>(n).ok().flatten())
+        .filter(|t| frame_handle_of_context(lua, t).is_ok());
     let Some(target) = target else {
-        return Err(mlua::Error::runtime(format!(
+        return Err(benilla_lua::Error::runtime(format!(
             "Couldn't find frame named '{}'",
             resolved.unwrap_or(frame_name)
         )));
     };
-    if decode_id(&target)? == decode_id(&arrow)? {
-        return Err(mlua::Error::runtime(format!(
+    if decode_id_context(lua, &target)? == decode_id_context(lua, &arrow)? {
+        return Err(benilla_lua::Error::runtime(format!(
             "Error: {} is anchored to itself",
             resolved.unwrap_or(frame_name)
         )));
@@ -263,75 +280,66 @@ fn position(lua: &Lua, which: Arrow, args: [Value; 5]) -> mlua::Result<()> {
     let (rel_point, ox, oy) = if is_string(&rel) {
         let r = as_string(&rel)?;
         if point_from_str(&r).is_none() {
-            return Err(mlua::Error::runtime("Unknown frame point"));
+            return Err(benilla_lua::Error::runtime("Unknown frame point"));
         }
-        match (as_number(lua, &x), as_number(lua, &y)) {
+        match (as_number(&x), as_number(&y)) {
             (Some(x), Some(y)) => (r, x, y),
             _ => (r, 0.0, 0.0),
         }
     } else {
         (point_name.clone(), 0.0, 0.0)
     };
-    arrow.call_method::<()>(
+    lua.call_method::<_, ()>(
+        &arrow,
         "SetPoint",
-        (point_name, Value::Table(target), rel_point, ox, oy),
+        (point_name, LuaValue::Table(target), rel_point, ox, oy),
     )
 }
 
 /// `Show…([shown])` (§2.5): silent with no arrow; the never-raising boolean coercion with a
 /// default of true (absent → show, `nil` → hide).
-fn show(lua: &Lua, which: Arrow, args: MultiValue) -> mlua::Result<()> {
-    let Some(arrow) = arrow_wrapper(lua, which)? else {
+fn show(lua: &mut impl LuaContext, which: Arrow, args: LuaMultiValue) -> benilla_lua::Result<()> {
+    let Some(arrow) = arrow_wrapper_context(lua, which)? else {
         return Ok(());
     };
     // An ABSENT argument is not nil at the C API (`LUA_TNONE`, which the binding's nil test does
     // not match), so the bare call shows; an explicit nil hides; anything else is the boolean
     // coercion with its true default.
-    let on = match args.front() {
+    let on = match args.first() {
         None => true,
-        Some(Value::Nil) => false,
+        Some(LuaValue::Nil) => false,
         Some(v) => bool_or_default(Some(v), true),
     };
-    arrow.call_method::<()>(if on { "Show" } else { "Hide" }, ())
+    lua.call_method::<_, ()>(&arrow, if on { "Show" } else { "Hide" }, ())
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-    for (which, create_name, position_name, show_name) in [
-        (
-            Arrow::World,
-            "CreateWorldMapArrowFrame",
-            "PositionWorldMapArrowFrame",
-            "ShowWorldMapArrowFrame",
-        ),
-        (
-            Arrow::Mini,
-            "CreateMiniWorldMapArrowFrame",
-            "PositionMiniWorldMapArrowFrame",
-            "ShowMiniWorldMapArrowFrame",
-        ),
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    for (which, create_name) in [
+        (Arrow::World, "CreateWorldMapArrowFrame"),
+        (Arrow::Mini, "CreateMiniWorldMapArrowFrame"),
     ] {
-        g.set(
-            create_name,
-            lua.create_function(move |lua, parent: Value| create(lua, which, parent))?,
-        )?;
-        g.set(
-            position_name,
-            lua.create_function(
-                move |lua, (p, f, r, x, y): (Value, Value, Value, Value, Value)| {
-                    position(lua, which, [p, f, r, x, y])
-                },
-            )?,
-        )?;
-        g.set(
-            show_name,
-            lua.create_function(move |lua, args: MultiValue| show(lua, which, args))?,
+        vm.register_function(create_name, move |lua, parent: LuaValue| {
+            create(lua, which, parent)
+        })?;
+    }
+    for (which, name) in [
+        (Arrow::World, "PositionWorldMapArrowFrame"),
+        (Arrow::Mini, "PositionMiniWorldMapArrowFrame"),
+    ] {
+        vm.register_function(
+            name,
+            move |lua, (p, f, r, x, y): (LuaValue, LuaValue, LuaValue, LuaValue, LuaValue)| {
+                position(lua, which, [p, f, r, x, y])
+            },
         )?;
     }
-    g.set(
-        "UpdateWorldMapArrowFrames",
-        lua.create_function(|lua, ()| update(lua))?,
-    )?;
+    for (which, name) in [
+        (Arrow::World, "ShowWorldMapArrowFrame"),
+        (Arrow::Mini, "ShowMiniWorldMapArrowFrame"),
+    ] {
+        vm.register_function(name, move |lua, args: LuaMultiValue| show(lua, which, args))?;
+    }
+    vm.register_function("UpdateWorldMapArrowFrames", |lua, ()| update(lua))?;
     Ok(())
 }
 
@@ -403,11 +411,14 @@ mod tests {
             before, after,
             "a second create is a no-op, whatever the parent"
         );
-        let (kind, shown, w) = s
-            .eval::<(String, bool, f32)>(
+        let (kind, w): (String, f32) = s
+            .eval(
                 "local a = ({WM:GetChildren()})[2] \
-                 return a:GetObjectType(), a:IsShown(), a:GetWidth()",
+                 return a:GetObjectType(), a:GetWidth()",
             )
+            .unwrap();
+        let shown = s
+            .eval_truthy("return ({WM:GetChildren()})[2]:IsShown()")
             .unwrap();
         assert_eq!(kind, "Model");
         assert!(shown, "born shown");
@@ -422,7 +433,7 @@ mod tests {
         let w: f32 = s.eval("return ({WM:GetChildren()})[2]:GetWidth()").unwrap();
         assert!((w - 0.0262 * 1280.0).abs() < 0.05, "the box at 4:3: {w}");
         let pos = {
-            let model = s.lua().app_data_ref::<Model>().expect("model");
+            let model = s.vm().app_data_ref::<Model>().expect("model");
             let id = model.worldmap.arrow_world.expect("the singleton");
             let fh = model.id_to_frame.get(&id).copied().expect("live");
             match &model.arena.frame(fh).expect("frame").kind_state {
@@ -503,18 +514,18 @@ mod tests {
 
         s.run("ShowWorldMapArrowFrame(nil)").unwrap();
         assert!(
-            !s.eval::<bool>("return arrow:IsShown()").unwrap(),
+            !s.eval_truthy("return arrow:IsShown()").unwrap(),
             "nil hides"
         );
         s.run("ShowWorldMapArrowFrame()").unwrap();
         assert!(
-            s.eval::<bool>("return arrow:IsShown()").unwrap(),
+            s.eval_truthy("return arrow:IsShown()").unwrap(),
             "absent shows"
         );
         s.run("ShowWorldMapArrowFrame('off')").unwrap();
-        assert!(!s.eval::<bool>("return arrow:IsShown()").unwrap());
+        assert!(!s.eval_truthy("return arrow:IsShown()").unwrap());
         s.run("ShowWorldMapArrowFrame(1)").unwrap();
-        assert!(s.eval::<bool>("return arrow:IsShown()").unwrap());
+        assert!(s.eval_truthy("return arrow:IsShown()").unwrap());
 
         s.set_world_map_feed(None, Some((0.5, 0.5)), 1.25, None, Vec::new(), Vec::new());
         s.run("UpdateWorldMapArrowFrames()").unwrap();

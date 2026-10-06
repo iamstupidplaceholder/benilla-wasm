@@ -16,7 +16,6 @@
 //! Deduping by path/material means each unique BLP is decoded + uploaded once, and submeshes sharing
 //! a texture+blend share a material handle — which is what lets Bevy batch draws.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -24,9 +23,11 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Buffer, Face};
 
+use crate::gpu_table::GpuTable;
+
 use crate::materials::{WowModelExt, WowModelMaterial, VANILLA_ALPHA_KEY_REF};
 use crate::SpatialCache;
-use benilla_formats::{blp_to_rgba, read_texture_native_chain, tga_to_rgba, Chain, ModelBlend};
+use benilla_formats::{read_texture_native_chain, Chain, ModelBlend};
 
 /// BLP/RGBA -> Bevy `Image` texture helpers (+ solid/cursor/liquid-frame textures). Split out for
 /// size; re-exported so callers keep using `benilla_assets::{solid_layer_chain, …}`.
@@ -53,38 +54,8 @@ pub struct WorldAssets {
     /// (decision 0763). Before that key existed, whichever model loaded the texture first decided
     /// the mode for every later one.
     pub textures: SpatialCache<(String, bool, bool), Handle<Image>>,
-    /// Decoded UI sprite textures by resolved path (`None` = a miss, cached so a bad path never
-    /// re-walks the chain per frame). Separate from `textures`: sprites are sRGB/clamped, world
-    /// art is Unorm/repeat — the same BLP can legitimately live in both.
-    sprites: HashMap<String, Option<Handle<Image>>>,
-    /// Decoded UI sprite textures sampled with **repeat** addressing on one or both axes (frame
-    /// `Backdrop` pieces — tiled edges/bg — and the reference's `SetTexCoord(0, n, 0, 1)` strips).
-    /// Keyed by resolved path **and** the per-axis wrap, separate from `sprites`: the *same* BLP
-    /// can be wanted clamp-sampled as a plain sprite and repeat-sampled as a backdrop piece, and
-    /// each address-mode pair needs its own GPU image (the sampler is baked into the `Image`).
-    /// See [`Self::sprite_texture_wrapped`].
-    tiled_sprites: HashMap<(String, bool, bool), Option<Handle<Image>>>,
-    /// Sprites RESAMPLED to an exact physical size, by `(path, w, h)` — the nameplate border's
-    /// 0188 sharpen and nothing else so far. Keyed by size because that is the whole point: the
-    /// art is re-rasterised whenever the plate's pixel size moves, and reused on every frame in
-    /// between (a resize is rare; a plate is drawn 60 times a second).
-    resampled_sprites: HashMap<(String, u32, u32), Option<Handle<Image>>>,
-    /// The decoded source pixels behind [`Self::resampled_sprites`], so a resize re-samples
-    /// instead of re-decoding the BLP.
-    resample_sources: HashMap<String, Option<(u32, u32, Vec<u8>)>>,
-    /// Decoded **portrait** sprites — [`Self::sprite_texture`]'s clamp/sRGB sprite with a circular
-    /// alpha mask baked in ([`portrait_image`]). Its own cache, like `tiled_sprites`: the mask bakes
-    /// into the GPU image, so the same BLP wanted as a plain icon and as a portrait needs two images.
-    portraits: HashMap<String, Option<Handle<Image>>>,
-    /// Decoded coverage **masks** ([`mask_image`] — linear, not sRGB): the minimap's circular clip
-    /// (decision 0203). Its own cache for the same reason as the others: the format is baked into
-    /// the GPU image.
-    masks: HashMap<String, Option<Handle<Image>>>,
-    /// **Generated** UI sprites — pixels this client computes rather than decodes, keyed by a
-    /// caller-chosen static name ([`Self::generated_sprite`]). Its own cache for the same reason as
-    /// every other one: the sampler bakes into the GPU image. Nothing about the *content* lives
-    /// here — the caller supplies the RGBA — so this stays a cache, not a second art pipeline.
-    generated: HashMap<&'static str, Handle<Image>>,
+    /// Original UI image caches, shared with hosts that have no world patch chain/light buffer.
+    sprites: crate::SpriteCache,
     /// The **loose-file root for `Interface\AddOns\` sprite paths** — the AddOns folder, installed
     /// by the app ([`Self::set_loose_addon_root`]), `None` until then and in every capture run
     /// (the app resolves it through `local_state`, which is hermetic under `$WOW_CAPTURE`).
@@ -101,6 +72,9 @@ pub struct WorldAssets {
     /// can clone it into every deduped model material's `light_buf` without threading a `Buffer` through
     /// the many call sites. One buffer for the whole scene, updated in place each frame.
     pub shared_light: Buffer,
+    /// Model-material view of the same logical table. Native aliases the
+    /// storage buffer above; WebGL uses the texture-backed renderer facade.
+    pub shared_model_light: GpuTable,
 }
 
 /// Identity of a deduped model material: a textured material is uniquely determined by its texture
@@ -223,68 +197,8 @@ fn decode_sprite(
     loose_root: Option<&Path>,
     path: &str,
 ) -> Option<(u32, u32, Vec<u8>)> {
-    let candidates = sprite_candidates(path);
-    let mut chain = chain.lock_recover();
-    for candidate in &candidates {
-        if let Ok(bytes) = chain.read_file(candidate) {
-            if let Ok(decoded) = decode_sprite_bytes(&bytes) {
-                return Some(decoded);
-            }
-        }
-        if let Some(file) = loose_root.and_then(|root| loose_addon_file(root, candidate)) {
-            if let Ok(decoded) = std::fs::read(&file)
-                .map_err(anyhow::Error::from)
-                .and_then(|bytes| decode_sprite_bytes(&bytes))
-            {
-                return Some(decoded);
-            }
-        }
-    }
-    // **"Not there" and "there but would not decode" are different faults, and saying only the
-    // first sends the reader hunting a path that is sitting on disk.** Three colour-mapped TGAs in
-    // the addon corpus read fine and failed to decode for years while this line asserted they did
-    // not resolve (decision 2128).
-    let found_but_undecodable: Vec<&String> = candidates
-        .iter()
-        .filter(|c| {
-            chain.read_file(c).is_ok()
-                || loose_root.is_some_and(|root| loose_addon_file(root, c).is_some())
-        })
-        .collect();
-    if found_but_undecodable.is_empty() {
-        warn!(
-            "texture miss: '{path}' does not resolve in the patch chain{} (tried {})",
-            if loose_root.is_some() {
-                " or the AddOns folder"
-            } else {
-                ""
-            },
-            candidates.join(", ")
-        );
-    } else {
-        warn!(
-            "texture miss: '{path}' RESOLVES but will not decode ({}) — the file is there and the \
-             decoder refused it",
-            found_but_undecodable
-                .iter()
-                .map(|c| c.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    None
-}
-
-/// Decode one candidate's bytes to RGBA8, picking the format by content: a `BLP2` magic is a BLP,
-/// anything else is offered to the TGA decoder (TGA has no magic; its header validation is the
-/// gate). Content, not extension, because the ecosystem mislabels freely — a BLP named `.tga` and
-/// the reverse both ship in real addon folders, and the pixel bytes always know what they are.
-fn decode_sprite_bytes(bytes: &[u8]) -> anyhow::Result<(u32, u32, Vec<u8>)> {
-    if bytes.starts_with(b"BLP2") {
-        blp_to_rgba(bytes)
-    } else {
-        tga_to_rgba(bytes)
-    }
+    let mut source = crate::sprite_source::native::NativeSpriteSource { chain, loose_root };
+    crate::sprite_source::decode_completed(&mut source, path).flatten()
 }
 
 /// Map a **normalized** addon-relative path (`interface\addons\<addon>\<…>`, lowercase,
@@ -412,20 +326,15 @@ impl WorldAssets {
     /// sit under the renderer: the store's only use of it is `clone()` into every deduped model
     /// material's `light_buf`, so the parameter severs what would otherwise be a dependency on the
     /// lighting layout and, through it, the rig-palette regions (decision 1164).
-    pub fn open(chain: Chain, shared_light: Buffer) -> Self {
+    pub fn open(chain: Chain, shared_light: Buffer, shared_model_light: GpuTable) -> Self {
         Self {
             chain: Arc::new(Mutex::new(chain)),
             textures: SpatialCache::default(),
-            sprites: HashMap::new(),
-            resampled_sprites: HashMap::new(),
-            resample_sources: HashMap::new(),
-            tiled_sprites: HashMap::new(),
-            portraits: HashMap::new(),
-            masks: HashMap::new(),
-            generated: HashMap::new(),
+            sprites: crate::SpriteCache::default(),
             loose_root: None,
             model_materials: SpatialCache::default(),
             shared_light,
+            shared_model_light,
         }
     }
 
@@ -444,10 +353,7 @@ impl WorldAssets {
             return;
         }
         self.loose_root = root;
-        self.sprites.retain(|_, v| v.is_some());
-        self.tiled_sprites.retain(|_, v| v.is_some());
-        self.portraits.retain(|_, v| v.is_some());
-        self.masks.retain(|_, v| v.is_some());
+        self.sprites.clear_misses();
     }
 
     /// Decode + upload a BLP once per path; later requests for the same texture share the handle.
@@ -482,20 +388,11 @@ impl WorldAssets {
         path: &str,
         images: &mut Assets<Image>,
     ) -> Option<Handle<Image>> {
-        // FrameXML/DBC texture references are canonically EXTENSIONLESS
-        // (`Interface\Buttons\UI-Quickslot2`) — the real client appends `.blp` at resolve. Paths
-        // that already carry an extension (`textures\moon.blp`) pass through unchanged.
-        let key = sprite_key(path);
-        // Cached (hits AND misses): the UI extractor asks per quad per frame — uncached, every
-        // frame re-decoded every BLP into a fresh `Image` (unbounded asset growth) and the fresh
-        // handles defeated the quad-list dirty check.
-        if let Some(cached) = self.sprites.get(&key) {
-            return cached.clone();
-        }
-        let loaded = decode_sprite(&self.chain, self.loose_root.as_deref(), path)
-            .map(|(w, h, rgba)| images.add(sprite_image(w, h, rgba)));
-        self.sprites.insert(key, loaded.clone());
-        loaded
+        let mut source = crate::sprite_source::native::NativeSpriteSource {
+            chain: &self.chain,
+            loose_root: self.loose_root.as_deref(),
+        };
+        self.sprites.sprite_texture(&mut source, path, images)
     }
 
     /// Decode a texture to raw RGBA8 `(w, h, bytes)` **without** uploading a GPU image — for callers
@@ -523,19 +420,12 @@ impl WorldAssets {
         images: &mut Assets<Image>,
         resample: impl FnOnce(&[u8], u32, u32, u32, u32) -> Vec<u8>,
     ) -> Option<Handle<Image>> {
-        let key = (path.to_string(), w, h);
-        if let Some(cached) = self.resampled_sprites.get(&key) {
-            return cached.clone();
-        }
-        if !self.resample_sources.contains_key(path) {
-            let decoded = decode_sprite(&self.chain, self.loose_root.as_deref(), path);
-            self.resample_sources.insert(path.to_string(), decoded);
-        }
-        let made = self.resample_sources[path]
-            .as_ref()
-            .map(|(sw, sh, src)| images.add(sprite_image(w, h, resample(src, *sw, *sh, w, h))));
-        self.resampled_sprites.insert(key, made.clone());
-        made
+        let mut source = crate::sprite_source::native::NativeSpriteSource {
+            chain: &self.chain,
+            loose_root: self.loose_root.as_deref(),
+        };
+        self.sprites
+            .resampled_sprite(&mut source, path, (w, h), images, resample)
     }
 
     /// A UI sprite decoded with **repeat** (wrap) addressing on both axes — the frame `Backdrop`
@@ -563,14 +453,12 @@ impl WorldAssets {
         wrap: (bool, bool),
         images: &mut Assets<Image>,
     ) -> Option<Handle<Image>> {
-        let key = (sprite_key(path), wrap.0, wrap.1);
-        if let Some(cached) = self.tiled_sprites.get(&key) {
-            return cached.clone();
-        }
-        let loaded = decode_sprite(&self.chain, self.loose_root.as_deref(), path)
-            .map(|(w, h, rgba)| images.add(sprite_image_wrapped(w, h, rgba, wrap)));
-        self.tiled_sprites.insert(key, loaded.clone());
-        loaded
+        let mut source = crate::sprite_source::native::NativeSpriteSource {
+            chain: &self.chain,
+            loose_root: self.loose_root.as_deref(),
+        };
+        self.sprites
+            .sprite_texture_wrapped(&mut source, path, wrap, images)
     }
 
     /// A sprite whose pixels this client **computes**, cached under `key` and built at most once.
@@ -590,13 +478,7 @@ impl WorldAssets {
         images: &mut Assets<Image>,
         make: impl FnOnce() -> (u32, u32, Vec<u8>),
     ) -> Handle<Image> {
-        if let Some(cached) = self.generated.get(key) {
-            return cached.clone();
-        }
-        let (w, h, rgba) = make();
-        let handle = images.add(sprite_image(w, h, rgba));
-        self.generated.insert(key, handle.clone());
-        handle
+        self.sprites.generated_sprite(key, images, make)
     }
 
     /// A **portrait** sprite: [`Self::sprite_texture`]'s clamp/sRGB decode with a circular alpha mask
@@ -608,14 +490,11 @@ impl WorldAssets {
         path: &str,
         images: &mut Assets<Image>,
     ) -> Option<Handle<Image>> {
-        let key = sprite_key(path);
-        if let Some(cached) = self.portraits.get(&key) {
-            return cached.clone();
-        }
-        let loaded = decode_sprite(&self.chain, self.loose_root.as_deref(), path)
-            .map(|(w, h, rgba)| images.add(portrait_image(w, h, rgba)));
-        self.portraits.insert(key, loaded.clone());
-        loaded
+        let mut source = crate::sprite_source::native::NativeSpriteSource {
+            chain: &self.chain,
+            loose_root: self.loose_root.as_deref(),
+        };
+        self.sprites.portrait_texture(&mut source, path, images)
     }
 
     /// The tabard designer's emblem cell (decision 1977): the emblem BLP decoded and rewritten to
@@ -628,21 +507,11 @@ impl WorldAssets {
         path: &str,
         images: &mut Assets<Image>,
     ) -> Option<Handle<Image>> {
-        let key = format!("emblem-mask:{}", sprite_key(path));
-        if let Some(cached) = self.sprites.get(&key) {
-            return cached.clone();
-        }
-        let loaded =
-            decode_sprite(&self.chain, self.loose_root.as_deref(), path).map(|(w, h, mut rgba)| {
-                for px in rgba.as_chunks_mut::<4>().0 {
-                    px[0] = 0xFF;
-                    px[1] = 0xFF;
-                    px[2] = 0xFF;
-                }
-                images.add(sprite_image(w, h, rgba))
-            });
-        self.sprites.insert(key, loaded.clone());
-        loaded
+        let mut source = crate::sprite_source::native::NativeSpriteSource {
+            chain: &self.chain,
+            loose_root: self.loose_root.as_deref(),
+        };
+        self.sprites.emblem_mask_texture(&mut source, path, images)
     }
 
     /// A coverage **mask** ([`mask_image`] — linear/clamp, the texel bytes handed to the shader
@@ -653,14 +522,11 @@ impl WorldAssets {
         path: &str,
         images: &mut Assets<Image>,
     ) -> Option<Handle<Image>> {
-        let key = sprite_key(path);
-        if let Some(cached) = self.masks.get(&key) {
-            return cached.clone();
-        }
-        let loaded = decode_sprite(&self.chain, self.loose_root.as_deref(), path)
-            .map(|(w, h, rgba)| images.add(mask_image(w, h, rgba)));
-        self.masks.insert(key, loaded.clone());
-        loaded
+        let mut source = crate::sprite_source::native::NativeSpriteSource {
+            chain: &self.chain,
+            loose_root: self.loose_root.as_deref(),
+        };
+        self.sprites.mask_texture(&mut source, path, images)
     }
 
     /// Decode a cursor BLP (e.g. `Interface\Cursor\Point.blp`) into a single-mip GPU image for
@@ -698,6 +564,40 @@ impl WorldAssets {
         images: &mut Assets<Image>,
         materials: &mut Assets<WowModelMaterial>,
     ) -> Handle<WowModelMaterial> {
+        let resolved = texture.and_then(|t| {
+            self.texture(t, wrap, images)
+                .map(|h| (normalize_path(t), h))
+        });
+        Self::resolved_model_material(
+            &mut self.model_materials,
+            &self.shared_model_light,
+            resolved,
+            blend,
+            two_sided,
+            alpha_cutoff,
+            fade_far,
+            is_wmo,
+            is_fade_variant,
+            wrap,
+            materials,
+        )
+    }
+
+    /// Original material builder over host-resolved textures. Browser consumers
+    /// wait for asynchronous image delivery before calling this same builder.
+    pub fn resolved_model_material(
+        cache: &mut SpatialCache<MaterialKey, Handle<WowModelMaterial>>,
+        light: &GpuTable,
+        resolved: Option<(String, Handle<Image>)>,
+        blend: ModelBlend,
+        two_sided: bool,
+        alpha_cutoff: Option<f32>,
+        fade_far: Option<f32>,
+        is_wmo: bool,
+        is_fade_variant: bool,
+        wrap: (bool, bool),
+        materials: &mut Assets<WowModelMaterial>,
+    ) -> Handle<WowModelMaterial> {
         // Alpha-test cutoff: callers may override (ground clutter uses the detail-doodad ref ≈ 0.5);
         // everything else uses the general vanilla model alpha key.
         let cutoff = alpha_cutoff.unwrap_or(VANILLA_ALPHA_KEY_REF);
@@ -706,10 +606,6 @@ impl WorldAssets {
             Some(far) => Vec4::new(far * 0.75, far, 0.0, 1.0),
             None => Vec4::ZERO,
         };
-        let resolved = texture.and_then(|t| {
-            self.texture(t, wrap, images)
-                .map(|h| (normalize_path(t), h))
-        });
         // Only AlphaTest consumes the cutoff, so don't fragment opaque/blend materials by it.
         let key_alpha = if blend == ModelBlend::AlphaTest {
             (cutoff * 255.0).round() as u8
@@ -731,7 +627,7 @@ impl WorldAssets {
             ),
             None => MaterialKey::Fallback(is_wmo),
         };
-        if let Some(handle) = self.model_materials.fetch(&key) {
+        if let Some(handle) = cache.fetch(&key) {
             return handle;
         }
         // Per-submesh blend (opaque trunk/wall vs alpha-cut leaves/windows). This builder serves
@@ -783,10 +679,10 @@ impl WorldAssets {
                 sidn: Vec4::ZERO, // clutter is never SIDN/WINDOW glass (WMO-only)
                 anim_slots: Vec4::ZERO,
                 // The shared global light (light/fog/SH come from here, updated in place each frame).
-                light_buf: self.shared_light.clone(),
+                light_buf: light.clone(),
             },
         });
-        self.model_materials.insert(key, handle.clone());
+        cache.insert(key, handle.clone());
         handle
     }
 }

@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const FACTION_TEMPLATE: &str = "DBFilesClient\\FactionTemplate.dbc";
 const FACTION: &str = "DBFilesClient\\Faction.dbc";
@@ -457,7 +457,7 @@ fn faction_group_schema() -> Schema {
 }
 
 /// Load FactionTemplate.dbc + Faction.dbc from the patch chain into a [`FactionCatalog`].
-pub fn load_faction_catalog(chain: &mut Chain) -> Result<FactionCatalog> {
+pub fn load_faction_catalog(chain: &mut impl FileSource) -> Result<FactionCatalog> {
     let bytes = chain
         .read_file(FACTION_TEMPLATE)
         .with_context(|| format!("reading {FACTION_TEMPLATE}"))?;

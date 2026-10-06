@@ -1,4 +1,4 @@
-use mlua::{ObjectLike, Table};
+use benilla_lua::{LuaContext, Table};
 
 use crate::framexml::{self, Element};
 
@@ -40,7 +40,7 @@ pub(super) enum FontAttrs {
     Disowned,
 }
 
-impl Loader<'_> {
+impl<C: LuaContext> Loader<'_, C> {
     /// `<Layers>`/`<Layer level=>`/`<Texture>`/`<FontString>` (rf24 `0x769d70`): create each region
     /// via CreateTexture/CreateFontString on the draw layer, then apply its file/color/text.
     pub(super) fn apply_layers(
@@ -78,7 +78,7 @@ impl Loader<'_> {
                         "CreateFontString"
                     };
                     let region_wrapper: Table =
-                        match wrapper.call_method(method, (rname, Some(level.clone()))) {
+                        match self.call_table(wrapper, method, (rname, Some(level.clone()))) {
                             Ok(w) => w,
                             Err(e) => {
                                 self.report.errors.push(format!("{dbg}: {method}: {e}"));
@@ -87,9 +87,7 @@ impl Loader<'_> {
                         };
                     // hidden= on a Texture/FontString — the region-level VisibleRegion bit.
                     if region.attr_bool("hidden") {
-                        if let Err(e) = region_wrapper.call_method::<()>("Hide", ()) {
-                            self.report.errors.push(format!("{dbg}: region Hide: {e}"));
-                        }
+                        self.call_region(&region_wrapper, "Hide", (), dbg);
                     }
                     // alpha= on a Texture/FontString — the region's own alpha, the frame attr's twin.
                     if let Some(a) = region
@@ -116,9 +114,7 @@ impl Loader<'_> {
                     // `<Size>`/`<Anchors>`/justify are on the region, exactly where the real
                     // engine runs it (`0x7701c0`/`0x771480`, immediately after the region's
                     // LoadXML returns). A region the XML anchored is untouched.
-                    if let Err(e) =
-                        crate::script::implicit_creation_anchor_lua(self.lua, &region_wrapper)
-                    {
+                    if let Err(e) = self.implicit_region_anchor(&region_wrapper) {
                         self.report
                             .errors
                             .push(format!("{dbg}: implicit anchor: {e}"));
@@ -164,19 +160,20 @@ impl Loader<'_> {
             // element font (the guard at the top of this function). Creating a second region here
             // would put an orphan on the frame AND push the authored `<Layers>` regions one place
             // down the list `GetRegions` hands Lua.
-            let existing_text = el
-                .tag
-                .eq_ignore_ascii_case("EditBox")
-                .then(|| crate::script::editbox_text_region_wrapper(self.lua(), wrapper))
-                .flatten();
+            let existing_text = if el.tag.eq_ignore_ascii_case("EditBox") {
+                crate::script::editbox_text_region_wrapper_context(self.lua, wrapper)
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
             let region_wrapper: Table = match existing_text {
                 Some(w) => {
                     // The embedded string is nameless in the client's own chain; an authored
                     // `name=` still publishes both ways, exactly like a setter-created sub-texture
                     // (`apply_slider`'s thumb).
                     if let Some(n) = rname {
-                        crate::script::region::publish_region_name(self.lua(), &n, &w);
-                        if let Err(e) = self.lua().globals().set(n.clone(), w.clone()) {
+                        if let Err(e) = self.publish_region(&w, &n) {
                             self.report
                                 .warnings
                                 .push(format!("{dbg}: embedded FontString global '{n}': {e}"));
@@ -184,9 +181,11 @@ impl Loader<'_> {
                     }
                     w
                 }
-                None => match wrapper
-                    .call_method("CreateFontString", (rname, Some("OVERLAY".to_string())))
-                {
+                None => match self.call_table(
+                    wrapper,
+                    "CreateFontString",
+                    (rname, Some("OVERLAY".to_string())),
+                ) {
                     Ok(w) => w,
                     Err(e) => {
                         self.report
@@ -203,7 +202,7 @@ impl Loader<'_> {
             // EditBox adopt below it is moot — `write_inset_anchors` replaces the anchor set
             // wholesale — but a plain special FontString (a chat window's) gets the same
             // justify-point the real engine gives it.
-            if let Err(e) = crate::script::implicit_creation_anchor_lua(self.lua, &region_wrapper) {
+            if let Err(e) = self.implicit_region_anchor(&region_wrapper) {
                 self.report
                     .errors
                     .push(format!("{dbg}: implicit anchor: {e}"));
@@ -213,9 +212,9 @@ impl Loader<'_> {
             // Assigned, never searched (a find-first adoption once grabbed the chat header out of
             // `<Layers>`: typing overwrote "Say:" and the insets re-anchor centered it).
             if el.tag.eq_ignore_ascii_case("EditBox") {
-                if let Err(e) =
-                    crate::script::adopt_text_region(self.lua(), wrapper, &region_wrapper)
-                {
+                let adopted =
+                    crate::script::adopt_text_region_context(self.lua, wrapper, &region_wrapper);
+                if let Err(e) = adopted {
                     self.report
                         .errors
                         .push(format!("{dbg}: adopt special FontString: {e}"));
@@ -498,7 +497,7 @@ impl Loader<'_> {
             let resolved = self
                 .font_object_through_templates(name)
                 .unwrap_or_else(|| name.to_string());
-            if let Err(e) = wrapper.call_method::<()>("SetFontObject", resolved) {
+            if let Err(e) = self.try_call(wrapper, "SetFontObject", resolved) {
                 self.warn_once(
                     &format!("fontobj:{name}"),
                     format!("{dbg}: <FontString inherits=\"{name}\">: {e}"),
@@ -532,7 +531,7 @@ impl Loader<'_> {
         // `apply_region_visual`), which is already the right side of this line.
         match region.attr("font") {
             Some(name) if self.is_font_object(name) => {
-                if let Err(e) = wrapper.call_method::<()>("SetFontObject", name.to_string()) {
+                if let Err(e) = self.try_call(wrapper, "SetFontObject", name.to_string()) {
                     self.warn_once(
                         &format!("fontobj:{name}"),
                         format!("{dbg}: <FontString font=\"{name}\">: {e}"),
@@ -549,13 +548,14 @@ impl Loader<'_> {
                     .next()
                     .and_then(abs_value);
                 let outline = region.attr("outline").map(str::to_string);
-                if let Err(e) = crate::script::apply_font_parts(
+                let applied = crate::script::region::apply_font_parts_context(
                     self.lua,
                     wrapper,
                     Some(path.to_string()),
                     height,
                     outline,
-                ) {
+                );
+                if let Err(e) = applied {
                     self.report
                         .errors
                         .push(format!("{dbg}: region font attrs: {e}"));

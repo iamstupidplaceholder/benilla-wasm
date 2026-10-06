@@ -16,7 +16,7 @@
 //!
 //! [`cast_fail`]: crate::ui_action
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use bevy::prelude::*;
 

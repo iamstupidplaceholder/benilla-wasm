@@ -9,7 +9,7 @@ use super::common::script;
 use crate::script::{FontObject, JustifyH, JustifyV, Outline, QuadContent, UiScript};
 
 /// Load a FrameXML fragment through the real loader, asserting it reported no errors.
-fn load(s: &UiScript, xml: &str) {
+fn load(s: &mut UiScript, xml: &str) {
     let doc = crate::framexml::parse(xml).expect("valid FrameXML");
     let report = crate::loader::load(s, &doc, &|_| None);
     assert!(
@@ -46,9 +46,9 @@ fn painted(s: &UiScript, text: &str) -> (Option<String>, Option<f32>, Option<[f3
 /// `SetFontObject(GameFontNormal)` in the ecosystem was handed nil.
 #[test]
 fn a_declared_font_is_published_as_a_global_object() {
-    let s = script();
+    let mut s = script();
     load(
-        &s,
+        &mut s,
         r#"<Ui>
              <Font name="GameFontNormal" font="Fonts\FRIZQT__.TTF" justifyH="LEFT">
                <FontHeight><AbsValue val="12"/></FontHeight>
@@ -63,7 +63,7 @@ fn a_declared_font_is_published_as_a_global_object() {
         "Font"
     );
     assert!(s
-        .eval::<bool>("return GameFontNormal:IsObjectType('Font')")
+        .eval_truthy("return GameFontNormal:IsObjectType('Font')")
         .unwrap());
     assert_eq!(
         s.eval::<String>("return GameFontNormal:GetName()").unwrap(),
@@ -72,7 +72,7 @@ fn a_declared_font_is_published_as_a_global_object() {
     // Object identity is stable: two reads of the global are the same object, which is what makes
     // `if fs:GetFontObject() == GameFontNormal` work at all.
     assert!(s
-        .eval::<bool>("return GameFontNormal == GameFontNormal")
+        .eval_truthy("return GameFontNormal == GameFontNormal")
         .unwrap());
 
     // The declared paint reads back through the FontInstance getters.
@@ -107,9 +107,9 @@ fn a_declared_font_is_published_as_a_global_object() {
 /// libraries). Until the global existed, Tablet fell to its hardcoded 14/12 guard branch.
 #[test]
 fn tablet_reads_the_tooltip_header_size_off_the_global() {
-    let s = script();
+    let mut s = script();
     load(
-        &s,
+        &mut s,
         r#"<Ui>
              <Font name="GameTooltipText" font="Fonts\FRIZQT__.TTF">
                <FontHeight><AbsValue val="12"/></FontHeight>
@@ -145,9 +145,9 @@ fn tablet_reads_the_tooltip_header_size_off_the_global() {
 /// font sees the parent's face and its own height override.
 #[test]
 fn an_inheriting_font_still_flattens_to_the_same_values() {
-    let s = script();
+    let mut s = script();
     load(
-        &s,
+        &mut s,
         r#"<Ui>
              <Font name="MasterFont" font="Fonts\FRIZQT__.TTF" justifyH="CENTER">
                <FontHeight><AbsValue val="10"/></FontHeight>
@@ -191,9 +191,9 @@ fn an_inheriting_font_still_flattens_to_the_same_values() {
 /// first two moves the death one line down).
 #[test]
 fn gratuity_builds_its_thirty_line_scan_tooltip() {
-    let s = script();
+    let mut s = script();
     load(
-        &s,
+        &mut s,
         r#"<Ui>
              <Font name="GameFontNormal" font="Fonts\FRIZQT__.TTF">
                <FontHeight><AbsValue val="12"/></FontHeight>
@@ -550,7 +550,7 @@ fn create_font_mints_publishes_and_paints() {
 /// object>)` then override the face. The corpus's only Font-on-Font call.
 #[test]
 fn fonz_appraiser_copies_a_shipped_object_then_overrides_the_face() {
-    let s = script();
+    let mut s = script();
     s.register_font_object(
         "GameFontHighlightSmall",
         FontObject {
@@ -601,7 +601,7 @@ fn fonz_appraiser_copies_a_shipped_object_then_overrides_the_face() {
 /// the day spacing becomes real.
 #[test]
 fn the_unmodelled_spacing_pair_fails_loudly() {
-    let s = script();
+    let mut s = script();
     s.register_font_object("SomeFont", FontObject::default());
     assert!(s.run("SomeFont:SetSpacing(4)").is_err());
     assert!(s.eval::<bool>("return SomeFont.SetSpacing == nil").unwrap());
@@ -705,7 +705,7 @@ fn an_empty_font_object_copies_nothing_onto_a_fontstring() {
 /// `!OmniCC/main.lua:41` branches on.
 #[test]
 fn set_font_returns_one_or_nil() {
-    let s = script();
+    let mut s = script();
     s.run("f = CreateFont('ReturnShapeFont')").unwrap();
     assert_eq!(
         s.eval::<f32>("return f:SetFont('Fonts\\\\FRIZQT__.TTF', 12)")
@@ -726,7 +726,7 @@ fn set_font_returns_one_or_nil() {
 /// test on both sides passed throughout. This is the net that makes the next drift fail.
 #[test]
 fn both_tables_speak_one_justify_law() {
-    let s = script();
+    let mut s = script();
     s.run(
         "seam = CreateFrame('Frame', 'SeamFrame')\n\
          fs = seam:CreateFontString()\n\
@@ -793,7 +793,7 @@ fn both_tables_speak_one_justify_law() {
 /// differential across both tables is what surfaced it — arity alone had matched.
 #[test]
 fn set_font_is_one_routine_on_both_tables() {
-    let s = script();
+    let mut s = script();
     s.run("seam = CreateFrame('Frame', 'SetFontSeamFrame')\nfs = seam:CreateFontString()\nfo = CreateFont('SetFontSeamFont')")
         .unwrap();
 
@@ -947,7 +947,7 @@ fn the_font_block_reaches_both_message_frame_tables() {
             "{obj}:SetFont answers the number 1"
         );
         let (_, height, _) = s
-            .eval::<(mlua::Value, f32, String)>(&format!("return {obj}:GetFont()"))
+            .eval::<(Option<String>, f32, String)>(&format!("return {obj}:GetFont()"))
             .unwrap();
         assert_eq!(height, 16.0, "{obj}:GetFont reads back what SetFont wrote");
         // The four-value getters the carve pins at 4 for every one of the six tables.
@@ -990,9 +990,9 @@ fn the_font_block_reaches_both_message_frame_tables() {
 /// resolver would miss all 49 of these, because `inherits=` is one argument over two namespaces.
 #[test]
 fn create_font_string_applies_the_font_object_named_by_its_third_argument() {
-    let s = script();
+    let mut s = script();
     load(
-        &s,
+        &mut s,
         r#"<Ui>
              <Font name="GameFontNormalSmall" font="Fonts\FRIZQT__.TTF">
                <FontHeight><AbsValue val="12"/></FontHeight>
@@ -1097,7 +1097,7 @@ fn msbt_paints_its_own_face_size_outline_and_fade_over_the_font_object_it_inheri
     let mut s = script();
     s.set_screen_size(1600.0, 900.0);
     load(
-        &s,
+        &mut s,
         r#"<Ui>
              <Font name="MasterFont" virtual="true">
                <Shadow><Offset><AbsDimension x="1" y="-1"/></Offset><Color r="0" g="0" b="0"/></Shadow>

@@ -25,7 +25,7 @@ use kira::effect::reverb::{ReverbBuilder, ReverbHandle};
 use kira::effect::volume_control::{VolumeControlBuilder, VolumeControlHandle};
 use kira::listener::ListenerHandle;
 use kira::sound::streaming::StreamingSoundData;
-use kira::sound::FromFileError;
+pub(crate) use kira::sound::{FromFileError, PlaybackState};
 use kira::track::{SendTrackBuilder, SendTrackHandle, SpatialTrackBuilder};
 use kira::{AudioManager, AudioManagerSettings, Decibels, Mix, Tween};
 
@@ -53,7 +53,7 @@ pub(crate) use kira::track::SpatialTrackHandle;
 /// **per-frame volume feed** use [`glide`]: a step there is an audible click, not fidelity.
 pub(crate) fn snap() -> Tween {
     Tween {
-        duration: std::time::Duration::ZERO,
+        duration: benilla_time::Duration::ZERO,
         ..Default::default()
     }
 }
@@ -79,16 +79,12 @@ pub(crate) fn snap() -> Tween {
 /// untouched; a ramp shorter than one frame at 60 fps cannot smear a multi-second crossfade, and
 /// on a long frame it simply completes early and holds.
 pub(crate) fn glide() -> Tween {
-    Tween {
-        duration: std::time::Duration::from_millis(GLIDE_MS),
-        ..Default::default()
-    }
+    super::mixer_params::glide()
 }
 
 /// [`glide`]'s ramp, and the de-click fade on a force-stop. Just under one 60 fps frame (16.7 ms):
 /// long enough to bridge kira's 2.9 ms gain blocks, short enough that a stop still reads as
 /// immediate and a live parameter never audibly lags its source.
-const GLIDE_MS: u64 = 15;
 
 /// The de-click fade for a **force-stop** — a `stop()` that cuts a channel which may still be at
 /// full amplitude (a tracked loop reaped on despawn, the leave-world blanket stop). Ending a
@@ -104,7 +100,7 @@ pub(crate) fn declick() -> Tween {
 /// (the outgoing side of a music transition / ambience swap).
 pub(crate) fn fade(ms: u64) -> Tween {
     Tween {
-        duration: std::time::Duration::from_millis(ms),
+        duration: benilla_time::Duration::from_millis(ms),
         ..Default::default()
     }
 }
@@ -114,11 +110,7 @@ pub(crate) fn fade(ms: u64) -> Tween {
 /// levels. kira consumes dB, so the seam converts: `20·log10(amp)`, with kira's `SILENCE` floor
 /// (−60 dB) for amp ≤ 10⁻³ (which is below one 1/255 FMOD step anyway).
 pub(crate) fn amp_to_db(amp: f32) -> Decibels {
-    if amp <= 1e-3 {
-        Decibels::SILENCE
-    } else {
-        Decibels(20.0 * amp.log10())
-    }
+    super::mixer_params::amp_to_db(amp)
 }
 
 /// The one open audio device + its listener. `Mixer` methods are the only place kira's manager is
@@ -157,6 +149,7 @@ pub(crate) struct Mixer {
 }
 
 impl Mixer {
+    pub(crate) fn ready(&self)->bool{true}
     /// Open the default audio device. Fails cleanly when there is none (headless/CI) — the caller
     /// runs silent with `None` (mirrors the client's `-nosound` gate).
     pub(crate) fn new(probe_dir: Option<&Path>) -> Result<Self> {
@@ -621,21 +614,13 @@ pub(crate) fn set_track_position(track: &mut SpatialTrackHandle, pos: Vec3) {
 /// EAX listener properties → Freeverb `(feedback, damping, wet level)` — the lossy projection
 /// [`Mixer::set_reverb`] documents. Pure so the mapping is pinnable by tests without a device.
 fn freeverb_projection(p: &SoundProvider) -> (f64, f64, Decibels) {
-    let feedback = if p.decay_time > 0.0 {
-        10f64.powf(-0.108 / f64::from(p.decay_time)).min(0.98)
-    } else {
-        0.0
-    };
-    let damping = ((1.0 - f64::from(p.decay_hf_ratio) / 2.0).max(0.0) * 0.7
-        + f64::from(-p.room_hf) / 10_000.0 * 0.3)
-        .clamp(0.0, 1.0);
-    let wet_db = ((p.room + p.reverb) as f32 / 100.0).min(6.0);
-    let wet = if wet_db <= Decibels::SILENCE.0 {
-        Decibels::SILENCE
-    } else {
-        Decibels(wet_db)
-    };
-    (feedback, damping, wet)
+    super::mixer_params::freeverb_projection(
+        p.decay_time,
+        p.decay_hf_ratio,
+        p.room_hf,
+        p.room,
+        p.reverb,
+    )
 }
 
 /// Decode audio-file bytes (WAV incl. IMA-ADPCM, MP3) into a ready-to-play SFX sound.
@@ -785,7 +770,7 @@ enum Phase {
     /// Audible, and the position has not moved off `pos` yet — the spin-up (see [`StreamWatch`]).
     /// Nothing is counted here; `warned` holds [`STREAM_START_MAX_SECS`] to one line per stream.
     Starting {
-        since: std::time::Instant,
+        since: benilla_time::Instant,
         pos: f64,
         warned: bool,
     },
@@ -804,7 +789,7 @@ enum Phase {
     /// The clock was right all along; the span was one frame short of what was counted.
     Running {
         last_pos: f64,
-        window_start: std::time::Instant,
+        window_start: benilla_time::Instant,
     },
 }
 
@@ -838,7 +823,7 @@ impl StreamWatch {
     pub(crate) fn feed(&mut self, handle: &StreamingSoundHandle<FromFileError>, dt: f64) {
         use kira::sound::PlaybackState as S;
         let audible = matches!(handle.state(), S::Playing | S::Stopping);
-        match self.observe(audible, handle.position(), dt, std::time::Instant::now()) {
+        match self.observe(audible, handle.position(), dt, benilla_time::Instant::now()) {
             Some(Verdict::Starved {
                 lost,
                 counted,
@@ -888,7 +873,7 @@ impl StreamWatch {
     /// Open a counting window at `now` — which is both the position baseline and the wall origin.
     /// The pair is set together on purpose; see [`Phase::Running`] for what happened when it
     /// wasn't.
-    fn begin(&mut self, pos: f64, now: std::time::Instant) {
+    fn begin(&mut self, pos: f64, now: benilla_time::Instant) {
         self.phase = Phase::Running {
             last_pos: pos,
             window_start: now,
@@ -903,7 +888,7 @@ impl StreamWatch {
         audible: bool,
         pos: f64,
         dt: f64,
-        now: std::time::Instant,
+        now: benilla_time::Instant,
     ) -> Option<Verdict> {
         // Non-audible states (stopped, paused) drop the baseline: position legitimately holds.
         if !audible {
@@ -1359,7 +1344,7 @@ mod tests {
         } // manager dropped: the tap producers abandon, the writers do their final flush.
 
         // The writers wake on a 250 ms cadence; give them room to drain and exit.
-        std::thread::sleep(std::time::Duration::from_millis(900));
+        std::thread::sleep(benilla_time::Duration::from_millis(900));
 
         let peak = |name: &str| -> (f32, u64) {
             let bytes = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -1509,8 +1494,8 @@ mod tests {
     }
 
     /// Frame `i`'s wall instant, so a test reads as a timeline rather than as bookkeeping.
-    fn wall(t0: std::time::Instant, secs: f64) -> std::time::Instant {
-        t0 + std::time::Duration::from_secs_f64(secs)
+    fn wall(t0: benilla_time::Instant, secs: f64) -> benilla_time::Instant {
+        t0 + benilla_time::Duration::from_secs_f64(secs)
     }
 
     /// The starvation accounting (decisions 1109, 2253): a stream that advances in lockstep with
@@ -1520,7 +1505,7 @@ mod tests {
     #[test]
     fn stream_watch_accounts_freezes_not_swaps() {
         let dt = 1.0 / 60.0;
-        let t0 = std::time::Instant::now();
+        let t0 = benilla_time::Instant::now();
 
         // Healthy: position tracks wall time exactly — every window closes clean.
         let mut w = StreamWatch::new("test");
@@ -1613,7 +1598,7 @@ mod tests {
     #[test]
     fn stream_watch_spans_the_window_it_counted() {
         let dt = 1.0 / 60.0;
-        let t0 = std::time::Instant::now();
+        let t0 = benilla_time::Instant::now();
         let hitch = 0.298;
         let mut w = StreamWatch::new("test");
 
@@ -1675,7 +1660,7 @@ mod tests {
     #[test]
     fn stream_watch_does_not_charge_a_stream_for_starting() {
         let dt = 1.0 / 60.0;
-        let t0 = std::time::Instant::now();
+        let t0 = benilla_time::Instant::now();
         let hitch = 0.298;
         let first_sample = 0.233;
         // Position as the handle reports it: pinned where it was constructed until the renderer
@@ -1727,7 +1712,7 @@ mod tests {
     #[test]
     fn stream_watch_names_a_stream_that_never_starts() {
         let dt = 1.0 / 60.0;
-        let t0 = std::time::Instant::now();
+        let t0 = benilla_time::Instant::now();
         let mut w = StreamWatch::new("test");
         let mut waited = Vec::new();
         for i in 0..600 {
@@ -1754,11 +1739,11 @@ mod tests {
     /// so it runs in CI.
     #[test]
     fn stop_fade_ramps_after_handle_drop() {
+        use benilla_time::Duration;
         use kira::backend::{Backend, Renderer};
         use kira::sound::static_sound::StaticSoundData;
         use kira::{AudioManager, AudioManagerSettings, Frame, Tween};
         use std::sync::{Arc, Mutex};
-        use std::time::Duration;
 
         // A backend that just holds the renderer and lets the test pump audio out of it.
         struct Capture(Arc<Mutex<Option<Renderer>>>);

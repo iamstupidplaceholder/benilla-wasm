@@ -1025,6 +1025,7 @@ pub(super) fn latch_world_mouse(
     // `PointerOverUiPanel` keeps its other reader — the wheel still zooms with the cursor on a
     // plate, which is a different law (the wheel walks PAST a frame that merely takes the mouse).
     pointer_over_ui: Res<crate::ui_script::PointerOverUi>,
+    script: Option<NonSend<benilla_ui::script::UiScript>>,
     mut rig: ResMut<CameraControl>,
     cameras: Query<&Camera, With<FlyCam>>,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -1035,6 +1036,15 @@ pub(super) fn latch_world_mouse(
     let over_ui = pointer_over_ui.0;
     let world_press = rig.look.is_some() || (cursor_in_viewport(&window, camera) && !over_ui);
     rig.world_mouse.update(&buttons, world_press);
+    if buttons.just_pressed(MouseButton::Right)
+        && script
+            .as_ref()
+            .is_some_and(|s| s.repair_cancel_right_active())
+    {
+        let i = LookButton::Right as usize;
+        rig.world_mouse.down[i] = false;
+        rig.world_mouse.held[i] = false;
+    }
 }
 
 #[derive(Component)]
@@ -1181,11 +1191,11 @@ pub(super) fn run_look_session(
                 rig.look = Some(other);
             } else {
                 rig.look = None;
-                cursor_opts.grab_mode = CursorGrabMode::None;
+                crate::cursor::set_grab_mode(cursor_opts, CursorGrabMode::None);
                 // Show the cursor again (cross-platform; on macOS hiding is the cursor subsystem's job).
                 cursor_opts.visible = true;
                 if let Some(pos) = rig.cursor_stash.take() {
-                    window.set_cursor_position(Some(pos));
+                    super::cursor_host::restore_position(window, pos);
                 }
             }
         }
@@ -1197,19 +1207,30 @@ pub(super) fn run_look_session(
         // chord is never a click).
         if rig.world_mouse.down(LookButton::Right) {
             rig.look = Some(LookButton::Right);
-            rig.cursor_stash = window.cursor_position();
-            cursor_opts.grab_mode = CursorGrabMode::Locked;
+            rig.cursor_stash = crate::cursor::position(window);
+            if !cfg!(target_arch = "wasm32") {
+                crate::cursor::set_grab_mode(cursor_opts, CursorGrabMode::Locked);
+            }
             cursor_opts.visible = false;
             *right_click =
                 (!rig.world_mouse.held(LookButton::Left)).then(|| PressGesture::new(now));
-        } else if rig.world_mouse.down(LookButton::Left) && !inspect_enabled {
+        } else if rig.world_mouse.down(LookButton::Left)
+            && !inspect_enabled
+            && !(cfg!(target_arch = "wasm32") && click_consumed)
+        {
+            // Browser pointer lock must not hide a cursor-payload world click:
+            // UI input precedes camera input, so locking on down would discard
+            // the matching up edge before the camera can unlock again. Let the
+            // existing UI world-drop flow own this gesture on wasm.
             // Left-drag orbit — engaged on the press, exactly like right, because the reference
             // engages on the press (`0x51491f`). The select is not deferred behind it; it rides
             // along and settles at the release. While the inspector is armed left belongs to it
             // (its own copy-on-click handler), so neither the orbit nor the test starts.
             rig.look = Some(LookButton::Left);
-            rig.cursor_stash = window.cursor_position();
-            cursor_opts.grab_mode = CursorGrabMode::Locked;
+            rig.cursor_stash = crate::cursor::position(window);
+            if !cfg!(target_arch = "wasm32") {
+                crate::cursor::set_grab_mode(cursor_opts, CursorGrabMode::Locked);
+            }
             cursor_opts.visible = false;
             // A press the UI already consumed as a cursor-payload world drop (0216 §3) still orbits
             // — the reference's orbit is unconditional on the down edge — but must not also select.
@@ -1222,6 +1243,19 @@ pub(super) fn run_look_session(
     // Apply this frame's accumulated motion as look rotation while a button is held. Right-drag also
     // turns the character (its facing tracks the camera yaw); left-drag leaves the character facing.
     if let Some(active) = rig.look {
+        // A browser lock request is asynchronous and cannot warp the OS pointer
+        // back to cursor_stash. A motionless NPC click needs no physical lock:
+        // avoid a lock/unlock race as its release opens the service window.
+        // Logical look/click timing is still immediate; the first motion is
+        // applied below exactly as before. Native/persistent locking is unchanged.
+        #[cfg(target_arch = "wasm32")]
+        if !crate::cursor::persistent_lock_enabled()
+            && cursor_opts.grab_mode != CursorGrabMode::Locked
+            && mouse_motion.delta != Vec2::ZERO
+            && buttons.pressed(active.button())
+        {
+            crate::cursor::set_grab_mode(cursor_opts, CursorGrabMode::Locked);
+        }
         let delta = mouse_motion.delta;
         let d_yaw = -delta.x * yaw_rate;
         cam.yaw += d_yaw;

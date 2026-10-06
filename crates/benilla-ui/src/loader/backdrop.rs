@@ -1,16 +1,16 @@
-use mlua::Table;
+use benilla_lua::{LuaContext, Table as LuaTable};
 
 use crate::framexml::Element;
 
 use super::{abs_value, children_named, color_of, Loader};
 
-impl Loader<'_> {
+impl<C: LuaContext> Loader<'_, C> {
     /// `<Backdrop bgFile edgeFile tile>` + children `<EdgeSize>`/`<TileSize>`/`<BackgroundInsets>`/
     /// `<Color>`/`<BorderColor>` (rf24 LoadXML `0x77e6c0`; backdrop-mechanism.md §1). Builds the same
     /// table Lua `SetBackdrop` reads and installs it, then applies the two colors — the XML `<Color>`
     /// parser defaults a *present* element's missing channels to **black** (r=g=b=0, a=1 via
     /// [`color_of`]), distinct from the ctor white a table `SetBackdrop` leaves.
-    pub(super) fn apply_backdrop(&mut self, el: &Element, wrapper: &Table, dbg: &str) {
+    pub(super) fn apply_backdrop(&mut self, el: &Element, wrapper: &LuaTable, dbg: &str) {
         let Some(bd) = children_named(el, "Backdrop").next() else {
             return;
         };
@@ -36,32 +36,32 @@ impl Loader<'_> {
     /// `<EdgeSize>`/`<TileSize>` scalars ([`abs_value`]), and `<BackgroundInsets>` (an `<AbsInset>`
     /// child or inline `left`/`right`/`top`/`bottom` attrs). Missing keys are simply absent — the
     /// object-model `SetBackdrop` leaves the ctor default (tileSize 0, edgeSize 32, insets 0).
-    pub(super) fn build_backdrop_table(&self, bd: &Element) -> mlua::Result<Table> {
-        let t = self.lua().create_table()?;
+    pub(super) fn build_backdrop_table(&mut self, bd: &Element) -> benilla_lua::Result<LuaTable> {
+        let t = self.lua.create_table()?;
         if let Some(f) = bd.attr("bgFile") {
-            t.set("bgFile", f)?;
+            self.lua.table_set(&t, "bgFile", f)?;
         }
         if let Some(f) = bd.attr("edgeFile") {
-            t.set("edgeFile", f)?;
+            self.lua.table_set(&t, "edgeFile", f)?;
         }
         if bd.attr_bool("tile") {
-            t.set("tile", true)?;
+            self.lua.table_set(&t, "tile", true)?;
         }
         if let Some(v) = children_named(bd, "EdgeSize").next().and_then(abs_value) {
-            t.set("edgeSize", v)?;
+            self.lua.table_set(&t, "edgeSize", v)?;
         }
         if let Some(v) = children_named(bd, "TileSize").next().and_then(abs_value) {
-            t.set("tileSize", v)?;
+            self.lua.table_set(&t, "tileSize", v)?;
         }
         if let Some(ins) = children_named(bd, "BackgroundInsets").next() {
             let src = children_named(ins, "AbsInset").next().unwrap_or(ins);
-            let it = self.lua().create_table()?;
+            let it = self.lua.create_table()?;
             for k in ["left", "right", "top", "bottom"] {
                 if let Some(v) = src.attr(k).and_then(|v| v.trim().parse::<f32>().ok()) {
-                    it.set(k, v)?;
+                    self.lua.table_set(&it, k, v)?;
                 }
             }
-            t.set("insets", it)?;
+            self.lua.table_set(&t, "insets", it)?;
         }
         Ok(t)
     }

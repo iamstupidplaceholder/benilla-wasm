@@ -765,7 +765,7 @@ pub(super) fn drain_chat_input(
             ParsedChat::MacroHelp => {
                 for i in 1..=5 {
                     let key = format!("MACRO_HELP_TEXT_LINE{i}");
-                    let Ok(line) = script.lua().globals().get::<String>(key.as_str()) else {
+                    let Some(line) = script.global_string(&key) else {
                         continue;
                     };
                     if !line.is_empty() {
@@ -923,13 +923,8 @@ pub(super) fn drain_chat_input(
                     None => warn!("castvis: no selection and no self avatar — dropped"),
                 }
             }
-            ParsedChat::ChatTest => chattest_battery(&mut chat_log, &|key: &str| {
-                script
-                    .lua()
-                    .globals()
-                    .get::<String>(key)
-                    .ok()
-                    .filter(|t| !t.is_empty())
+            ParsedChat::ChatTest => chattest_battery(&mut chat_log, &mut |key: &str| {
+                script.global_string(key).filter(|t| !t.is_empty())
             }),
             // `/logout` (and `/camp`) is the reference's own `SlashCmdList["LOGOUT"]` → `Logout()`,
             // so it takes the SAME route the game menu's Logout button does (decision 0674): the
@@ -1058,10 +1053,7 @@ pub(super) fn drain_chat_input(
                 // no message-catalog row — the reference emits it from Lua straight into chat — so
                 // there is no surface or sound to look up, only the wording.
                 if let Some(text) = script
-                    .lua()
-                    .globals()
-                    .get::<String>("HELP_TEXT_SIMPLE")
-                    .ok()
+                    .global_string("HELP_TEXT_SIMPLE")
                     .filter(|t| !t.is_empty())
                 {
                     chat_log.push_event(super::event::ChatEvent::text_only(
@@ -1077,7 +1069,7 @@ pub(super) fn drain_chat_input(
 /// `/chattest` (the 0288 instrument): one synthetic line of every renderable form through the
 /// real event pipeline — kinds, flags, the language header, channel prefixes, notices, and both
 /// link forms (item + player), so formats/colors/links verify in one screen.
-fn chattest_battery(log: &mut super::feed::ChatLog, get: &dyn Fn(&str) -> Option<String>) {
+fn chattest_battery(log: &mut super::feed::ChatLog, get: &mut dyn FnMut(&str) -> Option<String>) {
     use super::event::{ChatEvent, ChatEventKind as K};
     let player = |kind: K, text: &str, sender: &str| {
         let mut e = ChatEvent::text_only(kind, text.into());
@@ -1149,7 +1141,7 @@ fn chattest_battery(log: &mut super::feed::ChatLog, get: &dyn Fn(&str) -> Option
 ///
 /// The chat TYPES are picked to show the block's spread rather than one row: your own melee and
 /// spells, your pet, a hostile player, and a creature hitting you (which is the one that is red).
-fn combat_log_battery(log: &mut super::feed::ChatLog, get: &dyn Fn(&str) -> Option<String>) {
+fn combat_log_battery(log: &mut super::feed::ChatLog, get: &mut dyn FnMut(&str) -> Option<String>) {
     use super::combat::{self, Family, Fills, PendingCombat, Variant};
     use super::event::ChatEventKind as K;
 
@@ -1607,11 +1599,11 @@ pub(super) fn drain_addon_chat_sends(
         // arm ahead of the generic send, and EVERY other type first clears a standing AFK. The
         // whole law — the four `CHAT_MSG_SYSTEM` lines, the client-side default substitution, the
         // optimistic mirror — is `super::away`, off wow-re's `afk-dnd-command-law.md` §12 table.
-        let strings = |key: &str| crate::ui_chat::combat::global_string(&script, key);
+        let mut strings = |key: &str| crate::ui_chat::combat::global_string(&mut script, key);
         let wire = kind.wire();
         let text = match wire {
             crate::net::ChatKind::Afk => {
-                let out = super::away::afk_line(&send.text, *mirror, &strings);
+                let out = super::away::afk_line(&send.text, *mirror, &mut strings);
                 if let Some(line) = out.line {
                     super::away::push_system(&mut chat_log, line);
                 }
@@ -1623,7 +1615,7 @@ pub(super) fn drain_addon_chat_sends(
             crate::net::ChatKind::Dnd => {
                 // The live descriptor bit, not a mirror: DND has none (§8), which is what makes a
                 // repeated `/dnd` re-mark where a repeated `/afk` clears.
-                let out = super::away::dnd_line(&send.text, is_dnd(&self_q), &strings);
+                let out = super::away::dnd_line(&send.text, is_dnd(&self_q), &mut strings);
                 if let Some(line) = out.line {
                     super::away::push_system(&mut chat_log, line);
                 }
@@ -1634,7 +1626,7 @@ pub(super) fn drain_addon_chat_sends(
             // is why the reference prints THREE lines for a typed `/afk` then `/dnd`.
             _ => {
                 if let Some(line) =
-                    super::away::auto_clear_line(*mirror, auto_clear_afk(&cvars), &strings)
+                    super::away::auto_clear_line(*mirror, auto_clear_afk(&cvars), &mut strings)
                 {
                     super::away::push_system(&mut chat_log, line);
                     mirror.0 = 0;

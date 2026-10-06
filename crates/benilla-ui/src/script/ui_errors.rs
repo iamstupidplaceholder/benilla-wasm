@@ -14,7 +14,7 @@
 //! call it (ShowUIPanel's `whileDead` refusal, UIParent.lua l.663-666; ContainerFrame.lua l.147
 //! and l.190); the binding only displays.
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use super::model::Model;
 
@@ -23,13 +23,10 @@ use super::model::Model;
 const NOT_WHILE_DEAD_KEY: &str = "ERR_PLAYER_DEAD";
 
 /// Register the error-display globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "NotWhileDeadError",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.ui_errors.push(NOT_WHILE_DEAD_KEY);
-            Ok(())
-        })?,
-    )
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("NotWhileDeadError", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.ui_errors.push(NOT_WHILE_DEAD_KEY);
+        Ok(())
+    })
 }

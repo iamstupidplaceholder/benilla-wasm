@@ -133,6 +133,13 @@ impl ObjectFields {
             OwnerFallback::SummonedBy => self.unit_summoned_by(),
         })
     }
+    /// Direct possession is distinct from ordinary pet ownership. The client's
+    /// possession reader requires UNIT_FLAG_POSSESSED and charmer/creator identity.
+    pub fn unit_possessed_by(&self, controller: u64) -> bool {
+        controller != 0
+            && self.unit_flags() & 0x0100_0000 != 0
+            && self.unit_owner(OwnerFallback::CreatedBy) == Some(controller)
+    }
     /// `UNIT_FIELD_CREATEDBY` — the creator's guid (totems and created objects), or `None`.
     pub fn unit_created_by(&self) -> Option<u64> {
         self.get_guid(FIELD_UNIT_CREATEDBY).filter(|&g| g != 0)

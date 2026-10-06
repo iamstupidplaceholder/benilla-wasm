@@ -19,10 +19,17 @@
 //! through the `QUEST_GREETING`/`QUEST_DETAIL`/`QUEST_PROGRESS`/`QUEST_COMPLETE` events the app
 //! fires. `GetRewardSpell()` returns `nil` in v1 (spell-reward rows are out of scope, decision 0088).
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
-use super::binding_abi::flag;
 use super::Model;
+
+fn flag(value: bool) -> Value {
+    if value {
+        Value::Integer(1)
+    } else {
+        Value::Nil
+    }
+}
 
 /// Which of the four questgiver sub-panels a [`QuestState`] is for (the app sets it from the wire
 /// packet; the XML's event routing mirrors it).
@@ -195,23 +202,16 @@ impl super::UiScript {
 /// `GetQuestItemInfo(type, index)` reads from this vector by `type`; unknown types → `None`.
 /// The three returns of `GetRewardSpell` / `GetQuestLogRewardSpell`: `texture, name,
 /// isTradeskillSpell` — the third a 1/nil boolean in the reference's convention.
-pub(super) fn reward_spell_returns(
-    lua: &Lua,
-    spell: Option<QuestRewardSpell>,
-) -> mlua::Result<MultiValue> {
+pub(super) fn reward_spell_returns(spell: Option<QuestRewardSpell>) -> MultiValue {
     let Some(sp) = spell else {
-        return Ok(MultiValue::from_vec(vec![
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-        ]));
+        return MultiValue::from(vec![Value::Nil, Value::Nil, Value::Nil]);
     };
     let texture = match &sp.texture {
-        Some(t) => Value::String(lua.create_string(t)?),
+        Some(t) => Value::from(t.as_str()),
         None => Value::Nil,
     };
     let name = match &sp.name {
-        Some(n) => Value::String(lua.create_string(n)?),
+        Some(n) => Value::from(n.as_str()),
         None => Value::Nil,
     };
     let tradeskill = if sp.tradeskill {
@@ -219,7 +219,7 @@ pub(super) fn reward_spell_returns(
     } else {
         Value::Nil
     };
-    Ok(MultiValue::from_vec(vec![texture, name, tradeskill]))
+    MultiValue::from(vec![texture, name, tradeskill])
 }
 
 pub(super) fn item_vec<'a>(state: &'a QuestState, kind: &str) -> Option<&'a Vec<QuestItemView>> {
@@ -232,21 +232,20 @@ pub(super) fn item_vec<'a>(state: &'a QuestState, kind: &str) -> Option<&'a Vec<
 }
 
 /// Register the questgiver globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // ── Text getters (one per panel field; nil/"" when no window is open) ─────────────────────────
-    fn install_text(lua: &Lua, name: &str, pick: fn(&QuestState) -> String) -> mlua::Result<()> {
-        lua.globals().set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let text = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    model.quest.as_ref().map(pick).unwrap_or_default()
-                };
-                Ok(Value::String(lua.create_string(&text)?))
-            })?,
-        )
+    fn install_text(
+        lua: &mut Vm,
+        name: &str,
+        pick: fn(&QuestState) -> String,
+    ) -> benilla_lua::Result<()> {
+        lua.register_function(name, move |lua, ()| {
+            let text = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model.quest.as_ref().map(pick).unwrap_or_default()
+            };
+            Ok(Value::from(text))
+        })
     }
     install_text(lua, "GetGreetingText", |q| q.greeting.clone())?;
     install_text(lua, "GetTitleText", |q| q.title.clone())?;
@@ -256,14 +255,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     install_text(lua, "GetObjectiveText", |q| q.objectives.clone())?;
 
     // ── Count + money getters ─────────────────────────────────────────────────────────────────────
-    fn install_count(lua: &Lua, name: &str, pick: fn(&QuestState) -> i64) -> mlua::Result<()> {
-        lua.globals().set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                Ok(model.quest.as_ref().map(pick).unwrap_or(0))
-            })?,
-        )
+    fn install_count(
+        lua: &mut Vm,
+        name: &str,
+        pick: fn(&QuestState) -> i64,
+    ) -> benilla_lua::Result<()> {
+        lua.register_function(name, move |lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.quest.as_ref().map(pick).unwrap_or(0))
+        })
     }
     install_count(lua, "GetNumActiveQuests", |q| q.active_titles.len() as i64)?;
     install_count(lua, "GetNumAvailableQuests", |q| {
@@ -276,72 +276,63 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     install_count(lua, "GetQuestMoneyToGet", |q| i64::from(q.required_money))?;
 
     // IsQuestCompletable() → 1/nil (progress panel gate for the Continue button).
-    g.set(
-        "IsQuestCompletable",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(model.quest.as_ref().is_some_and(|q| q.completable)))
-        })?,
-    )?;
+    lua.register_function("IsQuestCompletable", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(flag(model.quest.as_ref().is_some_and(|q| q.completable)))
+    })?;
 
     // GetActiveTitle(i) / GetAvailableTitle(i) — 1-based; "" when out of range.
-    fn install_title(lua: &Lua, name: &str, active: bool) -> mlua::Result<()> {
-        lua.globals().set(
-            name,
-            lua.create_function(move |lua, i: usize| {
-                let title = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    model.quest.as_ref().and_then(|q| {
-                        let v = if active {
-                            &q.active_titles
-                        } else {
-                            &q.available_titles
-                        };
-                        i.checked_sub(1).and_then(|n| v.get(n)).cloned()
-                    })
-                };
-                Ok(Value::String(lua.create_string(title.unwrap_or_default())?))
-            })?,
-        )
+    fn install_title(lua: &mut Vm, name: &str, active: bool) -> benilla_lua::Result<()> {
+        lua.register_function(name, move |lua, i: usize| {
+            let title = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model.quest.as_ref().and_then(|q| {
+                    let v = if active {
+                        &q.active_titles
+                    } else {
+                        &q.available_titles
+                    };
+                    i.checked_sub(1).and_then(|n| v.get(n)).cloned()
+                })
+            };
+            Ok(Value::from(title.unwrap_or_default()))
+        })
     }
     install_title(lua, "GetActiveTitle", true)?;
     install_title(lua, "GetAvailableTitle", false)?;
 
     // GetQuestItemInfo(type, index) → name, texture, numItems, quality, isUsable (the Era tuple).
     // `type` is "choice" / "reward" / "required"; `index` 1-based; out of range → nil.
-    g.set(
-        "GetQuestItemInfo",
-        lua.create_function(|lua, (kind, index): (String, usize)| {
-            let item = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.quest.as_ref().and_then(|q| {
-                    item_vec(q, &kind)
-                        .and_then(|v| index.checked_sub(1).and_then(|n| v.get(n)))
-                        .cloned()
-                })
-            };
-            let Some(it) = item else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let name = match &it.name {
-                Some(n) => Value::String(lua.create_string(n)?),
-                None => Value::Nil,
-            };
-            let texture = match &it.texture {
-                Some(t) => Value::String(lua.create_string(t)?),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                name,
-                texture,
-                Value::Integer(i64::from(it.count)),
-                Value::Integer(i64::from(it.quality)),
-                Value::Boolean(it.usable),
-                // Benilla extension (6th): the item id, the shared tooltip store's key.
-                Value::Integer(i64::from(it.item_id)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetQuestItemInfo", |lua, (kind, index): (String, usize)| {
+        let item = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.quest.as_ref().and_then(|q| {
+                item_vec(q, &kind)
+                    .and_then(|v| index.checked_sub(1).and_then(|n| v.get(n)))
+                    .cloned()
+            })
+        };
+        let Some(it) = item else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let name = match &it.name {
+            Some(n) => Value::from(n.as_str()),
+            None => Value::Nil,
+        };
+        let texture = match &it.texture {
+            Some(t) => Value::from(t.as_str()),
+            None => Value::Nil,
+        };
+        Ok(MultiValue::from(vec![
+            name,
+            texture,
+            Value::Integer(i64::from(it.count)),
+            Value::Integer(i64::from(it.quality)),
+            Value::Boolean(it.usable),
+            // Benilla extension (6th): the item id, the shared tooltip store's key.
+            Value::Integer(i64::from(it.item_id)),
+        ]))
+    })?;
 
     // GetQuestItemLink(type, index) → the full escaped `|cff…|Hitem:…|h[Name]|h|r` | nil. The
     // questgiver panels' ctrl/shift click arms read it — `DressUpItemLink(GetQuestItemLink(
@@ -349,65 +340,57 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `ChatFrameEditBox:Insert(...)` beside it (l.122/134). Same `type`/`index` addressing as
     // `GetQuestItemInfo` above; nil for an out-of-range row, an unknown type, or a row whose
     // template answer is still in flight (see [`QuestItemView::link`]). Decisions 1059/1060.
-    g.set(
-        "GetQuestItemLink",
-        lua.create_function(|lua, (kind, index): (String, usize)| {
-            let link = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.quest.as_ref().and_then(|q| {
-                    item_vec(q, &kind)
-                        .and_then(|v| index.checked_sub(1).and_then(|n| v.get(n)))
-                        .and_then(|it| it.link.clone())
-                })
-            };
-            match link {
-                Some(l) => Ok(Value::String(lua.create_string(&l)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetQuestItemLink", |lua, (kind, index): (String, usize)| {
+        let link = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.quest.as_ref().and_then(|q| {
+                item_vec(q, &kind)
+                    .and_then(|v| index.checked_sub(1).and_then(|n| v.get(n)))
+                    .and_then(|it| it.link.clone())
+            })
+        };
+        match link {
+            Some(l) => Ok(Value::from(l)),
+            None => Ok(Value::Nil),
+        }
+    })?;
 
     // GetRewardSpell() → texture, name, isTradeskillSpell (three returns, 0x501df0; three nils on
     // every empty path, the reference's own `(nil,nil,nil)` kind — 1842). Real since 1944: the
     // app resolves `rewSpell` off the giver packets; stock's `if ( GetRewardSpell() ) then` counts
     // the slot.
-    g.set(
-        "GetRewardSpell",
-        lua.create_function(|lua, ()| {
-            let spell = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.quest.as_ref().and_then(|q| q.reward_spell.clone())
-            };
-            reward_spell_returns(lua, spell)
-        })?,
-    )?;
+    lua.register_function("GetRewardSpell", |lua, ()| {
+        let spell = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.quest.as_ref().and_then(|q| q.reward_spell.clone())
+        };
+        Ok(reward_spell_returns(spell))
+    })?;
 
     // ── Intents ───────────────────────────────────────────────────────────────────────────────────
     // SelectActiveQuest(i) / SelectAvailableQuest(i) — queue a greeting-row select (1-based).
-    fn install_select(lua: &Lua, name: &str, active: bool) -> mlua::Result<()> {
-        lua.globals().set(
-            name,
-            lua.create_function(move |lua, i: u32| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model
-                    .quest_selects
-                    .push(super::QuestSelect { active, index: i });
-                Ok(())
-            })?,
-        )
+    fn install_select(lua: &mut Vm, name: &str, active: bool) -> benilla_lua::Result<()> {
+        lua.register_function(name, move |lua, i: u32| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model
+                .quest_selects
+                .push(super::QuestSelect { active, index: i });
+            Ok(())
+        })
     }
     install_select(lua, "SelectActiveQuest", true)?;
     install_select(lua, "SelectAvailableQuest", false)?;
 
-    fn install_action(lua: &Lua, name: &str, action: super::QuestAction) -> mlua::Result<()> {
-        lua.globals().set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.quest_actions.push(action);
-                Ok(())
-            })?,
-        )
+    fn install_action(
+        lua: &mut Vm,
+        name: &str,
+        action: super::QuestAction,
+    ) -> benilla_lua::Result<()> {
+        lua.register_function(name, move |lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.quest_actions.push(action);
+            Ok(())
+        })
     }
     // AcceptQuest → Accept; DeclineQuest / CloseQuest → Close (the ONE session-end routine, see
     // `QuestAction::Close`); CompleteQuest (the progress panel's Continue) → Continue.
@@ -420,22 +403,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `QuestFrame_GetMaterial` (QuestFrame.lua:597-603) treats nil as "Parchment" and any string
     // as the name of a material whose four `$parentMaterial*` quadrants and text colours
     // (`GetMaterialTextColors`) the panel switches to. Answered from the pushed panel state.
-    g.set(
-        "GetQuestBackgroundMaterial",
-        lua.create_function(|lua, ()| {
-            let material = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .quest
-                    .as_ref()
-                    .and_then(|q| q.background_material.clone())
-            };
-            match material {
-                Some(m) => Ok(Value::String(lua.create_string(&m)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetQuestBackgroundMaterial", |lua, ()| {
+        let material = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .quest
+                .as_ref()
+                .and_then(|q| q.background_material.clone())
+        };
+        match material {
+            Some(m) => Ok(Value::from(m)),
+            None => Ok(Value::Nil),
+        }
+    })?;
 
     // QuestChooseRewardError() — 0x5021a0, 0 args, 0 returns: the Complete button pressed with
     // choices on offer and none picked (stock `QuestRewardCompleteButton_OnClick`,
@@ -445,39 +425,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `UI_ERROR_MESSAGE` — synchronously, as SignalEvent is — and UIErrorsFrame prints it. The
     // text is read from the same global the FrameXML shows, so a localised chain shows its own
     // string; the shipped English is the fallback when no GlobalStrings is loaded.
-    g.set(
-        "QuestChooseRewardError",
-        lua.create_function(|lua, ()| {
-            {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model
-                    .sound_queue
-                    .push(super::SoundRequest::KitName("igQuestFailed".to_string()));
-            }
-            let text: String = lua
-                .globals()
-                .get::<Option<String>>("ERR_QUEST_MUST_CHOOSE")?
-                .unwrap_or_else(|| "You must choose a reward.".to_string());
-            super::tick::fire_event_into(
-                lua,
-                "UI_ERROR_MESSAGE",
-                vec![super::ScriptValue::Str(text)],
-            );
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("QuestChooseRewardError", |lua, ()| {
+        {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model
+                .sound_queue
+                .push(super::SoundRequest::KitName("igQuestFailed".to_string()));
+        }
+        let text: String = LuaContext::get_global::<Option<String>>(lua, "ERR_QUEST_MUST_CHOOSE")?
+            .unwrap_or_else(|| "You must choose a reward.".to_string());
+        super::tick::fire_event_into_context(
+            lua,
+            "UI_ERROR_MESSAGE",
+            vec![super::ScriptValue::Str(text)],
+        );
+        Ok(())
+    })?;
 
     // ConfirmAcceptQuest() — the escort confirm's Yes (ref StaticPopup.lua:731-733, raised by
     // QUEST_ACCEPT_CONFIRM). No argument and no quest id: the client answers whichever confirm it
     // is holding, so the engine counts the calls and the app supplies the id (decision 1733).
-    g.set(
-        "ConfirmAcceptQuest",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.quest_confirms += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConfirmAcceptQuest", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.quest_confirms += 1;
+        Ok(())
+    })?;
 
     // GetQuestReward(choice) — the reward panel's Complete button. FrameXML passes the 1-based row
     // (`QuestFrameRewardPanel.itemChoice = this:GetID()`, stock QuestFrame.lua:97-101) and the
@@ -485,16 +457,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // indexes `RewChoiceItemId[reward]` with it), so the conversion is the binding's, as it is the
     // client's; our own Lua used to do the -1 itself (1944). A quest with no choice rewards
     // passes 0, which stays 0.
-    g.set(
-        "GetQuestReward",
-        lua.create_function(|lua, choice: Option<u32>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.quest_actions.push(super::QuestAction::Reward(
-                choice.unwrap_or(0).saturating_sub(1),
-            ));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("GetQuestReward", |lua, choice: Option<u32>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.quest_actions.push(super::QuestAction::Reward(
+            choice.unwrap_or(0).saturating_sub(1),
+        ));
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -711,7 +680,7 @@ mod tests {
         );
         assert_eq!(s.eval::<i64>("return GetNumQuestItems()").unwrap(), 1);
         assert_eq!(s.eval::<i64>("return GetQuestMoneyToGet()").unwrap(), 500);
-        assert!(s.eval::<bool>("return IsQuestCompletable()").unwrap());
+        assert!(s.eval_truthy("return IsQuestCompletable()").unwrap());
     }
 
     #[test]

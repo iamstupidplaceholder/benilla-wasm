@@ -13,27 +13,11 @@
 //! `StartDuel*` calls do **not** send a duel opcode — they cast the duel spell at the guid; the
 //! app owns that resolution.
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use super::Model;
 
-/// Outbound duel intents queued by the Era API calls, drained by the app
-/// ([`UiScript::take_duel_requests`]). Plain data — [`super::party::PartyRequest`]'s twin.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DuelRequest {
-    /// `AcceptDuel()` — accept the pending challenge (`CMSG_DUEL_ACCEPTED`).
-    Accept,
-    /// `CancelDuel()` — decline, cancel, or forfeit (`CMSG_DUEL_CANCELLED`); which one it means
-    /// is the server's read of the duel state, not ours.
-    Cancel,
-    /// `StartDuel(name)` — challenge a player found by name. The app resolves the name to a guid
-    /// and casts the duel spell at it; an unresolvable name is dropped (the reference errors the
-    /// Lua call instead — the deviation is noted in the app-side drain).
-    StartByName(String),
-    /// `StartDuelUnit(unit)` — challenge whoever a unit token points at. The app resolves the
-    /// token to a guid and rejects a non-player (the reference's typemask `0x10` gate).
-    StartByUnit(String),
-}
+pub use crate::script_data::DuelRequest;
 
 impl super::UiScript {
     /// Drain the duel intents queued since the last call.
@@ -51,48 +35,34 @@ impl super::UiScript {
 }
 
 /// Register the duel globals (the same style/place [`super::party`] registers its actions).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // AcceptDuel() — the DUEL_REQUESTED popup's Accept.
-    g.set(
-        "AcceptDuel",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.duel_requests.push(DuelRequest::Accept);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("AcceptDuel", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.duel_requests.push(DuelRequest::Accept);
+        Ok(())
+    })?;
 
     // CancelDuel() — the popup's Decline, and /forfeit //concede //yield once under way.
-    g.set(
-        "CancelDuel",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.duel_requests.push(DuelRequest::Cancel);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CancelDuel", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.duel_requests.push(DuelRequest::Cancel);
+        Ok(())
+    })?;
 
     // StartDuel(name) — /duel <name>.
-    g.set(
-        "StartDuel",
-        lua.create_function(|lua, name: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.duel_requests.push(DuelRequest::StartByName(name));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("StartDuel", |lua, name: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.duel_requests.push(DuelRequest::StartByName(name));
+        Ok(())
+    })?;
 
     // StartDuelUnit(unit) — the unit popup's Duel row.
-    g.set(
-        "StartDuelUnit",
-        lua.create_function(|lua, unit: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.duel_requests.push(DuelRequest::StartByUnit(unit));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("StartDuelUnit", |lua, unit: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.duel_requests.push(DuelRequest::StartByUnit(unit));
+        Ok(())
+    })?;
 
     Ok(())
 }

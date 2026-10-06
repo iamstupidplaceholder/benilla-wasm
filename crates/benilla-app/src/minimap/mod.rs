@@ -54,7 +54,7 @@ use benilla_ui::widget::MINIMAP_DEFAULT_ZOOM;
 use crate::player::Player;
 use crate::ui_pass::{UiQuad, UiQuadAppend, UiQuadMask, UiQuads, UvRect};
 use benilla_assets::MapCatalogRes;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+pub(crate) mod host;
 use benilla_world::wmo_portal::{
     down_ray_seeds, terrain_z_local, WmoPortalInstance, INTERIOR_PROBE_HEIGHT,
 };
@@ -309,58 +309,6 @@ struct MinimapTileCache {
     tiles: HashMap<(u32, u32), Option<Handle<Image>>>,
     interior_stem: Option<String>,
     interior: HashMap<(usize, u32, u32), Option<Handle<Image>>>,
-}
-
-/// Loads the translate catalog + the mask/arrow art once the patch chain is open.
-fn setup_minimap(
-    mut commands: Commands,
-    world_assets: Option<ResMut<WorldAssets>>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    let Some(mut assets) = world_assets else {
-        return;
-    };
-    let translate = {
-        let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_minimap_translate(&mut chain)
-    };
-    match translate {
-        Ok(translate) => {
-            info!("minimap: md5translate.trs — {} tiles", translate.len());
-            let mask = assets.mask_texture("Textures\\MinimapMask", &mut images);
-            let arrow = assets.sprite_texture(blips::PLAYER_ARROW_TEXTURE, &mut images);
-            let poi = assets.sprite_texture("Interface\\Minimap\\POIIcons", &mut images);
-            let mut rim_arrows = blips::RimArrowArt::default();
-            for kind in blips::RimArrow::ALL {
-                rim_arrows.set(kind, assets.sprite_texture(kind.texture(), &mut images));
-            }
-            let object_icons =
-                assets.sprite_texture("Interface\\Minimap\\ObjectIcons", &mut images);
-            if mask.is_none() {
-                warn!("minimap: MinimapMask.blp missing — the map will draw square");
-            }
-            let forms = {
-                let mut chain = assets.chain.lock_recover();
-                match benilla_formats::load_shapeshift_forms(&mut chain) {
-                    Ok(f) => Some(f),
-                    Err(e) => {
-                        warn!("minimap: SpellShapeshiftForm.dbc failed — no shapeshift creature-type override: {e:#}");
-                        None
-                    }
-                }
-            };
-            commands.insert_resource(MinimapAssets {
-                translate,
-                mask,
-                arrow,
-                poi,
-                rim_arrows,
-                object_icons,
-                forms,
-            });
-        }
-        Err(e) => error!("minimap: md5translate.trs failed, minimap disabled: {e:#}"),
-    }
 }
 
 /// The minimap's **one** containment verdict — which map family draws, and (through
@@ -771,7 +719,7 @@ fn emit_minimap(
             );
         }
         let win = window.iter().next();
-        let cursor = win.and_then(|w| w.cursor_position());
+        let cursor = win.and_then(|w| crate::cursor::position(w));
         let seam = win.map_or(1.0, |w| crate::ui_script::seam_scale(w.height(), ui_scale.0));
         // The player's pan term, quantized to a half-logical-pixel grid (one device px at 2×):
         // every blip offset — and the rim arrows' bearing — derives from `wx`/`wy`, so the whole
@@ -991,12 +939,11 @@ fn feed_minimap_inside(
 fn feed_minimap_mask(
     script: Option<bevy::ecs::system::NonSendMut<benilla_ui::script::UiScript>>,
     assets: Option<ResMut<MinimapAssets>>,
-    world_assets: Option<ResMut<WorldAssets>>,
+    mut sprites: crate::ui_sprites::UiSprites,
     mut images: ResMut<Assets<Image>>,
     mut last: Local<crate::ui_script::VmMemo<Option<String>>>,
 ) {
-    let (Some(script), Some(mut assets), Some(mut world_assets)) = (script, assets, world_assets)
-    else {
+    let (Some(script), Some(mut assets)) = (script, assets) else {
         return;
     };
     let want = script.minimap_mask_texture();
@@ -1004,11 +951,14 @@ fn feed_minimap_mask(
     if *last == want {
         return;
     }
-    *last = want.clone();
     let path = want
         .as_deref()
         .unwrap_or(benilla_ui::widget::MINIMAP_DEFAULT_MASK);
-    match world_assets.mask_texture(path, &mut images) {
+    let Some(result) = sprites.mask_texture_ready(path, &mut images) else {
+        return; // Pending is not a completed miss and must not consume the VM memo.
+    };
+    *last = want.clone();
+    match result {
         Some(handle) => assets.mask = Some(handle),
         None => {
             warn!("minimap: SetMaskTexture(\"{path}\") — no such texture; keeping the current mask")
@@ -1049,7 +999,7 @@ fn feed_game_time(
     time: Res<crate::net::ServerTime>,
     mut last: Local<crate::ui_script::VmMemo<Option<u32>>>,
 ) {
-    let Some(script) = script else { return };
+    let Some(mut script) = script else { return };
     let last = last.get(&script);
     let Some(gt) = time.0 else { return };
     let minute = gt.minute_of_day();
@@ -1057,10 +1007,10 @@ fn feed_game_time(
         return;
     }
     *last = Some(minute);
-    let globals = script.lua().globals();
-    let pushed = globals
-        .set("__benilla_game_hour", minute / 60)
-        .and_then(|()| globals.set("__benilla_game_minute", minute % 60));
+    let vm = script.vm_mut();
+    let pushed = vm
+        .set_global("__benilla_game_hour", minute / 60)
+        .and_then(|()| vm.set_global("__benilla_game_minute", minute % 60));
     if let Err(e) = pushed {
         warn!("minimap: game-time globals: {e}");
     }
@@ -1073,18 +1023,42 @@ fn feed_game_time(
 /// benilla.
 pub(crate) struct MinimapPlugin;
 
-impl Plugin for MinimapPlugin {
+/// The original minimap VM/data seam, independent of tile/blip compositing.
+pub(crate) struct MinimapVmPlugin;
+
+impl Plugin for MinimapVmPlugin {
     fn build(&self, app: &mut App) {
-        ping::register(app);
         app.add_observer(on_cvar);
         app.init_resource::<MinimapWidget>()
             .init_resource::<MinimapZoom>()
-            .init_resource::<MinimapTileCache>()
-            .init_resource::<blips::MinimapBlipHover>()
             .init_resource::<MinimapInside>()
+            .add_systems(
+                Update,
+                (
+                    feed_minimap_inside.in_set(crate::ui_script::UiFeed),
+                    feed_minimap_player_facing.in_set(crate::ui_script::UiFeed),
+                    feed_game_time.in_set(crate::ui_script::UiFeed),
+                    feed_minimap_mask
+                        .after(crate::ui_script::UiInput)
+                        .before(UiQuadAppend),
+                ),
+            );
+    }
+}
+
+impl Plugin for MinimapPlugin {
+    fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<host::MinimapAssetsPlugin>() {
+            app.add_plugins(host::MinimapAssetsPlugin);
+        }
+        if !app.is_plugin_added::<MinimapVmPlugin>() {
+            app.add_plugins(MinimapVmPlugin);
+        }
+        ping::register(app);
+        app.init_resource::<MinimapTileCache>()
+            .init_resource::<blips::MinimapBlipHover>()
             .init_resource::<MinimapPing>()
             .init_resource::<composite::MinimapComposite>()
-            .add_systems(Startup, setup_minimap.after(AssetSet::Open))
             .add_systems(Startup, composite::setup_composite)
             .add_systems(
                 Update,
@@ -1103,18 +1077,6 @@ impl Plugin for MinimapPlugin {
                     // interior branch asked for, so the target the blit quad samples is never a
                     // frame behind the pan.
                     composite::drive_composite.after(UiQuadAppend),
-                    // Before the script tick, so a zoom button pressed this frame routes to the
-                    // indoor/outdoor index that matches where the player actually is.
-                    feed_minimap_inside.in_set(crate::ui_script::UiFeed),
-                    // Before the script tick, so an addon's OnUpdate steers off this frame's
-                    // heading rather than last frame's.
-                    feed_minimap_player_facing.in_set(crate::ui_script::UiFeed),
-                    // After the tick that can call `Minimap:SetMaskTexture`, before the emit that
-                    // reads `MinimapAssets::mask`: a mask set this frame is the one this frame
-                    // draws with.
-                    feed_minimap_mask
-                        .after(crate::ui_script::UiInput)
-                        .before(UiQuadAppend),
                     // Before the script tick, and after the containment verdict it reads: the
                     // `MINIMAP_PING` event and `Minimap:GetPingPosition()`'s value land in the
                     // same tick, on a ping the renderer already drew at the end of last frame.
@@ -1127,9 +1089,6 @@ impl Plugin for MinimapPlugin {
                         .after(feed_minimap_inside)
                         .in_set(crate::ui_script::UiFeed)
                         .run_if(crate::ui_script::ingame_ui_up),
-                    // Before the script tick, so GameTimeFrame's OnUpdate reads this frame's
-                    // minute, not last frame's.
-                    feed_game_time.in_set(crate::ui_script::UiFeed),
                     // After the world-mouseover drive (UnitFeed): a same-frame world-hover→blip
                     // transition must end with the blip tooltip shown, not the fade.
                     blips::drive_blip_tooltip

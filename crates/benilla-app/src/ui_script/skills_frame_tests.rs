@@ -419,7 +419,7 @@ fn the_pages_close_button_sits_where_the_reference_seats_it_and_closes_the_windo
 #[test]
 fn the_collapse_all_fold_wears_the_row_font_and_the_references_seat() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = shown_skills_page();
+    let mut s = shown_skills_page();
 
     // "All", not "ALL" — the same GlobalStrings lookup as the CLOSE button above
     // (`ALL = "All"`, `GlobalStrings.lua:45`). The face is what this test is about, not the word.

@@ -69,10 +69,8 @@
 //! every mutation in 218 addons is of the addon's own [`create_font`] object — so the Font→Font
 //! half has no demand behind it and the Font→FontString half has all of it.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::binding_abi;
-use super::object::publish_global;
 use crate::justify;
 
 use super::{FontObject, FontShadow, Model, Outline, RegionData};
@@ -98,36 +96,29 @@ const REG_FONT_WRAPPERS: &str = "__benilla_font_wrappers";
 /// `T[0]` is the name string rather than the frame/region wrapper's `LightUserData` id, so
 /// [`super::object::decode_id`] rejects a font handle passed where a frame is wanted, with its own
 /// message, instead of decoding a garbage id.
-pub(crate) fn wrapper(lua: &Lua, name: &str) -> mlua::Result<Table> {
-    let wrappers: Table = lua.named_registry_value(REG_FONT_WRAPPERS)?;
-    if let Value::Table(t) = wrappers.get::<Value>(name)? {
-        return Ok(t);
+pub(crate) fn wrapper_context(
+    lua: &mut impl LuaContext,
+    name: &str,
+) -> benilla_lua::Result<LuaTable> {
+    let wrappers: LuaTable = lua.get_registry(REG_FONT_WRAPPERS)?;
+    if let LuaValue::Table(wrapper) = lua.table_get(&wrappers, name)? {
+        return Ok(wrapper);
     }
-    let t = lua.create_table()?;
-    t.raw_set(0, name)?;
-    let meta: Table = lua.named_registry_value(REG_FONT_META)?;
-    t.set_metatable(Some(meta))?;
-    wrappers.set(name, t.clone())?;
-    Ok(t)
+    let wrapper = lua.create_table()?;
+    lua.table_set_raw(&wrapper, 0_i64, name)?;
+    let meta: LuaTable = lua.get_registry(REG_FONT_META)?;
+    lua.table_set_metatable(&wrapper, Some(&meta))?;
+    lua.table_set(&wrappers, name, wrapper.clone())?;
+    Ok(wrapper)
 }
 
 /// Publish `_G[name]` as this font object's handle — what makes `fs:SetFontObject(GameFontNormal)`
 /// resolve to anything at all. Non-overwriting, exactly like the frame side's [`publish_global`].
 ///
 /// Called by `Loader::do_font` for every top-level `<Font name=…>`, and by [`create_font`].
-pub(crate) fn publish(lua: &Lua, name: &str) -> mlua::Result<()> {
-    let t = wrapper(lua, name)?;
-    publish_global(lua, name, &t)
-}
-
-/// The name behind a font handle, or an error naming what was actually passed.
-fn name_of(this: &Table) -> mlua::Result<String> {
-    match this.raw_get::<Value>(0)? {
-        Value::String(s) => Ok(s.to_str()?.to_string()),
-        _ => Err(mlua::Error::runtime(
-            "not a font object (missing T[0] name identity)",
-        )),
-    }
+pub(crate) fn publish_context(lua: &mut impl LuaContext, name: &str) -> benilla_lua::Result<()> {
+    let wrapper = wrapper_context(lua, name)?;
+    super::object::publish_global_context(lua, name, &wrapper)
 }
 
 /// Accept any of the **three** forms the real binding takes and return the registry name, with
@@ -142,31 +133,56 @@ fn name_of(this: &Table) -> mlua::Result<String> {
 /// Anything else — a frame, a number, a missing argument — is an **error**, and in the reference
 /// too: every rejection there is `luaL_error 0x6f4940`, which longjmps and aborts the call rather
 /// than no-opping. A font that quietly fails to apply is the silent-drop class of 1203/1205/1211.
-pub(super) fn resolve(verb: &str, v: &Value) -> mlua::Result<Option<String>> {
-    match v {
-        Value::Nil => Ok(None),
-        Value::Table(t) => name_of(t).map(Some).map_err(|_| {
-            mlua::Error::runtime(format!(
+pub(super) fn resolve_context(
+    lua: &mut impl LuaContext,
+    verb: &str,
+    value: &LuaValue,
+) -> benilla_lua::Result<Option<String>> {
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(table) => match lua.table_get_raw(table, 0_i64)? {
+            LuaValue::String(name) => name
+                .as_str()
+                .map(|name| Some(name.to_string()))
+                .map_err(|error| benilla_lua::Error::runtime(error.to_string())),
+            _ => Err(benilla_lua::Error::runtime(format!(
                 "{verb}: the argument is a table but not a font object \
                  (a frame or region cannot be a font)"
-            ))
-        }),
-        Value::String(s) => Ok(Some(s.to_str()?.to_string())),
-        other => Err(mlua::Error::runtime(format!(
+            ))),
+        },
+        LuaValue::String(name) => name
+            .as_str()
+            .map(|name| Some(name.to_string()))
+            .map_err(|error| benilla_lua::Error::runtime(error.to_string())),
+        other => Err(benilla_lua::Error::runtime(format!(
             "{verb}: expected a font object, a font name, or nil, got {}",
             other.type_name()
         ))),
     }
 }
 
-/// [`resolve`] for the verbs that genuinely refuse nil — `CopyFontObject` is the one
-/// (`0x7a01b0`: it value-copies and re-parents, so there is nothing to copy *from*).
-fn resolve_required(verb: &str, v: &Value) -> mlua::Result<String> {
-    resolve(verb, v)?.ok_or_else(|| {
-        mlua::Error::runtime(format!(
+fn resolve_required_context(
+    lua: &mut impl LuaContext,
+    verb: &str,
+    value: &LuaValue,
+) -> benilla_lua::Result<String> {
+    resolve_context(lua, verb, value)?.ok_or_else(|| {
+        benilla_lua::Error::runtime(format!(
             "{verb}: expected a font object or a font name, got nil"
         ))
     })
+}
+
+fn name_of_context(lua: &mut impl LuaContext, this: &LuaTable) -> benilla_lua::Result<String> {
+    match lua.table_get_raw(this, 0_i64)? {
+        LuaValue::String(name) => name
+            .as_str()
+            .map(str::to_owned)
+            .map_err(|error| benilla_lua::Error::runtime(error.to_string())),
+        _ => Err(benilla_lua::Error::runtime(
+            "not a font object (missing T[0] name identity)",
+        )),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -246,8 +262,12 @@ pub(crate) fn propagate(model: &mut Model, name: &str) {
 
 /// Run `f` over the named font object's record, then propagate the change to its dependants.
 /// The one write path every setter below goes through.
-fn edit<R>(lua: &Lua, this: &Table, f: impl FnOnce(&mut FontObject) -> R) -> mlua::Result<R> {
-    let name = name_of(this)?;
+fn edit_context<R>(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    f: impl FnOnce(&mut FontObject) -> R,
+) -> benilla_lua::Result<R> {
+    let name = name_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
     let out = f(model
         .font_objects_by_lower
@@ -258,8 +278,8 @@ fn edit<R>(lua: &Lua, this: &Table, f: impl FnOnce(&mut FontObject) -> R) -> mlu
 }
 
 /// Read the named font object's record (a clone — the records are small and this is human-rate).
-fn read(lua: &Lua, this: &Table) -> mlua::Result<FontObject> {
-    let name = name_of(this)?;
+fn read_context(lua: &mut impl LuaContext, this: &LuaTable) -> benilla_lua::Result<FontObject> {
+    let name = name_of_context(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model");
     Ok(model.font_object(&name).cloned().unwrap_or_default())
 }
@@ -284,300 +304,255 @@ fn read(lua: &Lua, this: &Table) -> mlua::Result<FontObject> {
 /// names itself. Demand behind it is **zero** — no call on any font-object global anywhere in the
 /// 218-addon corpus, and 1.12's own FrameXML never calls the font API at all. When spacing becomes
 /// a thing the renderer honours, the pair lands with it.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.set_named_registry_value(REG_FONT_WRAPPERS, lua.create_table()?)?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    let wrappers = lua.create_table()?;
+    lua.put_registry(REG_FONT_WRAPPERS, wrappers)?;
+    let methods = lua.create_table()?;
 
-    let m = lua.create_table()?;
+    let get_object_type =
+        lua.create_function("Font:GetObjectType", |_, _this: LuaTable| Ok("Font"))?;
+    lua.table_set_function(&methods, "GetObjectType", &get_object_type)?;
+    let is_object_type =
+        lua.create_function("Font:IsObjectType", |_, (_this, ty): (LuaTable, String)| {
+            Ok(if ty.eq_ignore_ascii_case("font") {
+                LuaValue::Integer(1)
+            } else {
+                LuaValue::Nil
+            })
+        })?;
+    lua.table_set_function(&methods, "IsObjectType", &is_object_type)?;
+    let get_name = lua.create_function("Font:GetName", |lua, this: LuaTable| {
+        name_of_context(lua, &this)
+    })?;
+    lua.table_set_function(&methods, "GetName", &get_name)?;
 
-    // ── identity ────────────────────────────────────────────────────────────────────────────
-    m.set(
-        "GetObjectType",
-        lua.create_function(|_, _this: Table| Ok("Font"))?,
-    )?;
-    // **`1`/`nil`, never a Lua boolean** (decision 2118's law; 2142 found this copy). The
-    // reference's Font object has its OWN `IsObjectType` (`0x79fe60`, table `0x87c7c8`) distinct
-    // from the Region base's (`0x7a1290`, `0x87c9b8`), and the shapes table types both
-    // `(nil) | (number)`. This one answered a Rust `bool` — the fourth copy of a house rule that
-    // three neighbours got right, which is exactly the drift 2118 consolidated `flag` to stop, and
-    // it was invisible until the shape gate learned to probe the Font object at all.
-    //
-    // The ARGUMENT contract is a separate question and is not claimed here: `region.rs`'s twin
-    // documents the reference's `Usage: %s:IsObjectType("TYPE")` raise and its number-stringifying
-    // arm from a byte read of `0x7a1290`; nobody has read `0x79fe60`'s, so this copy keeps mlua's
-    // own coercion rather than pretending to that finding.
-    m.set(
-        "IsObjectType",
-        lua.create_function(|_, (_this, ty): (Table, String)| {
-            Ok(binding_abi::flag(ty.eq_ignore_ascii_case("font")))
-        })?,
-    )?;
-    m.set(
-        "GetName",
-        lua.create_function(|_, this: Table| name_of(&this))?,
-    )?;
-
-    // ── the font-object-on-font-object pair ─────────────────────────────────────────────────
-    // SetFontObject(other) — adopt another object's whole paint. On a Font (rather than a
-    // FontString) the reference's live-parent distinction is invisible to us because we flatten
-    // Font→Font chains at load (module doc); this is therefore the same copy CopyFontObject makes,
-    // and both are spelled out separately so a later Font→Font link has two named places to land.
-    // It takes nil like its FontString twin — with no Font→Font link to sever, that is a no-op.
-    m.set(
-        "SetFontObject",
-        lua.create_function(|lua, (this, other): (Table, Value)| {
-            match resolve("SetFontObject", &other)? {
-                Some(_) => copy_from(lua, &this, &other, "SetFontObject"),
-                None => Ok(()),
+    let set_font_object = lua.create_function(
+        "Font:SetFontObject",
+        |lua, (this, other): (LuaTable, LuaValue)| {
+            if resolve_context(lua, "SetFontObject", &other)?.is_some() {
+                copy_from_context(lua, &this, &other, "SetFontObject")?;
             }
-        })?,
+            Ok(())
+        },
     )?;
-    // CopyFontObject(other) — `FonzAppraiser`'s pattern: mint with CreateFont, copy a shipped
-    // object's paint, then override the face (`gui.lua:27-30`). Unlike `SetFontObject` it
-    // **rejects nil** (`0x7a01b0` value-copies and re-parents, so there is nothing to copy from).
-    m.set(
-        "CopyFontObject",
-        lua.create_function(|lua, (this, other): (Table, Value)| {
-            resolve_required("CopyFontObject", &other)?;
-            copy_from(lua, &this, &other, "CopyFontObject")
-        })?,
+    lua.table_set_function(&methods, "SetFontObject", &set_font_object)?;
+    let copy_font_object = lua.create_function(
+        "Font:CopyFontObject",
+        |lua, (this, other): (LuaTable, LuaValue)| {
+            resolve_required_context(lua, "CopyFontObject", &other)?;
+            copy_from_context(lua, &this, &other, "CopyFontObject")
+        },
     )?;
-    // GetFontObject() — a Font object has no parent link in our model (chains are flattened at
-    // load), so this is honestly nil rather than a self-reference that would read as a link.
-    m.set(
-        "GetFontObject",
-        lua.create_function(|_, _this: Table| Ok(Value::Nil))?,
-    )?;
+    lua.table_set_function(&methods, "CopyFontObject", &copy_font_object)?;
+    let get_font_object =
+        lua.create_function("Font:GetFontObject", |_, _this: LuaTable| Ok(LuaValue::Nil))?;
+    lua.table_set_function(&methods, "GetFontObject", &get_font_object)?;
 
-    // ── face ────────────────────────────────────────────────────────────────────────────────
-    // SetFont(path, height [, flags]) → **the number 1, or nil** — the reference's exact return
-    // shape (1 value either way; a font file that fails to load yields nil, never an error).
-    // `!OmniCC/main.lua:41` uses it as a *font-file validity probe* (`if not
-    // OmniCCFont:SetFont(saved, size) then revert end`), so it is not decorative. We answer 1 for
-    // any non-empty path — face availability is the renderer's concern here, the atlas falls back
-    // per face — and nil for an empty/absent one, so a probe with a blank saved variable reverts.
-    m.set(
-        "SetFont",
-        lua.create_function(
-            |lua, (this, file, height, flags): (Table, Value, Value, Option<String>)| {
-                // The same gate the FontString and EditBox tables enter — one `0x79f210`, three
-                // entry points. This side used to take `Option`s, so `SetFont()` answered **nil**
-                // where the reference raises `0x87c69c`; the FontString's copy answered the boolean
-                // `true` for everything. Neither was the shared routine's contract.
-                let (path, height) = super::font_block::set_font_args(&file, &height, "Font")?;
-                let ok = !path.is_empty();
-                edit(lua, &this, |fo| {
-                    if ok {
-                        fo.font = Some(path);
-                    }
-                    fo.height = Some(height);
-                    if let Some(f) = flags {
-                        // The LUA flags spelling ("OUTLINE"/"THICKOUTLINE"), not the XML
-                        // attribute's ("NORMAL"/"THICK") — this read the XML one, so every
-                        // `GameFontNormal:SetFont(f, h, "OUTLINE")` silently cleared the outline.
-                        fo.outline = Outline::flags(&f);
-                    }
-                })?;
-                Ok(if ok { Value::Number(1.0) } else { Value::Nil })
-            },
-        )?,
+    let set_font = lua.create_function(
+        "Font:SetFont",
+        |lua, (this, file, height, flags): (LuaTable, LuaValue, LuaValue, Option<String>)| {
+            let (path, height) = super::font_block::set_font_args_context(&file, &height, "Font")?;
+            let ok = !path.is_empty();
+            edit_context(lua, &this, |font| {
+                if ok {
+                    font.font = Some(path);
+                }
+                font.height = Some(height);
+                if let Some(flags) = flags {
+                    font.outline = Outline::flags(&flags);
+                }
+            })?;
+            Ok(if ok {
+                LuaValue::Number(1.0)
+            } else {
+                LuaValue::Nil
+            })
+        },
     )?;
-    // GetFont() → path, height, flags. `Tablet-2.0.lua:289`'s `_, headerSize =
-    // GameTooltipHeaderText:GetFont()` is the corpus's single biggest font-object read (268 sites),
-    // and it does arithmetic on the second value.
-    //
-    // **An unset Font answers `(nil, 0, "")`, all three ctor-determined** — `0x783a40` writes
-    // `[esi+0x48]` and `[esi+0x4c]` from a zeroed register, and its `0x41e3a0(NULL)` stores the
-    // shared empty record whose `char*` is NULL, which `lua_pushstring` turns into nil. So the
-    // height is the NUMBER zero, not nil (wow-re `font-object-lua-surface.md` §9.3,
-    // §5-cross-checked; decision 2129).
-    m.set(
-        "GetFont",
-        lua.create_function(|lua, this: Table| {
-            let fo = read(lua, &this)?;
-            let path = match fo.font {
-                Some(p) => Value::String(lua.create_string(&p)?),
-                None => Value::Nil,
-            };
-            Ok((path, fo.height.unwrap_or(0.0), fo.outline.as_str()))
-        })?,
-    )?;
+    lua.table_set_function(&methods, "SetFont", &set_font)?;
+    let get_font = lua.create_function("Font:GetFont", |lua, this: LuaTable| {
+        let font = read_context(lua, &this)?;
+        Ok((
+            font.font.map_or(LuaValue::Nil, LuaValue::from),
+            font.height.unwrap_or(0.0),
+            font.outline.as_str(),
+        ))
+    })?;
+    lua.table_set_function(&methods, "GetFont", &get_font)?;
 
-    // ── colour, and the alpha that is its fourth channel ────────────────────────────────────
-    // Shape C on the three channels (`SetTextColor 0x79f4d0`, `2=C 3=C 4=C 5=B`, wow-re
-    // `numeric-arg-coercion-law.md`): a nil or non-number is 0.0, never a raise (1973).
-    m.set(
-        "SetTextColor",
+    let set_text_color =
         lua.create_function(
-            |lua, (this, r, g, b, a): (Table, Value, Value, Value, Option<f32>)| {
-                let (r, g, b) = (
-                    super::object::as_f32(&r),
-                    super::object::as_f32(&g),
-                    super::object::as_f32(&b),
+            "Font:SetTextColor",
+            |lua,
+             (this, red, green, blue, alpha): (
+                LuaTable,
+                LuaValue,
+                LuaValue,
+                LuaValue,
+                Option<f32>,
+            )| {
+                let (red, green, blue) = (
+                    as_f32_context(&red),
+                    as_f32_context(&green),
+                    as_f32_context(&blue),
                 );
-                edit(lua, &this, |fo| {
-                    let keep = fo.color.map_or(1.0, |c| c[3]);
-                    fo.color = Some([r, g, b, a.unwrap_or(keep)]);
+                edit_context(lua, &this, |font| {
+                    let old_alpha = font.color.map_or(1.0, |color| color[3]);
+                    font.color = Some([red, green, blue, alpha.unwrap_or(old_alpha)]);
                 })
             },
-        )?,
-    )?;
-    m.set(
-        "GetTextColor",
-        lua.create_function(|lua, this: Table| {
-            let c = read(lua, &this)?.color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-            Ok((c[0], c[1], c[2], c[3]))
-        })?,
-    )?;
-    // SetAlpha/GetAlpha on a FontInstance are its text colour's alpha channel, not a separate
-    // slot: wow-re's field map gives a FontInstance exactly one colour word (`FONTINSTANCE+0x058
-    // textColor`, a packed CImVector) and no alpha field of its own, so there is nowhere else for
-    // an alpha to live. Zero corpus sites; implemented because a duck-typed `if f.SetAlpha` should
-    // find it and because the semantics follow from the storage rather than from a guess.
-    m.set(
-        "SetAlpha",
-        lua.create_function(|lua, (this, a): (Table, f32)| {
-            edit(lua, &this, |fo| {
-                let c = fo.color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                fo.color = Some([c[0], c[1], c[2], a]);
+        )?;
+    lua.table_set_function(&methods, "SetTextColor", &set_text_color)?;
+    let get_text_color = lua.create_function("Font:GetTextColor", |lua, this: LuaTable| {
+        let color = read_context(lua, &this)?
+            .color
+            .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+        Ok((color[0], color[1], color[2], color[3]))
+    })?;
+    lua.table_set_function(&methods, "GetTextColor", &get_text_color)?;
+    let set_alpha =
+        lua.create_function("Font:SetAlpha", |lua, (this, alpha): (LuaTable, f32)| {
+            edit_context(lua, &this, |font| {
+                let color = font.color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                font.color = Some([color[0], color[1], color[2], alpha]);
             })
-        })?,
-    )?;
-    m.set(
-        "GetAlpha",
-        lua.create_function(|lua, this: Table| Ok(read(lua, &this)?.color.map_or(1.0, |c| c[3])))?,
-    )?;
+        })?;
+    lua.table_set_function(&methods, "SetAlpha", &set_alpha)?;
+    let get_alpha = lua.create_function("Font:GetAlpha", |lua, this: LuaTable| {
+        Ok(read_context(lua, &this)?
+            .color
+            .map_or(1.0, |color| color[3]))
+    })?;
+    lua.table_set_function(&methods, "GetAlpha", &get_alpha)?;
 
-    // ── shadow ──────────────────────────────────────────────────────────────────────────────
-    // Either half may be set before the other, so both start from whatever is there (or a zero
-    // offset / opaque black) rather than refusing a shadow that is only half-declared.
-    m.set(
-        "SetShadowColor",
+    let set_shadow_color =
         lua.create_function(
-            // Shape C on r, g, b (`Font:SetShadowColor 0x79f730`, `2=C 3=C 4=C 5=B`, wow-re
-            // `numeric-arg-coercion-law.md`) — bare `lua_tonumber`, no gate, never raises.
-            |lua, (this, r, g, b, a): (Table, Value, Value, Value, Option<f32>)| {
-                let (r, g, b) = (
-                    crate::script::object::as_f32(&r),
-                    crate::script::object::as_f32(&g),
-                    crate::script::object::as_f32(&b),
+            "Font:SetShadowColor",
+            |lua,
+             (this, red, green, blue, alpha): (
+                LuaTable,
+                LuaValue,
+                LuaValue,
+                LuaValue,
+                Option<f32>,
+            )| {
+                let (red, green, blue) = (
+                    as_f32_context(&red),
+                    as_f32_context(&green),
+                    as_f32_context(&blue),
                 );
-                edit(lua, &this, |fo| {
-                    let offset = fo.shadow.map_or([0.0, 0.0], |s| s.offset);
-                    fo.shadow = Some(FontShadow {
+                edit_context(lua, &this, |font| {
+                    let offset = font.shadow.map_or([0.0, 0.0], |shadow| shadow.offset);
+                    font.shadow = Some(FontShadow {
                         offset,
-                        color: [r, g, b, a.unwrap_or(1.0)],
+                        color: [red, green, blue, alpha.unwrap_or(1.0)],
                     });
                 })
             },
-        )?,
-    )?;
-    m.set(
-        "GetShadowColor",
-        lua.create_function(|lua, this: Table| {
-            let c = read(lua, &this)?
-                .shadow
-                .map_or([0.0, 0.0, 0.0, 1.0], |s| s.color);
-            Ok((c[0], c[1], c[2], c[3]))
-        })?,
-    )?;
-    m.set(
-        "SetShadowOffset",
-        lua.create_function(|lua, (this, x, y): (Table, f32, f32)| {
-            edit(lua, &this, |fo| {
-                let color = fo.shadow.map_or([0.0, 0.0, 0.0, 1.0], |s| s.color);
-                fo.shadow = Some(FontShadow {
+        )?;
+    lua.table_set_function(&methods, "SetShadowColor", &set_shadow_color)?;
+    let get_shadow_color = lua.create_function("Font:GetShadowColor", |lua, this: LuaTable| {
+        let color = read_context(lua, &this)?
+            .shadow
+            .map_or([0.0, 0.0, 0.0, 1.0], |shadow| shadow.color);
+        Ok((color[0], color[1], color[2], color[3]))
+    })?;
+    lua.table_set_function(&methods, "GetShadowColor", &get_shadow_color)?;
+    let set_shadow_offset = lua.create_function(
+        "Font:SetShadowOffset",
+        |lua, (this, x, y): (LuaTable, f32, f32)| {
+            edit_context(lua, &this, |font| {
+                let color = font
+                    .shadow
+                    .map_or([0.0, 0.0, 0.0, 1.0], |shadow| shadow.color);
+                font.shadow = Some(FontShadow {
                     offset: [x, y],
                     color,
                 });
             })
-        })?,
+        },
     )?;
-    m.set(
-        "GetShadowOffset",
-        lua.create_function(|lua, this: Table| {
-            let o = read(lua, &this)?.shadow.map_or([0.0, 0.0], |s| s.offset);
-            Ok((o[0], o[1]))
-        })?,
-    )?;
+    lua.table_set_function(&methods, "SetShadowOffset", &set_shadow_offset)?;
+    let get_shadow_offset =
+        lua.create_function("Font:GetShadowOffset", |lua, this: LuaTable| {
+            let offset = read_context(lua, &this)?
+                .shadow
+                .map_or([0.0, 0.0], |shadow| shadow.offset);
+            Ok((offset[0], offset[1]))
+        })?;
+    lua.table_set_function(&methods, "GetShadowOffset", &get_shadow_offset)?;
 
-    // ── justification ───────────────────────────────────────────────────────────────────────
-    //
-    // The token table, the whole-string match, the raise on a miss and the cross-axis clear are
-    // [`crate::justify`]'s, shared with the FontString table's identical pair. This side used to
-    // `.trim()` its argument and the other did not — one law, two transcriptions, and at most one
-    // of them could be right (the bytes say no trim: `SStrCmpI` compares the whole string).
-    //
-    // `justify_h`'s `Option` here is *inheritance*, not the reference's cleared axis: `None` means
-    // "this font object does not specify justification", which is what the resolve at
-    // [`resolve_font_object`] and `extract.rs` test. A fresh object therefore reads CENTER/MIDDLE
-    // through `unwrap_or_default`, which is also the client's ctor default `0x212`.
-    m.set(
-        "SetJustifyH",
-        lua.create_function(|lua, (this, j): (Table, String)| {
-            let jh = match justify::parse_h(&j) {
-                justify::Set::To(jh) => jh,
+    let set_justify_h = lua.create_function(
+        "Font:SetJustifyH",
+        |lua, (this, value): (LuaTable, String)| {
+            let value = match justify::parse_h(&value) {
+                justify::Set::To(value) => value,
                 justify::Set::Clears => return Ok(()),
-                justify::Set::NoMatch => return Err(justify::usage_h("Font")),
+                justify::Set::NoMatch => {
+                    return Err(benilla_lua::Error::runtime(justify::usage_h_message(
+                        "Font",
+                    )))
+                }
             };
-            edit(lua, &this, |fo| fo.justify_h = Some(jh))
-        })?,
+            edit_context(lua, &this, |font| font.justify_h = Some(value))
+        },
     )?;
-    m.set(
-        "GetJustifyH",
-        lua.create_function(|lua, this: Table| {
-            Ok(justify::name_h(
-                read(lua, &this)?.justify_h.unwrap_or_default(),
-            ))
-        })?,
-    )?;
-    m.set(
-        "SetJustifyV",
-        lua.create_function(|lua, (this, j): (Table, String)| {
-            let jv = match justify::parse_v(&j) {
-                justify::Set::To(jv) => jv,
+    lua.table_set_function(&methods, "SetJustifyH", &set_justify_h)?;
+    let get_justify_h = lua.create_function("Font:GetJustifyH", |lua, this: LuaTable| {
+        Ok(justify::name_h(
+            read_context(lua, &this)?.justify_h.unwrap_or_default(),
+        ))
+    })?;
+    lua.table_set_function(&methods, "GetJustifyH", &get_justify_h)?;
+    let set_justify_v = lua.create_function(
+        "Font:SetJustifyV",
+        |lua, (this, value): (LuaTable, String)| {
+            let value = match justify::parse_v(&value) {
+                justify::Set::To(value) => value,
                 justify::Set::Clears => return Ok(()),
-                justify::Set::NoMatch => return Err(justify::usage_v("Font")),
+                justify::Set::NoMatch => {
+                    return Err(benilla_lua::Error::runtime(justify::usage_v_message(
+                        "Font",
+                    )))
+                }
             };
-            edit(lua, &this, |fo| fo.justify_v = Some(jv))
-        })?,
+            edit_context(lua, &this, |font| font.justify_v = Some(value))
+        },
     )?;
-    m.set(
-        "GetJustifyV",
-        lua.create_function(|lua, this: Table| {
-            Ok(justify::name_v(
-                read(lua, &this)?.justify_v.unwrap_or_default(),
-            ))
-        })?,
-    )?;
+    lua.table_set_function(&methods, "SetJustifyV", &set_justify_v)?;
+    let get_justify_v = lua.create_function("Font:GetJustifyV", |lua, this: LuaTable| {
+        Ok(justify::name_v(
+            read_context(lua, &this)?.justify_v.unwrap_or_default(),
+        ))
+    })?;
+    lua.table_set_function(&methods, "GetJustifyV", &get_justify_v)?;
 
     let meta = lua.create_table()?;
-    // **`__index` is the method TABLE, not a dispatcher function** (decision 2310). A Rust
-    // `__index` turns every `fo.GetFont` — a plain table index in the source — into a Lua→Rust→Lua
-    // round trip plus a named-registry string lookup; measured at ~200 ns against ~9 ns for the
-    // table form, on a path every widget call in the client begins with. The table is mutated in
-    // place by nothing after this point, so pointing at it cannot go stale.
-    meta.set("__index", m.clone())?;
-    lua.set_named_registry_value(REG_FONT_METHODS, m)?;
-    lua.set_named_registry_value(REG_FONT_META, meta)?;
-
-    lua.globals()
-        .set("CreateFont", lua.create_function(create_font)?)?;
-    Ok(())
+    lua.table_set(&meta, "__index", methods.clone())?;
+    lua.put_registry(REG_FONT_METHODS, methods)?;
+    lua.put_registry(REG_FONT_META, meta)?;
+    let create_font = lua.create_function("CreateFont", create_font_context)?;
+    lua.set_global_function("CreateFont", &create_font)
 }
 
 /// The body behind `SetFontObject`/`CopyFontObject` on a Font: take the *other* object's resolved
 /// paint wholesale.
-fn copy_from(lua: &Lua, this: &Table, other: &Value, verb: &str) -> mlua::Result<()> {
-    let src = resolve_required(verb, other)?;
+fn copy_from_context(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    other: &LuaValue,
+    verb: &str,
+) -> benilla_lua::Result<()> {
+    let src = resolve_required_context(lua, verb, other)?;
     let paint = {
         let model = lua.app_data_ref::<Model>().expect("model");
         model.font_object(&src).cloned().ok_or_else(|| {
-            mlua::Error::runtime(format!(
+            benilla_lua::Error::runtime(format!(
                 "{verb}: no font object named '{src}' is registered"
             ))
         })?
     };
-    edit(lua, this, |fo| *fo = paint)
+    edit_context(lua, this, |font| *font = paint)
 }
 
 /// `CreateFont(name)` — mint a font object at runtime and publish it as the global `name`, the
@@ -594,9 +569,12 @@ fn copy_from(lua: &Lua, this: &Table, other: &Value, verb: &str) -> mlua::Result
 /// The empty string is accepted (the reference's `lua_isstring` gate takes strings *and* numbers,
 /// and unlike the XML path does not require a non-empty name); only a missing/nil argument is an
 /// error. A fresh object holds nothing, so `SetFontObject`-ing it copies nothing — see [`repaint`].
-fn create_font(lua: &Lua, name: Option<String>) -> mlua::Result<Table> {
+fn create_font_context(
+    lua: &mut benilla_lua::CallbackContext<'_>,
+    name: Option<String>,
+) -> benilla_lua::Result<LuaTable> {
     let name = name.ok_or_else(|| {
-        mlua::Error::runtime("CreateFont: a font name is required (it becomes a global)")
+        benilla_lua::Error::runtime("CreateFont: a font name is required (it becomes a global)")
     })?;
     {
         let mut model = lua.app_data_mut::<Model>().expect("model");
@@ -605,7 +583,15 @@ fn create_font(lua: &Lua, name: Option<String>) -> mlua::Result<Table> {
             .entry(name.to_ascii_lowercase())
             .or_default();
     }
-    let t = wrapper(lua, &name)?;
-    publish_global(lua, &name, &t)?;
-    Ok(t)
+    let wrapper = wrapper_context(lua, &name)?;
+    super::object::publish_global_context(lua, &name, &wrapper)?;
+    Ok(wrapper)
+}
+
+fn as_f32_context(value: &LuaValue) -> f32 {
+    match value {
+        LuaValue::Number(value) => *value as f32,
+        LuaValue::Integer(value) => *value as f32,
+        _ => 0.0,
+    }
 }

@@ -222,8 +222,14 @@ fn setup_water_fx(
     mut commands: Commands,
     world_assets: Option<ResMut<WorldAssets>>,
     mut images: ResMut<Assets<Image>>,
+    #[cfg(target_arch = "wasm32")] server: Res<AssetServer>,
 ) {
     commands.init_resource::<WaterFoam>();
+    #[cfg(target_arch = "wasm32")]
+    commands.insert_resource(FoamDelivery([
+        server.load(format!("mpq://{RING_TEXTURE}")),
+        server.load(format!("mpq://{WAKE_TEXTURE}")),
+    ]));
     let Some(mut world_assets) = world_assets else {
         return;
     };
@@ -247,6 +253,10 @@ fn foam_image(
         warn!("water foam: {path} unavailable — no water foam");
         return None;
     };
+    Some(images.add(foam_rgba_image(w, h, rgba)))
+}
+
+fn foam_rgba_image(w: u32, h: u32, rgba: Vec<u8>) -> Image {
     let mut image = Image::new(
         Extent3d {
             width: w,
@@ -265,7 +275,54 @@ fn foam_image(
         min_filter: ImageFilterMode::Linear,
         ..default()
     });
-    Some(images.add(image))
+    image
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource)]
+struct FoamDelivery([Handle<benilla_assets::RawFile>; 2]);
+
+#[cfg(target_arch = "wasm32")]
+fn publish_foam(
+    mut commands: Commands,
+    delivery: Option<Res<FoamDelivery>>,
+    files: Res<Assets<benilla_assets::RawFile>>,
+    server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(delivery) = delivery else { return };
+    if delivery.0.iter().any(|h| {
+        files.get(h).is_none()
+            && !matches!(
+                server.get_load_state(h.id()),
+                Some(bevy::asset::LoadState::Failed(_))
+            )
+    }) {
+        return;
+    }
+    let mut decoded = Vec::new();
+    for (path, handle) in [RING_TEXTURE, WAKE_TEXTURE].into_iter().zip(&delivery.0) {
+        let Some(file) = files.get(handle) else {
+            warn!(
+                "water foam: {path}: delivery failed: {:?}",
+                server.get_load_state(handle.id())
+            );
+            continue;
+        };
+        let result = benilla_formats::blp_to_rgba(&file.0);
+        match result {
+            Ok((w, h, rgba)) => decoded.push(foam_rgba_image(w, h, rgba)),
+            Err(error) => warn!("water foam: {path}: {error:#}"),
+        }
+    }
+    if decoded.len() == 2 {
+        let mut decoded = decoded.into_iter();
+        commands.insert_resource(FoamAssets {
+            ring: images.add(decoded.next().unwrap()),
+            wake: images.add(decoded.next().unwrap()),
+        });
+    }
+    commands.remove_resource::<FoamDelivery>();
 }
 
 /// Build a record's static patch: every wet liquid cell whose XY bounds overlap the final box, cut
@@ -636,6 +693,8 @@ pub(crate) struct WaterFxPlugin;
 
 impl Plugin for WaterFxPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(Update, publish_foam.before(emit_water_foam));
         app.add_systems(Startup, setup_water_fx.after(AssetSet::Open))
             .add_systems(
                 Update,

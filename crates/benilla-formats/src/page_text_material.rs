@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
 use crate::dbc::{parse, str_at, u32_at};
 
 const PAGE_TEXT_MATERIAL: &str = "DBFilesClient\\PageTextMaterial.dbc";
@@ -51,7 +50,9 @@ impl PageTextMaterialCatalog {
 
 /// Load `PageTextMaterial.dbc` into an id → basename map (see the module doc for the verified
 /// schema).
-pub fn load_page_text_material_catalog(chain: &mut Chain) -> Result<PageTextMaterialCatalog> {
+pub fn load_page_text_material_catalog(
+    chain: &mut impl crate::FileSource,
+) -> Result<PageTextMaterialCatalog> {
     let bytes = chain
         .read_file(PAGE_TEXT_MATERIAL)
         .context("reading PageTextMaterial.dbc")?;

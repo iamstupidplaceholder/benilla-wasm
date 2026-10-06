@@ -122,10 +122,21 @@ struct UiGammaPipeline {
     sampler: Sampler,
     shader: Handle<Shader>,
     fullscreen: FullscreenShader,
-    /// The ramp exponent's 16-byte uniform, rewritten each frame with a queue write (which lands
-    /// before the graph's submit executes) — the same shape `ffx_glow`'s combine uses. One buffer,
+    /// The ramp exponent's 16-byte uniform, written initially and on bit changes
+    /// before the graph's submit executes. One buffer,
     /// not one per view: [`UiGammaLane`] is on exactly one camera.
     ramp: Buffer,
+    /// Resource-owned: replacing the sampler/buffer also drops their cached
+    /// bindings and uniform state. Source/layout identities are checked below.
+    cache: std::sync::Mutex<UiGammaCache>,
+}
+
+#[derive(Default)]
+struct UiGammaCache {
+    ramp_bits: Option<u32>,
+    // At most the two ping-pong source views. Resize/multiple-view misses evict
+    // the oldest entry; draw order and readiness never depend on cache hits.
+    binds: Vec<(TextureViewId, BindGroupLayoutId, BindGroup)>,
 }
 
 impl SpecializedRenderPipeline for UiGammaPipeline {
@@ -214,6 +225,7 @@ fn init_pipeline(
         shader: asset_server.load("embedded://benilla_app/shaders/ui_gamma.wgsl"),
         fullscreen: fullscreen_shader.clone(),
         ramp,
+        cache: Default::default(),
     });
 }
 
@@ -242,25 +254,47 @@ impl ViewNode for UiGammaNode {
             // which beats dropping the UI entirely.
             return Ok(());
         };
-        // The ramp exponent for this frame (2182). `[g, 0, 0, 0]` — the shader reads `.x`.
-        world.resource::<RenderQueue>().write_buffer(
-            &pipelines.ramp,
-            0,
-            bytemuck::cast_slice(&[lane.gamma, 0.0, 0.0, 0.0]),
-        );
         // Where the decode lands (2206, `final_pass`): the swapchain itself for the player-UI
         // camera (`Skip`), the ping-pong for a `Write` camera.
         let out = FinalPassTarget::resolve(camera, view_target);
         let layout = pipeline_cache.get_bind_group_layout(&pipelines.layout);
-        let bind = render_context.render_device().create_bind_group(
-            "ui_gamma_decode",
-            &layout,
-            &BindGroupEntries::sequential((
-                out.source,
-                &pipelines.sampler,
-                pipelines.ramp.as_entire_binding(),
-            )),
-        );
+        let bind = {
+            let mut cache = pipelines.cache.lock().unwrap_or_else(|e| e.into_inner());
+            // Exact bits, not an epsilon: every observable gamma change is
+            // uploaded. None guarantees the new buffer's first initialization.
+            let bits = lane.gamma.to_bits();
+            if cache.ramp_bits != Some(bits) {
+                world.resource::<RenderQueue>().write_buffer(
+                    &pipelines.ramp,
+                    0,
+                    bytemuck::cast_slice(&[lane.gamma, 0.0, 0.0, 0.0]),
+                );
+                cache.ramp_bits = Some(bits);
+            }
+            let key = (out.source.id(), layout.id());
+            if let Some((_, _, bind)) = cache
+                .binds
+                .iter()
+                .find(|(source, layout, _)| (*source, *layout) == key)
+            {
+                bind.clone()
+            } else {
+                let bind = render_context.render_device().create_bind_group(
+                    "ui_gamma_decode",
+                    &layout,
+                    &BindGroupEntries::sequential((
+                        out.source,
+                        &pipelines.sampler,
+                        pipelines.ramp.as_entire_binding(),
+                    )),
+                );
+                if cache.binds.len() == 2 {
+                    cache.binds.remove(0);
+                }
+                cache.binds.push((key.0, key.1, bind.clone()));
+                bind
+            }
+        };
         // Its diagnostic span: the journal's `gpu_ui` column counts this decode (2008).
         let diagnostics = render_context.diagnostic_recorder();
         let scissor = out.scissor_rect();

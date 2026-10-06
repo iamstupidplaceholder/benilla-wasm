@@ -434,7 +434,11 @@ fn load_game_tips(mut tips: ResMut<GameTips>, assets: Option<Res<benilla_assets:
     let Some(assets) = assets else { return };
     use benilla_assets::LockRecover;
     let mut chain = assets.chain.lock_recover();
-    match benilla_formats::load_game_tips(&mut chain) {
+    publish_catalog(&mut tips, &mut *chain);
+}
+
+pub(crate) fn publish_catalog(tips: &mut GameTips, source: &mut impl benilla_formats::FileSource) {
+    match benilla_formats::load_game_tips(source) {
         Ok(cat) => {
             info!("loading screen: {} game tips", cat.len());
             tips.catalog = cat;

@@ -82,13 +82,13 @@
 //! for anyone but yourself (byte-verified, decision 0257 B6/B10). The reference's own target and party
 //! frames show no timers for the same reason.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::Model;
 
 mod player_buff;
 
-/// One aura on one unit, as the Era `UnitAura` family reports it. Plain data (no mlua handles, no ECS
+/// One aura on one unit, as the Era `UnitAura` family reports it. Plain data (no VM handles, no ECS
 /// types), pushed by the app's [`crate::script::UiScript::set_auras`] feed each frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AuraState {
@@ -206,19 +206,19 @@ pub(super) fn cancel_authorized(a: &AuraState) -> bool {
 /// wow-re's ledger, and both are what the reference's own FrameXML reads
 /// (`TargetFrame.lua:287-290` binds `debuff, debuffStack, debuffType` and then
 /// `SetTexture(debuff)`). Decision 1818, which also records why the Era shape was serving nobody.
-fn returns_1121(lua: &Lua, a: &AuraState, with_dispel_type: bool) -> mlua::Result<MultiValue> {
+fn returns_1121(a: &AuraState, with_dispel_type: bool) -> MultiValue {
     let icon = match &a.icon {
-        Some(t) => Value::String(lua.create_string(t)?),
+        Some(t) => Value::from(t.clone()),
         None => Value::Nil,
     };
     let mut out = vec![icon, Value::Integer(i64::from(a.count))];
     if with_dispel_type {
         out.push(match &a.debuff_type {
-            Some(t) => Value::String(lua.create_string(t)?),
+            Some(t) => Value::from(t.clone()),
             None => Value::Nil,
         });
     }
-    Ok(MultiValue::from_vec(out))
+    MultiValue::from(out)
 }
 
 /// Which return shape a getter wants — the two are not compatible, see [`returns_1121`].
@@ -232,39 +232,37 @@ enum Shape {
     Debuff,
 }
 
-fn returns(lua: &Lua, a: &AuraState) -> mlua::Result<MultiValue> {
-    let s = |v: &Option<String>| -> mlua::Result<Value> {
-        Ok(match v {
-            Some(t) => Value::String(lua.create_string(t)?),
-            None => Value::Nil,
-        })
+fn returns(a: &AuraState) -> MultiValue {
+    let s = |v: &Option<String>| match v {
+        Some(t) => Value::from(t.clone()),
+        None => Value::Nil,
     };
-    Ok(MultiValue::from_vec(vec![
-        s(&a.name)?,
-        s(&a.icon)?,
+    MultiValue::from(vec![
+        s(&a.name),
+        s(&a.icon),
         Value::Integer(i64::from(a.count)),
-        s(&a.debuff_type)?,
+        s(&a.debuff_type),
         Value::Number(a.duration),
         Value::Number(a.expiration_time),
         Value::Nil, // source — no aura caster exists on the 1.12 wire, for any unit (0257 B10)
         Value::Nil, // isStealable — Spellsteal is TBC
         Value::Nil, // nameplateShowPersonal
         Value::Integer(i64::from(a.spell_id)),
-    ]))
+    ])
 }
 
 /// The shared body of `UnitAura`/`UnitBuff`/`UnitDebuff`: take the `index`-th (1-based) aura of
 /// `unit` that passes `filter`, in the order the app pushed them. Out of range → a bare nil, the
 /// live API's "no more auras" terminator that every `for i = 1, N` loop breaks on.
 fn nth_aura(
-    lua: &Lua,
+    lua: &impl LuaContext,
     token: &Option<String>,
     index: i64,
     filter: &Filter,
     shape: Shape,
-) -> mlua::Result<MultiValue> {
+) -> MultiValue {
     if index < 1 {
-        return Ok(MultiValue::new());
+        return MultiValue::new();
     }
     let hit = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -280,11 +278,11 @@ fn nth_aura(
     };
     match hit {
         Some(a) => match shape {
-            Shape::Era => returns(lua, &a),
-            Shape::Buff => returns_1121(lua, &a, false),
-            Shape::Debuff => returns_1121(lua, &a, true),
+            Shape::Era => returns(&a),
+            Shape::Buff => returns_1121(&a, false),
+            Shape::Debuff => returns_1121(&a, true),
         },
-        None => Ok(MultiValue::new()),
+        None => MultiValue::new(),
     }
 }
 
@@ -319,26 +317,22 @@ impl super::UiScript {
 
 /// Register `UnitAura`, `UnitBuff`, `UnitDebuff` and `CancelUnitBuff`, plus the 1.12 `GetPlayerBuff*`
 /// family ([`player_buff`]).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // UnitAura(unit, index [, filter]) — filter defaults to HELPFUL, like the live API. This one
     // keeps the Era tuple: it is not a 1.12 verb at all (zero occurrences in the reference's
     // FrameXML) and has zero call sites in the 110-addon corpus, so it costs nothing and stays the
     // Era-compat surface 0068 asked for.
-    g.set(
+    lua.register_function(
         "UnitAura",
-        lua.create_function(
-            |lua, (token, index, filter): (Option<String>, i64, Option<String>)| {
-                nth_aura(
-                    lua,
-                    &token,
-                    index,
-                    &Filter::parse(filter.as_deref()),
-                    Shape::Era,
-                )
-            },
-        )?,
+        |lua, (token, index, filter): (Option<String>, i64, Option<String>)| {
+            Ok(nth_aura(
+                lua,
+                &token,
+                index,
+                &Filter::parse(filter.as_deref()),
+                Shape::Era,
+            ))
+        },
     )?;
 
     // UnitBuff(unit, index [, raidFilter]) / UnitDebuff(unit, index [, raidFilter]) — the 1.12
@@ -353,33 +347,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // is the guess 1203 exists to prevent, so the flag is parked here in the open. Visible
     // consequence, so nobody has to rediscover it: the pet frame's buff row and the
     // dispellable-debuff rows show everything rather than only what the player can cast or dispel.
-    g.set(
+    lua.register_function(
         "UnitBuff",
-        lua.create_function(
-            |lua, (token, index, _raid_filter): (Option<String>, i64, Option<Value>)| {
-                nth_aura(
-                    lua,
-                    &token,
-                    index,
-                    &Filter::parse(Some("HELPFUL")),
-                    Shape::Buff,
-                )
-            },
-        )?,
+        |lua, (token, index, _raid_filter): (Option<String>, i64, Option<Value>)| {
+            Ok(nth_aura(
+                lua,
+                &token,
+                index,
+                &Filter::parse(Some("HELPFUL")),
+                Shape::Buff,
+            ))
+        },
     )?;
-    g.set(
+    lua.register_function(
         "UnitDebuff",
-        lua.create_function(
-            |lua, (token, index, _raid_filter): (Option<String>, i64, Option<Value>)| {
-                nth_aura(
-                    lua,
-                    &token,
-                    index,
-                    &Filter::parse(Some("HARMFUL")),
-                    Shape::Debuff,
-                )
-            },
-        )?,
+        |lua, (token, index, _raid_filter): (Option<String>, i64, Option<Value>)| {
+            Ok(nth_aura(
+                lua,
+                &token,
+                index,
+                &Filter::parse(Some("HARMFUL")),
+                Shape::Debuff,
+            ))
+        },
     )?;
 
     // CancelUnitBuff(unit, index [, filter]) — the Era name for the reference's
@@ -387,67 +377,57 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // SPELL ID for the app: the server's `CMSG_CANCEL_AURA` carries a spell, not a slot, and refuses
     // anything not cancelable. A non-cancelable aura (or a missing one) is a silent no-op, as in the
     // reference, where the client's own `AFLAG_CANCELABLE` gate never sends the packet.
-    g.set(
+    lua.register_function(
         "CancelUnitBuff",
-        lua.create_function(
-            |lua, (token, index, filter): (Option<String>, i64, Option<String>)| {
-                let spec = match filter {
-                    Some(f) => format!("HELPFUL|{f}"),
-                    None => "HELPFUL".to_string(),
-                };
-                let f = Filter::parse(Some(&spec));
-                let hit = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    token
-                        .as_ref()
-                        .filter(|_| index >= 1)
-                        .and_then(|t| model.auras.get(t))
-                        .and_then(|list| {
-                            list.iter()
-                                .filter(|a| f.matches(a))
-                                .nth((index - 1) as usize)
-                                .cloned()
-                        })
-                };
-                if let Some(a) = hit.filter(cancel_authorized) {
-                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                    model.cancel_aura_requests.push(a.spell_id);
-                }
-                Ok(())
-            },
-        )?,
+        |lua, (token, index, filter): (Option<String>, i64, Option<String>)| {
+            let spec = match filter {
+                Some(f) => format!("HELPFUL|{f}"),
+                None => "HELPFUL".to_string(),
+            };
+            let f = Filter::parse(Some(&spec));
+            let hit = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                token
+                    .as_ref()
+                    .filter(|_| index >= 1)
+                    .and_then(|t| model.auras.get(t))
+                    .and_then(|list| {
+                        list.iter()
+                            .filter(|a| f.matches(a))
+                            .nth((index - 1) as usize)
+                            .cloned()
+                    })
+            };
+            if let Some(a) = hit.filter(cancel_authorized) {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                model.cancel_aura_requests.push(a.spell_id);
+            }
+            Ok(())
+        },
     )?;
-
-    player_buff::install(lua)?;
 
     // GetTrackingTexture() — the reference's `0x4e4a20`: the icon path of the active tracking
     // spell (the tracking global's occupant), or nil when none — `MiniMapTrackingFrame`'s
     // show/hide + SetTexture driver on PLAYER_AURAS_CHANGED (ref-Minimap.xml l.150-159).
-    g.set(
-        "GetTrackingTexture",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.tracking.as_ref().and_then(|t| t.icon.clone()))
-        })?,
-    )?;
+    lua.register_function("GetTrackingTexture", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.tracking.as_ref().and_then(|t| t.icon.clone()))
+    })?;
 
     // CancelTrackingBuff() — the reference's `0x4e4a80` (the tracking frame's right-click): cancel
     // the active tracking aura by SPELL id through the same `CMSG_CANCEL_AURA` queue as
     // `CancelUnitBuff`, behind the same client-side `AFLAG_CANCELABLE` gate. No tracking active
     // is a silent no-op.
-    g.set(
-        "CancelTrackingBuff",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if let Some(t) = model.tracking.as_ref().filter(|t| t.cancelable) {
-                let id = t.spell_id;
-                model.cancel_aura_requests.push(id);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CancelTrackingBuff", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if let Some(t) = model.tracking.as_ref().filter(|t| t.cancelable) {
+            let id = t.spell_id;
+            model.cancel_aura_requests.push(id);
+        }
+        Ok(())
+    })?;
 
-    Ok(())
+    player_buff::install(lua)
 }
 
 #[cfg(test)]

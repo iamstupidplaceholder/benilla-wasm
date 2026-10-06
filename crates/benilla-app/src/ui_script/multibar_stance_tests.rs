@@ -59,7 +59,7 @@ fn load_action_bar(s: &UiScript) {
 }
 
 /// Raise exactly the bars named, through the globals the Options rows write.
-fn show_bars(s: &UiScript, bars: &[u32]) {
+fn show_bars(s: &mut UiScript, bars: &[u32]) {
     let mut lua = String::new();
     for bar in 1..=4u32 {
         lua.push_str(&format!(
@@ -87,7 +87,7 @@ fn shipped_multibars_drive_end_to_end() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    let frames = super::test_ui::load_ui(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    let frames = super::test_ui::load_ui(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
     assert_eq!(
         frames, 100,
         "what stock MultiActionBars.xml declares (1938): the four bar frames and their 48 buttons, \
@@ -126,7 +126,7 @@ fn shipped_multibars_drive_end_to_end() {
         }),
     );
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
-    show_bars(&s, &[1, 2]);
+    show_bars(&mut s, &[1, 2]);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s.resolve();
     let quads = s.extract();
@@ -280,21 +280,21 @@ fn shipped_stance_bar_drives_end_to_end() {
     // bottom multibar is UP to raise the flag. Since 1500 that is a player option rather than a
     // given, so this test raises it; `the_stance_bar_sits_where_the_pass_puts_it` below owns the
     // other state.
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    show_bars(&s, &[1]);
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    show_bars(&mut s, &[1]);
     // The shapeshift bar is declared by stock BonusActionBarFrame.xml (ShapeshiftBarFrame and
     // ShapeshiftButton1..10 beside the bonus bar), which load_action_bar loaded above (1938).
     assert!(
@@ -497,7 +497,7 @@ fn multibar_hover_renders_the_buttons_own_action() {
         "OptionsFrame.xml",
         "Interface\\FrameXML\\MultiActionBars.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
 
     // Main slot 1 → spell 100, BottomLeft slot 1 (action 61) → 200, BottomRight slot 1 (49) → 300.
@@ -524,10 +524,10 @@ fn multibar_hover_renders_the_buttons_own_action() {
         );
     }
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
-    show_bars(&s, &[1, 2]);
+    show_bars(&mut s, &[1, 2]);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 
-    let hover_name = |s: &UiScript, button: &str| -> Option<String> {
+    let hover_name = |s: &mut UiScript, button: &str| -> Option<String> {
         s.run(&format!(
             "GameTooltip:Hide() this = {button} ActionButton_SetTooltip()"
         ))
@@ -539,22 +539,22 @@ fn multibar_hover_renders_the_buttons_own_action() {
     };
 
     assert_eq!(
-        hover_name(&s, "ActionButton1").as_deref(),
+        hover_name(&mut s, "ActionButton1").as_deref(),
         Some("Spell 100"),
         "the main bar still reads its own slot"
     );
     assert_eq!(
-        hover_name(&s, "MultiBarBottomLeftButton1").as_deref(),
+        hover_name(&mut s, "MultiBarBottomLeftButton1").as_deref(),
         Some("Spell 200"),
         "BottomLeft button 1 is action 61 — not main slot 1 (the spell below it)"
     );
     assert_eq!(
-        hover_name(&s, "MultiBarBottomRightButton1").as_deref(),
+        hover_name(&mut s, "MultiBarBottomRightButton1").as_deref(),
         Some("Spell 300"),
         "BottomRight button 1 is action 49"
     );
     assert_eq!(
-        hover_name(&s, "MultiBarBottomLeftButton2").as_deref(),
+        hover_name(&mut s, "MultiBarBottomLeftButton2").as_deref(),
         Some("Spell 400"),
         "an occupied multibar slot over an EMPTY main slot still renders (the no-tooltip half)"
     );
@@ -563,7 +563,7 @@ fn multibar_hover_renders_the_buttons_own_action() {
     s.set_bonus_bar_offset(1);
     s.fire_event("UPDATE_BONUS_ACTIONBAR", vec![]);
     assert_eq!(
-        hover_name(&s, "MultiBarBottomLeftButton1").as_deref(),
+        hover_name(&mut s, "MultiBarBottomLeftButton1").as_deref(),
         Some("Spell 200"),
         "a bonus page never re-pages a multibar hover"
     );
@@ -581,22 +581,22 @@ fn multibar_hover_renders_the_buttons_own_action() {
 /// Since 1500 "hidden" is where they START rather than where they stay — see the toggle tests.
 #[test]
 fn the_vertical_multibars_exist_hidden_on_the_reference_pages() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
 
     for bar in ["MultiBarRight", "MultiBarLeft"] {
         assert!(
@@ -645,20 +645,20 @@ fn every_extra_bar_stays_down_until_its_own_toggle_is_set() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
 
     const BARS: [&str; 4] = [
         "MultiBarBottomLeft",
@@ -667,52 +667,52 @@ fn every_extra_bar_stays_down_until_its_own_toggle_is_set() {
         "MultiBarLeft",
     ];
     let shown =
-        |s: &UiScript, bar: &str| s.eval::<bool>(&format!("return {bar}:IsShown()")).unwrap();
+        |s: &mut UiScript, bar: &str| s.eval::<bool>(&format!("return {bar}:IsShown()")).unwrap();
 
     // The zero byte, applied through the same path a login takes.
     s.run("MultiActionBar_Update()").unwrap();
     for bar in BARS {
-        assert!(!shown(&s, bar), "{bar} must be down at a zero toggle byte");
+        assert!(!shown(&mut s, bar), "{bar} must be down at a zero toggle byte");
     }
 
     // Each of the first three raises ITS bar and only its bar.
     for (flag, want) in [(1u32, 0usize), (2, 1), (3, 2)] {
-        show_bars(&s, &[flag]);
+        show_bars(&mut s, &[flag]);
         for (i, bar) in BARS.iter().enumerate() {
             assert_eq!(
-                shown(&s, bar),
+                shown(&mut s, bar),
                 i == want,
                 "bar {flag} alone: {bar} shown {}, expected {}",
-                shown(&s, bar),
+                shown(&mut s, bar),
                 i == want
             );
         }
     }
 
     // Bar 4 alone does nothing at all — not even to itself.
-    show_bars(&s, &[4]);
+    show_bars(&mut s, &[4]);
     for bar in BARS {
         assert!(
-            !shown(&s, bar),
+            !shown(&mut s, bar),
             "{bar}: SHOW_MULTI_ACTIONBAR_4 without 3 raises nothing"
         );
     }
 
     // 3 and 4 together bring up both vertical bars.
-    show_bars(&s, &[3, 4]);
-    assert!(shown(&s, "MultiBarRight"));
-    assert!(shown(&s, "MultiBarLeft"), "MultiBarLeft rides on bar 3");
-    assert!(!shown(&s, "MultiBarBottomLeft"));
-    assert!(!shown(&s, "MultiBarBottomRight"));
+    show_bars(&mut s, &[3, 4]);
+    assert!(shown(&mut s, "MultiBarRight"));
+    assert!(shown(&mut s, "MultiBarLeft"), "MultiBarLeft rides on bar 3");
+    assert!(!shown(&mut s, "MultiBarBottomLeft"));
+    assert!(!shown(&mut s, "MultiBarBottomRight"));
 
     // All four on, then all four off again — the toggle is a toggle, not a one-way door.
-    show_bars(&s, &[1, 2, 3, 4]);
+    show_bars(&mut s, &[1, 2, 3, 4]);
     for bar in BARS {
-        assert!(shown(&s, bar), "{bar} up with the full byte");
+        assert!(shown(&mut s, bar), "{bar} up with the full byte");
     }
-    show_bars(&s, &[]);
+    show_bars(&mut s, &[]);
     for bar in BARS {
-        assert!(!shown(&s, bar), "{bar} down again");
+        assert!(!shown(&mut s, bar), "{bar} down again");
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
@@ -732,57 +732,57 @@ fn raising_a_bottom_bar_moves_the_managed_bottom_stack() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    load_xml(&s, "Interface\\FrameXML\\CastingBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CastingBarFrame.xml");
 
     // The pass writes the y of a frame row into its anchor; read it back off the anchor rather
     // than off a resolved rect, so a hidden cast bar answers the same as a visible one.
-    let cast_y = |s: &UiScript| {
+    let cast_y = |s: &mut UiScript| {
         s.eval::<f64>("local _, _, _, _, y = CastingBarFrame:GetPoint() return y")
             .unwrap()
     };
-    let offset_y = |s: &UiScript| s.eval::<f64>("return CONTAINER_OFFSET_Y").unwrap();
+    let offset_y = |s: &mut UiScript| s.eval::<f64>("return CONTAINER_OFFSET_Y").unwrap();
 
-    show_bars(&s, &[]);
-    assert_eq!(offset_y(&s), 70.0, "band clear: the row's base");
-    let low = cast_y(&s);
+    show_bars(&mut s, &[]);
+    assert_eq!(offset_y(&mut s), 70.0, "band clear: the row's base");
+    let low = cast_y(&mut s);
     assert_eq!(low, 60.0, "CastingBarFrame's baseY");
 
-    show_bars(&s, &[1]);
+    show_bars(&mut s, &[1]);
     assert_eq!(
-        offset_y(&s),
+        offset_y(&mut s),
         97.0,
         "bottom-left up: 70 + the row's bottomEither 27"
     );
-    assert_eq!(cast_y(&s), 100.0, "the cast bar rises with it (60 + 40)");
+    assert_eq!(cast_y(&mut s), 100.0, "the cast bar rises with it (60 + 40)");
 
     // The RIGHT bottom bar raises the same flag — either one, not both.
-    show_bars(&s, &[2]);
-    assert_eq!(offset_y(&s), 97.0, "bottomEither is either");
-    assert_eq!(cast_y(&s), 100.0);
+    show_bars(&mut s, &[2]);
+    assert_eq!(offset_y(&mut s), 97.0, "bottomEither is either");
+    assert_eq!(cast_y(&mut s), 100.0);
 
     // Both up is still one step for these two rows (`bottomEither` is paid once); the bag corner's
     // own `bottomRight` delta is 0, which is why this number does not move again.
-    show_bars(&s, &[1, 2]);
-    assert_eq!(offset_y(&s), 97.0);
+    show_bars(&mut s, &[1, 2]);
+    assert_eq!(offset_y(&mut s), 97.0);
 
     // And down again — the pass is re-derived, never accumulated.
-    show_bars(&s, &[]);
-    assert_eq!(offset_y(&s), 70.0);
-    assert_eq!(cast_y(&s), low);
+    show_bars(&mut s, &[]);
+    assert_eq!(offset_y(&mut s), 70.0);
+    assert_eq!(cast_y(&mut s), low);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -796,22 +796,22 @@ fn viewable_action_bar_pages_follow_the_bar_toggles() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
 
-    let viewable = |s: &UiScript| {
+    let viewable = |s: &mut UiScript| {
         s.eval::<String>(
             "local out = {} \
              for i = 1, NUM_ACTIONBAR_PAGES do \
@@ -822,32 +822,32 @@ fn viewable_action_bar_pages_follow_the_bar_toggles() {
         .unwrap()
     };
 
-    show_bars(&s, &[]);
-    assert_eq!(viewable(&s), "1,2,3,4,5,6", "no bar up, no page claimed");
+    show_bars(&mut s, &[]);
+    assert_eq!(viewable(&mut s), "1,2,3,4,5,6", "no bar up, no page claimed");
 
     // ref ActionButton.lua:6-9 — BottomLeft 6, BottomRight 5, Right 3, Left 4.
-    show_bars(&s, &[1]);
-    assert_eq!(viewable(&s), "1,2,3,4,5", "BottomLeft owns page 6");
-    show_bars(&s, &[2]);
-    assert_eq!(viewable(&s), "1,2,3,4,6", "BottomRight owns page 5");
-    show_bars(&s, &[3]);
-    assert_eq!(viewable(&s), "1,2,4,5,6", "MultiBarRight owns page 3");
-    show_bars(&s, &[3, 4]);
+    show_bars(&mut s, &[1]);
+    assert_eq!(viewable(&mut s), "1,2,3,4,5", "BottomLeft owns page 6");
+    show_bars(&mut s, &[2]);
+    assert_eq!(viewable(&mut s), "1,2,3,4,6", "BottomRight owns page 5");
+    show_bars(&mut s, &[3]);
+    assert_eq!(viewable(&mut s), "1,2,4,5,6", "MultiBarRight owns page 3");
+    show_bars(&mut s, &[3, 4]);
     assert_eq!(
-        viewable(&s),
+        viewable(&mut s),
         "1,2,5,6",
         "…and MultiBarLeft page 4 beside it"
     );
 
     // Bar 4 without bar 3 shows nothing, so it claims nothing either — the page arithmetic reads
     // the same conjunction the Show/Hide does, not the raw flag.
-    show_bars(&s, &[4]);
-    assert_eq!(viewable(&s), "1,2,3,4,5,6");
+    show_bars(&mut s, &[4]);
+    assert_eq!(viewable(&mut s), "1,2,3,4,5,6");
 
-    show_bars(&s, &[1, 2, 3, 4]);
-    assert_eq!(viewable(&s), "1,2", "all four up: only the main pages left");
-    show_bars(&s, &[]);
-    assert_eq!(viewable(&s), "1,2,3,4,5,6", "and every page comes back");
+    show_bars(&mut s, &[1, 2, 3, 4]);
+    assert_eq!(viewable(&mut s), "1,2", "all four up: only the main pages left");
+    show_bars(&mut s, &[]);
+    assert_eq!(viewable(&mut s), "1,2,3,4,5,6", "and every page comes back");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -862,31 +862,31 @@ fn the_grid_option_holds_the_extra_bars_empty_wells_open() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    show_bars(&s, &[1]);
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    show_bars(&mut s, &[1]);
 
-    let well = |s: &UiScript| {
+    let well = |s: &mut UiScript| {
         s.eval::<bool>("return MultiBarBottomLeftButton5:IsShown()")
             .unwrap()
     };
-    assert!(!well(&s), "an empty multibar well is hidden by default");
+    assert!(!well(&mut s), "an empty multibar well is hidden by default");
 
     s.run("ALWAYS_SHOW_MULTIBARS = \"1\" MultiActionBar_UpdateGridVisibility()")
         .unwrap();
-    assert!(well(&s), "the option opens it with nothing in hand");
+    assert!(well(&mut s), "the option opens it with nothing in hand");
     // Every one of the four bars, not just the raised one — the reference's ShowAllGrids names all
     // four, and a bar the player turns on later must already be holding its wells open.
     for bar in ["MultiBarBottomRight", "MultiBarRight", "MultiBarLeft"] {
@@ -900,12 +900,12 @@ fn the_grid_option_holds_the_extra_bars_empty_wells_open() {
     // A payload arrives on top of the option, then the option lets go: the well stays open because
     // the payload is still asking for it. A boolean would have closed it here.
     s.fire_event("ACTIONBAR_SHOWGRID", vec![]);
-    assert!(well(&s));
+    assert!(well(&mut s));
     s.run("ALWAYS_SHOW_MULTIBARS = \"0\" MultiActionBar_UpdateGridVisibility()")
         .unwrap();
-    assert!(well(&s), "the payload still holds the well open");
+    assert!(well(&mut s), "the payload still holds the well open");
     s.fire_event("ACTIONBAR_HIDEGRID", vec![]);
-    assert!(!well(&s), "and it closes when the last asker lets go");
+    assert!(!well(&mut s), "and it closes when the last asker lets go");
 
     // Re-applying an "off" that is already off must not owe anything: with a payload in hand the
     // wells stay open through it (the reference's own idempotence bug, closed by the latch).
@@ -921,24 +921,24 @@ fn the_grid_option_holds_the_extra_bars_empty_wells_open() {
     s.run("ALWAYS_SHOW_MULTIBARS = \"0\"").unwrap();
     s.fire_event("VARIABLES_LOADED", vec![]);
     s.fire_event("ACTIONBAR_SHOWGRID", vec![]);
-    assert!(well(&s));
+    assert!(well(&mut s));
     s.fire_event("ACTIONBAR_HIDEGRID", vec![]);
-    assert!(!well(&s), "a load with the option off left the count alone");
+    assert!(!well(&mut s), "a load with the option off left the count alone");
     s.run("ALWAYS_SHOW_MULTIBARS = \"1\"").unwrap();
     s.fire_event("VARIABLES_LOADED", vec![]);
-    assert!(well(&s), "a load with the option on opens the wells");
+    assert!(well(&mut s), "a load with the option on opens the wells");
     s.run("ALWAYS_SHOW_MULTIBARS = \"0\" MultiActionBar_UpdateGridVisibility()")
         .unwrap();
-    assert!(!well(&s));
+    assert!(!well(&mut s));
 
     // …and the click arm against a held payload: one apply closes the well the payload opened.
     // (The payload's own HIDEGRID that follows takes the count to −1 in the reference too — its
     // quirk, not modelled here.)
     s.fire_event("ACTIONBAR_SHOWGRID", vec![]);
-    assert!(well(&s));
+    assert!(well(&mut s));
     s.run("MultiActionBar_UpdateGridVisibility()").unwrap();
     assert!(
-        !well(&s),
+        !well(&mut s),
         "the option's hide counts against the payload's open"
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
@@ -967,20 +967,20 @@ fn a_held_payload_ghosts_the_empty_wells_it_opens() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
     s.set_action(
         1,
         Some(ActionSlot {
@@ -994,7 +994,7 @@ fn a_held_payload_ghosts_the_empty_wells_it_opens() {
     // The raise comes AFTER the seed: `UIParent.xml`'s PLAYER_ENTERING_WORLD arm reads the
     // server's bar-toggle byte once and would put an early raise straight back down.
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
-    show_bars(&s, &[1]);
+    show_bars(&mut s, &[1]);
     s.resolve();
 
     /// The drawn alpha of every ring quad wearing `path` — `None` colour is untinted white.
@@ -1110,20 +1110,20 @@ fn a_bar_toggle_sends_the_byte_its_globals_pack_to() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
     let _ = s.take_action_bar_toggle_sends();
 
     // The row's own setter, with the row's own "1"/"0" strings.
@@ -1161,7 +1161,7 @@ fn a_bar_toggle_sends_the_byte_its_globals_pack_to() {
     // The way back in. Wipe the live state, push the byte the server would hold, and run the seed
     // `UIParent.xml`'s PLAYER_ENTERING_WORLD arm runs — nothing else re-reads that field, so this
     // one read is the whole restore.
-    show_bars(&s, &[]);
+    show_bars(&mut s, &[]);
     let _ = s.take_action_bar_toggle_sends();
     s.set_action_bar_toggles(0x0c);
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
@@ -1197,20 +1197,20 @@ fn the_shipped_setter_passes_exactly_four_arguments() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
 
     // 5.0's `arg.n`, not `select("#", ...)`: `...` as a value is not in this VM's grammar, because
     // it is not in the 1.12 client's (decision 2101).
@@ -1250,22 +1250,22 @@ fn the_stance_bar_sits_where_the_pass_puts_it() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
     s.set_shapeshift_forms(vec![ShapeshiftFormView {
         spell_id: 2457,
         texture: Some("Interface\\Icons\\Stance_A".into()),
@@ -1276,27 +1276,27 @@ fn the_stance_bar_sits_where_the_pass_puts_it() {
     }]);
     s.fire_event("UPDATE_SHAPESHIFT_FORMS", vec![]);
 
-    let seat = |s: &UiScript| {
+    let seat = |s: &mut UiScript| {
         s.eval::<f64>("local _, _, _, _, y = ShapeshiftBarFrame:GetPoint() return y")
             .unwrap()
     };
 
-    show_bars(&s, &[]);
+    show_bars(&mut s, &[]);
     assert_eq!(
-        seat(&s),
+        seat(&mut s),
         0.0,
         "no bottom bar: the row's baseY, on the main bar"
     );
-    show_bars(&s, &[1]);
-    assert_eq!(seat(&s), 45.0, "bottom-left up: +45, the ref's raised seat");
-    show_bars(&s, &[2]);
+    show_bars(&mut s, &[1]);
+    assert_eq!(seat(&mut s), 45.0, "bottom-left up: +45, the ref's raised seat");
+    show_bars(&mut s, &[2]);
     assert_eq!(
-        seat(&s),
+        seat(&mut s),
         0.0,
         "the RIGHT bottom bar is not under it — the row's flag is bottomLeft, not bottomEither"
     );
-    show_bars(&s, &[]);
-    assert_eq!(seat(&s), 0.0);
+    show_bars(&mut s, &[]);
+    assert_eq!(seat(&mut s), 0.0);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -1322,22 +1322,22 @@ fn the_stance_shelf_follows_the_bottom_left_bar() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
 
     let form = |id: u32| ShapeshiftFormView {
         spell_id: id,
@@ -1347,11 +1347,11 @@ fn the_stance_shelf_follows_the_bottom_left_bar() {
         castable: true,
         cooldown: None,
     };
-    let shown = |s: &UiScript, region: &str| {
+    let shown = |s: &mut UiScript, region: &str| {
         s.eval::<bool>(&format!("return {region}:IsShown()"))
             .unwrap()
     };
-    let ring = |s: &UiScript| {
+    let ring = |s: &mut UiScript| {
         s.eval::<f64>("return ShapeshiftButton1NormalTexture:GetWidth()")
             .unwrap()
     };
@@ -1359,28 +1359,28 @@ fn the_stance_shelf_follows_the_bottom_left_bar() {
     // A three-form warrior, no bottom bar: the whole shelf, and the big ring.
     s.set_shapeshift_forms(vec![form(2457), form(71), form(2458)]);
     s.fire_event("UPDATE_SHAPESHIFT_FORMS", vec![]);
-    show_bars(&s, &[]);
-    assert!(shown(&s, "ShapeshiftBarLeft"), "the left end cap");
-    assert!(shown(&s, "ShapeshiftBarRight"), "the right end cap");
+    show_bars(&mut s, &[]);
+    assert!(shown(&mut s, "ShapeshiftBarLeft"), "the left end cap");
+    assert!(shown(&mut s, "ShapeshiftBarRight"), "the right end cap");
     assert!(
-        shown(&s, "ShapeshiftBarMiddle"),
+        shown(&mut s, "ShapeshiftBarMiddle"),
         "3 forms: the middle strip"
     );
-    assert_eq!(ring(&s), 64.0, "unraised rings are the ref's 64");
+    assert_eq!(ring(&mut s), 64.0, "unraised rings are the ref's 64");
 
     // Two forms drop the middle strip and nothing else — the ref's own `> 2`.
     s.set_shapeshift_forms(vec![form(2457), form(71)]);
     s.fire_event("UPDATE_SHAPESHIFT_FORMS", vec![]);
-    assert!(shown(&s, "ShapeshiftBarLeft"));
-    assert!(shown(&s, "ShapeshiftBarRight"));
+    assert!(shown(&mut s, "ShapeshiftBarLeft"));
+    assert!(shown(&mut s, "ShapeshiftBarRight"));
     assert!(
-        !shown(&s, "ShapeshiftBarMiddle"),
+        !shown(&mut s, "ShapeshiftBarMiddle"),
         "exactly 2 forms: end caps only"
     );
-    assert_eq!(ring(&s), 64.0);
+    assert_eq!(ring(&mut s), 64.0);
 
     // Raising the bottom-left bar flips the SEAT and the ART in the one pass — the listener seam.
-    show_bars(&s, &[1]);
+    show_bars(&mut s, &[1]);
     assert_eq!(
         s.eval::<f64>("local _, _, _, _, y = ShapeshiftBarFrame:GetPoint() return y")
             .unwrap(),
@@ -1393,11 +1393,11 @@ fn the_stance_shelf_follows_the_bottom_left_bar() {
         "ShapeshiftBarRight",
     ] {
         assert!(
-            !shown(&s, region),
+            !shown(&mut s, region),
             "{region} must not draw across the row below"
         );
     }
-    assert_eq!(ring(&s), 50.0, "raised rings are the ref's 50");
+    assert_eq!(ring(&mut s), 50.0, "raised rings are the ref's 50");
 
     // Even at three forms, raised keeps the middle strip down — the fork is on the BAR, not the
     // form count; the count only decides the middle strip within the unraised branch.
@@ -1408,17 +1408,17 @@ fn the_stance_shelf_follows_the_bottom_left_bar() {
     s.set_shapeshift_forms(vec![form(2457), form(71), form(2458)]);
     s.fire_event("UPDATE_SHAPESHIFT_FORMS", vec![]);
     assert!(
-        shown(&s, "ShapeshiftBarMiddle"),
+        shown(&mut s, "ShapeshiftBarMiddle"),
         "Update shows the strip; only the pass takes it down"
     );
     s.run("UIParent_ManageFramePositions()").unwrap();
-    assert!(!shown(&s, "ShapeshiftBarMiddle"));
-    assert_eq!(ring(&s), 50.0);
+    assert!(!shown(&mut s, "ShapeshiftBarMiddle"));
+    assert_eq!(ring(&mut s), 50.0);
 
     // …and back down again, in one call.
-    show_bars(&s, &[]);
-    assert!(shown(&s, "ShapeshiftBarMiddle"));
-    assert_eq!(ring(&s), 64.0);
+    show_bars(&mut s, &[]);
+    assert!(shown(&mut s, "ShapeshiftBarMiddle"));
+    assert_eq!(ring(&mut s), 64.0);
     assert_eq!(
         s.eval::<f64>("local _, _, _, _, y = ShapeshiftBarFrame:GetPoint() return y")
             .unwrap(),
@@ -1443,23 +1443,23 @@ fn the_stance_shelf_is_as_long_as_the_form_count() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    show_bars(&s, &[]); // unraised: the shelf art is the state under test
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    show_bars(&mut s, &[]); // unraised: the shelf art is the state under test
 
     let form = |id: u32| ShapeshiftFormView {
         spell_id: id,
@@ -1476,7 +1476,7 @@ fn the_stance_shelf_is_as_long_as_the_form_count() {
     };
     // The cap's left edge relative to the LEFT cap's — the whole shelf in one number, independent
     // of where the managed pass seats the bar.
-    let cap = |s: &UiScript| {
+    let cap = |s: &mut UiScript| {
         s.eval::<f64>("return ShapeshiftBarRight:GetLeft() - ShapeshiftBarLeft:GetLeft()")
             .unwrap()
     };
@@ -1487,12 +1487,12 @@ fn the_stance_shelf_is_as_long_as_the_form_count() {
     // wraps the single button and stops there. The regression put it at 83.
     set_forms(&mut s, 1);
     assert_eq!(
-        cap(&s),
+        cap(&mut s),
         12.0,
         "one form: the cap sits 12px into the left cap"
     );
     assert!(
-        cap(&s) + 42.0 > BUTTON1_RIGHT,
+        cap(&mut s) + 42.0 > BUTTON1_RIGHT,
         "the one-form shelf still covers its button"
     );
     assert!(
@@ -1503,7 +1503,7 @@ fn the_stance_shelf_is_as_long_as_the_form_count() {
 
     // TWO forms: the caps butt together, 45 + 42 = 87px of shelf, still no middle strip.
     set_forms(&mut s, 2);
-    assert_eq!(cap(&s), 45.0, "two forms: cap on the left cap's RIGHT edge");
+    assert_eq!(cap(&mut s), 45.0, "two forms: cap on the left cap's RIGHT edge");
 
     // PAST two, the middle strip carries one 38px slot per extra form and the cap chains off it.
     set_forms(&mut s, 3);
@@ -1513,7 +1513,7 @@ fn the_stance_shelf_is_as_long_as_the_form_count() {
         38.0,
         "3 forms: one slot of middle"
     );
-    assert_eq!(cap(&s), 83.0);
+    assert_eq!(cap(&mut s), 83.0);
 
     set_forms(&mut s, 5);
     assert_eq!(
@@ -1522,17 +1522,17 @@ fn the_stance_shelf_is_as_long_as_the_form_count() {
         114.0,
         "5 forms: three slots of middle — the width the ref computes, not the declared 38"
     );
-    assert_eq!(cap(&s), 159.0);
+    assert_eq!(cap(&mut s), 159.0);
     // Button 5 spans 159..189 (11 + 4*37), so the cap must clear it — at the declared width it
     // landed at 83 and drew straight across buttons 3, 4 and 5.
     assert!(
-        cap(&s) >= 11.0 + 4.0 * 37.0,
+        cap(&mut s) >= 11.0 + 4.0 * 37.0,
         "the cap clears the last button"
     );
 
     // …and back down to one form re-points it, so the shelf is not a one-way ratchet.
     set_forms(&mut s, 1);
-    assert_eq!(cap(&s), 12.0);
+    assert_eq!(cap(&mut s), 12.0);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -1560,21 +1560,21 @@ fn an_extra_bars_empty_well_keeps_its_bound_hotkey_label() {
     // the player binds it, as the reporter had).
     s.register_bindings(&crate::bindings::registry_commands());
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    show_bars(&s, &[1]);
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    show_bars(&mut s, &[1]);
     s.set_action(
         61,
         Some(ActionSlot {
@@ -1596,7 +1596,7 @@ fn an_extra_bars_empty_well_keeps_its_bound_hotkey_label() {
     .unwrap();
     s.fire_event("UPDATE_BINDINGS", vec![]);
 
-    let label = |s: &UiScript, button: &str| {
+    let label = |s: &mut UiScript, button: &str| {
         s.eval::<Option<String>>(&format!("return {button}HotKey:GetText()"))
             .unwrap()
             .unwrap_or_default()
@@ -1607,9 +1607,9 @@ fn an_extra_bars_empty_well_keeps_its_bound_hotkey_label() {
             .iter()
             .any(|q| matches!(&q.content, QuadContent::Text { text: Some(t), .. } if t == want))
     };
-    assert_eq!(label(&s, "MultiBarBottomLeftButton1"), "Q");
-    assert_eq!(label(&s, "MultiBarBottomLeftButton2"), "E");
-    assert_eq!(label(&s, "MultiBarBottomLeftButton3"), "R");
+    assert_eq!(label(&mut s, "MultiBarBottomLeftButton1"), "Q");
+    assert_eq!(label(&mut s, "MultiBarBottomLeftButton2"), "E");
+    assert_eq!(label(&mut s, "MultiBarBottomLeftButton3"), "R");
     assert!(drawn(&mut s, "E"), "the empty well's label is on screen");
 
     // Anything that repaints the buttons. Each of these reached the empty arm and wiped the label
@@ -1620,29 +1620,29 @@ fn an_extra_bars_empty_well_keeps_its_bound_hotkey_label() {
         ("ACTIONBAR_HIDEGRID", "and put down again"),
     ] {
         s.fire_event(event, vec![]);
-        assert_eq!(label(&s, "MultiBarBottomLeftButton1"), "Q", "{what}");
+        assert_eq!(label(&mut s, "MultiBarBottomLeftButton1"), "Q", "{what}");
         assert_eq!(
-            label(&s, "MultiBarBottomLeftButton2"),
+            label(&mut s, "MultiBarBottomLeftButton2"),
             "E",
             "the empty well keeps its bound label through {what}"
         );
-        assert_eq!(label(&s, "MultiBarBottomLeftButton3"), "R", "{what}");
+        assert_eq!(label(&mut s, "MultiBarBottomLeftButton3"), "R", "{what}");
     }
     // The world enter above also re-seeds the four bar toggles from the server byte, which the
     // harness does not send — so bar 1 went back down with it. Raise it again: the label is still
     // on the well, not merely still in the FontString.
-    show_bars(&s, &[1]);
+    show_bars(&mut s, &[1]);
     assert!(drawn(&mut s, "E"), "…and it is still on screen");
 
     // The control: an UNBOUND empty well stays blank throughout — the clear this line was written
     // for in 0270 is still done, by the repaint that knows there is no binding.
-    assert_eq!(label(&s, "MultiBarBottomLeftButton4"), "");
+    assert_eq!(label(&mut s, "MultiBarBottomLeftButton4"), "");
     // And unbinding one takes its label away, rather than freezing the last text painted.
     s.run(r#"SetBinding("E", nil)"#).unwrap();
     s.fire_event("UPDATE_BINDINGS", vec![]);
-    assert_eq!(label(&s, "MultiBarBottomLeftButton2"), "");
+    assert_eq!(label(&mut s, "MultiBarBottomLeftButton2"), "");
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
-    assert_eq!(label(&s, "MultiBarBottomLeftButton2"), "");
+    assert_eq!(label(&mut s, "MultiBarBottomLeftButton2"), "");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -1670,8 +1670,8 @@ fn the_middle_strip_tiles_along_its_length_only() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
-    show_bars(&s, &[]); // bars down: the shelf is the state under test
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
+    show_bars(&mut s, &[]); // bars down: the shelf is the state under test
 
     let form = |id: u32| ShapeshiftFormView {
         spell_id: id,
@@ -1751,7 +1751,7 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_action_bar(&s);
-    load_xml(&s, "Interface\\FrameXML\\MultiActionBars.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MultiActionBars.xml");
     // A recorder for the two events a push may announce.
     s.run(
         "STANCE_LOG = {} local f = CreateFrame('Frame') \
@@ -1759,11 +1759,11 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
          f:SetScript('OnEvent', function() table.insert(STANCE_LOG, event) end)",
     )
     .unwrap();
-    let log = |s: &UiScript| {
+    let log = |s: &mut UiScript| {
         s.eval::<String>("local l = table.concat(STANCE_LOG, ',') STANCE_LOG = {} return l")
             .unwrap()
     };
-    let shown = |s: &UiScript, region: &str| {
+    let shown = |s: &mut UiScript, region: &str| {
         s.eval::<bool>(&format!("return {region}:IsShown()"))
             .unwrap()
     };
@@ -1772,11 +1772,11 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
         "ShapeshiftBarMiddle",
         "ShapeshiftBarRight",
     ];
-    let ring = |s: &UiScript| {
+    let ring = |s: &mut UiScript| {
         s.eval::<f64>("return ShapeshiftButton1NormalTexture:GetWidth()")
             .unwrap()
     };
-    let checked = |s: &UiScript, i: u32| {
+    let checked = |s: &mut UiScript, i: u32| {
         s.eval::<bool>(&format!("return ShapeshiftButton{i}:GetChecked() == 1"))
             .unwrap()
     };
@@ -1803,15 +1803,15 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
         ),
         FormsEdge::List
     );
-    assert_eq!(log(&s), "UPDATE_SHAPESHIFT_FORMS");
-    assert!(checked(&s, 1) && !checked(&s, 2));
+    assert_eq!(log(&mut s), "UPDATE_SHAPESHIFT_FORMS");
+    assert!(checked(&mut s, 1) && !checked(&mut s, 2));
     // The bottom-left bar up, the way the Options row raises it: the pass seats the stance bar a
     // row higher and takes the whole shelf down (UIParent.lua l.1706-1716).
-    show_bars(&s, &[1]);
+    show_bars(&mut s, &[1]);
     for region in shelf {
-        assert!(!shown(&s, region), "{region} is down under a raised bar");
+        assert!(!shown(&mut s, region), "{region} is down under a raised bar");
     }
-    assert_eq!(ring(&s), 50.0);
+    assert_eq!(ring(&mut s), 50.0);
 
     // A stance switch: the form byte flips to Defensive and category 47 arms for a second on all
     // three. State, not list — the reference announces it through the aura and cooldown events.
@@ -1827,26 +1827,26 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
     );
     for region in shelf {
         assert!(
-            !shown(&s, region),
+            !shown(&mut s, region),
             "{region}: the director's plate — the shelf re-shown over the raised bar"
         );
     }
-    assert_eq!(ring(&s), 50.0);
+    assert_eq!(ring(&mut s), 50.0);
     assert_eq!(edge, FormsEdge::Silent);
-    assert_eq!(log(&s), "", "a state move fires no list edge");
+    assert_eq!(log(&mut s), "", "a state move fires no list edge");
     // …and the checked ring follows on the event the switch really carries.
     assert!(
-        checked(&s, 1) && !checked(&s, 2),
+        checked(&mut s, 1) && !checked(&mut s, 2),
         "no repaint before the state event"
     );
     s.fire_event("PLAYER_AURAS_CHANGED", vec![]);
     assert!(
-        !checked(&s, 1) && checked(&s, 2),
+        !checked(&mut s, 1) && checked(&mut s, 2),
         "the aura event repaints the ring"
     );
     for region in shelf {
         assert!(
-            !shown(&s, region),
+            !shown(&mut s, region),
             "{region}: a state repaint never touches the shelf"
         );
     }
@@ -1865,8 +1865,8 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
         ),
         FormsEdge::Silent
     );
-    assert_eq!(log(&s), "");
-    assert!(!shown(&s, "ShapeshiftBarMiddle"));
+    assert_eq!(log(&mut s), "");
+    assert!(!shown(&mut s, "ShapeshiftBarMiddle"));
 
     // A castable flip is a usability move — the reference's own SPELL_UPDATE_USABLE — and the
     // stock bar greys the icon on it without touching the shelf.
@@ -1882,7 +1882,7 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
         ),
         FormsEdge::Usable
     );
-    assert_eq!(log(&s), "SPELL_UPDATE_USABLE");
+    assert_eq!(log(&mut s), "SPELL_UPDATE_USABLE");
     let grey = s
         .eval::<f64>("local r = ShapeshiftButton1Icon:GetVertexColor() return r")
         .unwrap();
@@ -1890,7 +1890,7 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
         (grey - 0.4).abs() < 1e-6,
         "not castable: the 0.4 grey, got {grey}"
     );
-    assert!(!shown(&s, "ShapeshiftBarMiddle"));
+    assert!(!shown(&mut s, "ShapeshiftBarMiddle"));
 
     // Nothing moved: nothing pushed, nothing fired.
     assert_eq!(
@@ -1905,7 +1905,7 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
         ),
         FormsEdge::Unchanged
     );
-    assert_eq!(log(&s), "");
+    assert_eq!(log(&mut s), "");
 
     // The control — a fourth stance LEARNED is the list edge, and the reference's own Update
     // shows the strip across the raised bar until the next pass (the sibling test pins that).
@@ -1922,12 +1922,12 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
         ),
         FormsEdge::List
     );
-    assert_eq!(log(&s), "UPDATE_SHAPESHIFT_FORMS");
+    assert_eq!(log(&mut s), "UPDATE_SHAPESHIFT_FORMS");
     assert!(
-        shown(&s, "ShapeshiftBarMiddle"),
+        shown(&mut s, "ShapeshiftBarMiddle"),
         "the learn edge: Update shows the strip"
     );
     s.run("UIParent_ManageFramePositions()").unwrap();
-    assert!(!shown(&s, "ShapeshiftBarMiddle"));
+    assert!(!shown(&mut s, "ShapeshiftBarMiddle"));
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }

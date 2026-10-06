@@ -26,7 +26,7 @@
 //! can produce are wired — the self-descriptor edges here, the packets and drains at their own
 //! seams through [`TutorialEvent`] — and the record names the rest with their conditions.
 
-use std::time::{Duration, Instant};
+use benilla_time::{Duration, Instant};
 
 use bevy::prelude::*;
 

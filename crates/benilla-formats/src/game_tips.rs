@@ -21,7 +21,7 @@
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::chain::Chain;
+use crate::FileSource;
 use crate::dbc::{parse, str_at};
 
 const GAME_TIPS: &str = "DBFilesClient\\GameTips.dbc";
@@ -63,7 +63,7 @@ fn schema() -> Schema {
     s
 }
 
-pub fn load_game_tips(chain: &mut Chain) -> Result<GameTipsCatalog> {
+pub fn load_game_tips(chain: &mut impl FileSource) -> Result<GameTipsCatalog> {
     let bytes = chain.read_file(GAME_TIPS).context("reading GameTips.dbc")?;
     let rs = parse(&bytes, schema(), "GameTips")?;
     let mut tips = Vec::with_capacity(rs.records().len());

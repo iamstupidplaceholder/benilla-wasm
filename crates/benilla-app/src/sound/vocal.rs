@@ -58,8 +58,12 @@ use bevy::prelude::*;
 
 use benilla_formats::{SoundKitCatalog, VocalUiSoundCatalog, VOCAL_UI_LINES};
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::net::{ObjectStore, SelfPlayer};
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::kit::{self, Bus, KitRef, PlayExtras, SoundCategory, SoundKits};
@@ -209,11 +213,12 @@ impl VocalSpeech {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_vocal_ui_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_vocal_ui_sounds(&mut chain)
+        benilla_formats::load_vocal_ui_sounds(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -244,7 +249,10 @@ fn build_vocal_table(
     if speech.built_for() == Some(race) {
         return;
     }
-    speech.build(race, &catalog.0, kits.catalog());
+    let Some(kits_catalog) = kits.loaded_catalog() else {
+        return;
+    };
+    speech.build(race, &catalog.0, kits_catalog);
 }
 
 /// Say one error-speech line in the local player's own voice — the app-side entry point
@@ -295,8 +303,9 @@ pub(super) fn speak_line(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_vocal_ui_sounds.after(AssetSet::Open));
     app.init_resource::<VocalSpeech>()
-        .add_systems(Startup, load_vocal_ui_sounds.after(AssetSet::Open))
         .add_systems(Update, build_vocal_table.in_set(WorldStage::Stream));
 }
 

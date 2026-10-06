@@ -71,7 +71,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const CAMERA_SHAKES: &str = "DBFilesClient\\CameraShakes.dbc";
 const SPELL_EFFECT_CAMERA_SHAKES: &str = "DBFilesClient\\SpellEffectCameraShakes.dbc";
@@ -211,7 +211,7 @@ fn spell_effect_camera_shakes_schema() -> Schema {
 /// nine rows, it ships in the same archive, and every spell-side producer needs both to resolve a
 /// single shake. A missing or malformed table is a hard error like every other DBC (1300) — the
 /// caller's fallback is to run with no shake system at all, which is what an empty catalog means.
-pub fn load_camera_shakes(chain: &mut Chain) -> Result<CameraShakeCatalog> {
+pub fn load_camera_shakes(chain: &mut impl FileSource) -> Result<CameraShakeCatalog> {
     let bytes = chain
         .read_file(CAMERA_SHAKES)
         .with_context(|| format!("reading {CAMERA_SHAKES}"))?;

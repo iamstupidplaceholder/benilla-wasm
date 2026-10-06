@@ -78,12 +78,12 @@
 //!   collapses the frame to one planted TOPLEFT anchor at `StartSizing` and we keep the authored
 //!   anchor set, which [`advance_size`]'s own note states rather than hides.
 
-use mlua::{Lua, MultiValue, Table, Value};
+use benilla_lua::{LuaContext, MultiValue, Table, Value, Vm};
 
 use crate::script::Model;
 use crate::widget::FrameHandle;
 
-use super::frame_handle_of;
+use super::frame_handle_of_context;
 use super::layout_methods::eff_scale;
 
 /// The one in-flight `StartMoving` — the client's `root+0xcfc`/`+0xd08`/`+0xd0c` drag slot, held
@@ -98,7 +98,7 @@ use super::layout_methods::eff_scale;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameMove {
     /// The frame being moved (`root+0xcfc`).
-    frame: FrameHandle,
+    pub(crate) frame: FrameHandle,
     /// The cursor position at the last pump (`root+0xd08`/`+0xd0c`), UI px, y-up.
     sample: (f32, f32),
     /// Whether releasing the mouse ends this move on its own.
@@ -115,7 +115,7 @@ pub(crate) struct FrameMove {
 /// An in-flight `StartSizing` drag: which frame, which grip, and the cursor at the last pump.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameSizing {
-    frame: FrameHandle,
+    pub(crate) frame: FrameHandle,
     /// The grip the caller named — the EDGES this drag moves. `LEFT` moves the left edge and
     /// leaves the right where it is, `BOTTOMRIGHT` moves both of those, and so on.
     left: bool,
@@ -126,35 +126,38 @@ pub(crate) struct FrameSizing {
 }
 
 /// Populate `m`'s movable/resizable methods (see the module doc).
-pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm, m: &Table) -> benilla_lua::Result<()> {
+    macro_rules! method {
+        ($name:expr, $callback:expr) => {{
+            let name: String = ($name).into();
+            let function = lua.create_function(&name, $callback)?;
+            lua.table_set_function(m, name.as_str(), &function)?;
+        }};
+    }
     // SetMovable(flag) / IsMovable() — flag word bit 0x100 (`0x776420`/`0x7764d0` through the
     // generic setter `0x76a3c0`). A pure flag write: it moves nothing, and clearing it mid-drag
     // stops nothing either (the setter has no side effects — wow-re ledger `0x76a3c0`); it is the
     // guard `StartMoving` tests, and the XML `movable="true"` attribute writes the same bit.
-    // mlua's bool conversion is Lua truthiness, so the corpus's `SetMovable(1)` reads as true —
+    // Lua truthiness means the corpus's `SetMovable(1)` reads as true —
     // matching the reference binding's own `toboolean` marshal.
-    m.set(
-        "SetMovable",
-        lua.create_function(|lua, (this, flag): (Table, bool)| {
-            set_flag(lua, &this, Flag::Movable, flag)
-        })?,
-    )?;
-    m.set(
-        "IsMovable",
-        lua.create_function(|lua, this: Table| get_flag(lua, &this, Flag::Movable))?,
-    )?;
+    method!("SetMovable", |lua, (this, flag): (Table, Value)| {
+        set_flag(lua, &this, Flag::Movable, truthy(&flag))
+    });
+    method!("IsMovable", |lua, this: Table| get_flag(
+        lua,
+        &this,
+        Flag::Movable
+    ));
     // SetResizable(flag) / IsResizable() — bit 0x200 (`0x776590`/`0x776640`), `SetMovable`'s exact
     // shape. Stored and reported; no resize DRAG is built (see the module doc).
-    m.set(
-        "SetResizable",
-        lua.create_function(|lua, (this, flag): (Table, bool)| {
-            set_flag(lua, &this, Flag::Resizable, flag)
-        })?,
-    )?;
-    m.set(
-        "IsResizable",
-        lua.create_function(|lua, this: Table| get_flag(lua, &this, Flag::Resizable))?,
-    )?;
+    method!("SetResizable", |lua, (this, flag): (Table, Value)| {
+        set_flag(lua, &this, Flag::Resizable, truthy(&flag))
+    });
+    method!("IsResizable", |lua, this: Table| get_flag(
+        lua,
+        &this,
+        Flag::Resizable
+    ));
     // ── The resize-bounds quad — `Set/GetMinResize`, `Set/GetMaxResize` ────────────────────────
     //
     // Frame method table `0x878ec0`: `GetMinResize 0x775f20` · `SetMinResize 0x776020` ·
@@ -177,65 +180,59 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //    unbounded sentinel, so the "unset" answer and the "explicitly unbounded" answer are the
     //    same answer, by construction.
     for (name, upper) in [("MinResize", false), ("MaxResize", true)] {
-        m.set(
-            format!("Set{name}"),
-            lua.create_function(move |lua, args: MultiValue| {
-                let mut it = args.into_iter();
-                let this = match it.next() {
-                    Some(Value::Table(t)) => t,
-                    _ => return Err(mlua::Error::runtime("expected a frame")),
-                };
-                let h = frame_handle_of(lua, &this)?;
-                let pair = (it.next(), it.next());
-                // `lua_isnumber`'s own set: a number, or a string 5.0's `luaV_tonumber` converts.
-                let num = |v: &Option<Value>| match v {
-                    Some(Value::Number(n)) => Some(*n as f32),
-                    Some(Value::Integer(i)) => Some(*i as f32),
-                    Some(Value::String(s)) => s.to_str().ok()?.trim().parse::<f32>().ok(),
-                    _ => None,
-                };
-                let (Some(w), Some(hgt)) = (num(&pair.0), num(&pair.1)) else {
-                    let model = lua.app_data_ref::<Model>().expect("model");
-                    let who = model
-                        .arena
-                        .frame(h)
-                        .and_then(|f| f.name.clone())
-                        .unwrap_or_else(|| "<unnamed>".to_string());
-                    let (verb, a, b) = if upper {
-                        ("SetMaxResize", "maxWidth", "maxHeight")
-                    } else {
-                        ("SetMinResize", "minWidth", "minHeight")
-                    };
-                    return Err(mlua::Error::runtime(format!(
-                        "Usage: {who}:{verb}({a}, {b})"
-                    )));
-                };
-                let mut model = lua.app_data_mut::<Model>().expect("model");
-                if let Some(f) = model.arena.frame_mut(h) {
-                    if upper {
-                        f.max_resize = (w, hgt);
-                    } else {
-                        f.min_resize = (w, hgt);
-                    }
-                }
-                Ok(())
-            })?,
-        )?;
-        m.set(
-            format!("Get{name}"),
-            lua.create_function(move |lua, this: Table| {
-                let h = frame_handle_of(lua, &this)?;
+        method!(format!("Set{name}"), move |lua, args: MultiValue| {
+            let mut it = args.into_iter();
+            let this = match it.next() {
+                Some(Value::Table(t)) => t,
+                _ => return Err(benilla_lua::Error::runtime("expected a frame")),
+            };
+            let h = frame_handle_of_context(lua, &this)?;
+            let pair = (it.next(), it.next());
+            // `lua_isnumber`'s own set: a number, or a string 5.0's `luaV_tonumber` converts.
+            let num = |v: &Option<Value>| match v {
+                Some(Value::Number(n)) => Some(*n as f32),
+                Some(Value::Integer(i)) => Some(*i as f32),
+                Some(Value::String(s)) => s.as_str().ok()?.trim().parse::<f32>().ok(),
+                _ => None,
+            };
+            let (Some(w), Some(hgt)) = (num(&pair.0), num(&pair.1)) else {
                 let model = lua.app_data_ref::<Model>().expect("model");
-                let (w, hgt) = model.arena.frame(h).map_or((0.0, 0.0), |f| {
-                    if upper {
-                        f.max_resize
-                    } else {
-                        f.min_resize
-                    }
-                });
-                Ok((f64::from(w), f64::from(hgt)))
-            })?,
-        )?;
+                let who = model
+                    .arena
+                    .frame(h)
+                    .and_then(|f| f.name.clone())
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                let (verb, a, b) = if upper {
+                    ("SetMaxResize", "maxWidth", "maxHeight")
+                } else {
+                    ("SetMinResize", "minWidth", "minHeight")
+                };
+                return Err(benilla_lua::Error::runtime(format!(
+                    "Usage: {who}:{verb}({a}, {b})"
+                )));
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            if let Some(f) = model.arena.frame_mut(h) {
+                if upper {
+                    f.max_resize = (w, hgt);
+                } else {
+                    f.min_resize = (w, hgt);
+                }
+            }
+            Ok(())
+        });
+        method!(format!("Get{name}"), move |lua, this: Table| {
+            let h = frame_handle_of_context(lua, &this)?;
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let (w, hgt) = model.arena.frame(h).map_or((0.0, 0.0), |f| {
+                if upper {
+                    f.max_resize
+                } else {
+                    f.min_resize
+                }
+            });
+            Ok((f64::from(w), f64::from(hgt)))
+        });
     }
 
     // SetUserPlaced(flag) / IsUserPlaced() — bit 0x1000 (`0x776a50`/`0x776b40`), the client's "the
@@ -249,46 +246,42 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // module enumerates on, so setting it is how a frame opts into being remembered — and the
     // overwhelmingly common addon shape (set the bit, then save your own coordinates) still works
     // either way.
-    m.set(
-        "SetUserPlaced",
-        lua.create_function(|lua, (this, flag): (Table, bool)| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            let ok = model
-                .arena
-                .frame(h)
-                .is_some_and(|f| f.movable || f.resizable);
-            if !ok {
-                return Err(not_flagged(&model, h, "movable or resizable"));
+    method!("SetUserPlaced", |lua, (this, flag): (Table, Value)| {
+        let flag = truthy(&flag);
+        let h = frame_handle_of_context(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        let ok = model
+            .arena
+            .frame(h)
+            .is_some_and(|f| f.movable || f.resizable);
+        if !ok {
+            return Err(not_flagged(&model, h, "movable or resizable"));
+        }
+        if let Some(f) = model.arena.frame_mut(h) {
+            if f.user_placed != flag {
+                f.user_placed = flag;
+                // The layout cache's persist cue ([`crate::script::layout_cache`]): a frame
+                // that has just BECOME user-placed owes the file a row, and one that stopped
+                // owes it the row's removal. Both are the same "rewrite it" bit.
+                model.user_placed_changed = true;
             }
-            if let Some(f) = model.arena.frame_mut(h) {
-                if f.user_placed != flag {
-                    f.user_placed = flag;
-                    // The layout cache's persist cue ([`crate::script::layout_cache`]): a frame
-                    // that has just BECOME user-placed owes the file a row, and one that stopped
-                    // owes it the row's removal. Both are the same "rewrite it" bit.
-                    model.user_placed_changed = true;
-                }
-            }
-            Ok(())
-        })?,
-    )?;
-    m.set(
-        "IsUserPlaced",
-        lua.create_function(|lua, this: Table| get_flag(lua, &this, Flag::UserPlaced))?,
-    )?;
+        }
+        Ok(())
+    });
+    method!("IsUserPlaced", |lua, this: Table| get_flag(
+        lua,
+        &this,
+        Flag::UserPlaced
+    ));
     // StartMoving() — enter the drag (`0x776700` → `0x7652b0`). Raises on a frame that is not
     // movable, sets the userPlaced bit like the reference's drag-start does, and takes the one
     // drag slot; a second call while a move is in flight is refused, since there is only ever one
     // slot to take.
-    m.set(
-        "StartMoving",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            start_moving(&mut model, h)
-        })?,
-    )?;
+    method!("StartMoving", |lua, this: Table| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        start_moving(&mut model, h)
+    });
     // StartSizing(point) — begin a resize drag from a named grip (`0x776830`, verified in wow-re's
     // ledger; the reference's own caller is `FloatingChatFrame.lua:600`,
     // `this:GetParent():StartSizing(anchorPoint)`).
@@ -304,10 +297,10 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // Four corpus addons reach it through ONE line — `FuBar_Panel.lua:980`, replicated into
     // FuBar_CorkFu, FuBar_FuXPFu, FuBar_SpellStatusFu and oRA2 — which is 1207's rule and why the
     // count is not four independent votes.
-    m.set(
+    method!(
         "StartSizing",
-        lua.create_function(|lua, (this, point): (Table, Option<String>)| {
-            let h = frame_handle_of(lua, &this)?;
+        |lua, (this, point): (Table, Option<String>)| {
+            let h = frame_handle_of_context(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             if !model.arena.frame(h).is_some_and(|f| f.resizable) {
                 return Err(not_flagged(&model, h, "resizable"));
@@ -355,27 +348,24 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 sample,
             });
             Ok(())
-        })?,
-    )?;
+        }
+    );
     // StopMovingOrSizing() — leave the drag (`0x776990` → `0x765640`): a state clear, and only
     // when `self` IS the frame in the slot. Nothing is written back — the pump has been moving the
     // anchors all along, so the frame simply keeps the last position it was dragged to. Harmless
     // when nothing is moving, or when something else is (a double call, an addon that also wires
     // it to OnMouseUp, an OnDragStop that never had a StartMoving).
-    m.set(
-        "StopMovingOrSizing",
-        lua.create_function(|lua, this: Table| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            if model.sizing.is_some_and(|sz| sz.frame == h) {
-                model.sizing = None;
-            }
-            if model.moving.is_some_and(|mv| mv.frame == h) {
-                model.moving = None;
-            }
-            Ok(())
-        })?,
-    )?;
+    method!("StopMovingOrSizing", |lua, this: Table| {
+        let h = frame_handle_of_context(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        if model.sizing.is_some_and(|sz| sz.frame == h) {
+            model.sizing = None;
+        }
+        if model.moving.is_some_and(|mv| mv.frame == h) {
+            model.moving = None;
+        }
+        Ok(())
+    });
     Ok(())
 }
 
@@ -391,8 +381,13 @@ enum Flag {
     UserPlaced,
 }
 
-fn set_flag(lua: &Lua, this: &Table, which: Flag, value: bool) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+fn set_flag(
+    lua: &mut impl LuaContext,
+    this: &Table,
+    which: Flag,
+    value: bool,
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
     if let Some(f) = model.arena.frame_mut(h) {
         match which {
@@ -405,11 +400,11 @@ fn set_flag(lua: &Lua, this: &Table, which: Flag, value: bool) -> mlua::Result<(
 }
 
 /// `IsMovable`/`IsResizable`/`IsUserPlaced` — the NUMBER 1 or nil, never a boolean (1830,
-/// [`crate::script::binding_abi::flag`]).
-fn get_flag(lua: &Lua, this: &Table, which: Flag) -> mlua::Result<Value> {
-    let h = frame_handle_of(lua, this)?;
+/// [`crate::script::binding_abi::neutral_flag`]).
+fn get_flag(lua: &mut impl LuaContext, this: &Table, which: Flag) -> benilla_lua::Result<Value> {
+    let h = frame_handle_of_context(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model");
-    Ok(crate::script::binding_abi::flag(
+    Ok(crate::script::binding_abi::neutral_flag(
         model.arena.frame(h).is_some_and(|f| match which {
             Flag::Movable => f.movable,
             Flag::Resizable => f.resizable,
@@ -425,20 +420,20 @@ fn get_flag(lua: &Lua, this: &Table, which: Flag) -> mlua::Result<Value> {
 /// (`0x879810` StartMoving, `0x879828` StartSizing, `0x879844` SetUserPlaced) but not the strings
 /// at them — only the truncated IDA symbol stubs `aFrameSIsNotMov` / `aFrameSIsNotRes` /
 /// `aFrameSIsNotM_0`, which is what this wording is shaped after. Nothing should match on it.
-fn not_flagged(model: &Model, h: FrameHandle, want: &str) -> mlua::Error {
+fn not_flagged(model: &Model, h: FrameHandle, want: &str) -> benilla_lua::Error {
     let who = model
         .arena
         .frame(h)
         .and_then(|f| f.name.clone())
         .unwrap_or_else(|| "<anonymous>".into());
-    mlua::Error::runtime(format!("Frame {who} is not {want}"))
+    benilla_lua::Error::runtime(format!("Frame {who} is not {want}"))
 }
 
 /// `StartMoving()`'s body (`0x776700` → `0x7652b0`): refuse a frame that is not movable, refuse a
 /// second move while one is in flight (there is one drag slot), **raise**, then take the slot —
 /// setting the userPlaced bit, which the reference's drag-start does itself rather than leaving to
 /// `SetUserPlaced`.
-fn start_moving(model: &mut Model, h: FrameHandle) -> mlua::Result<()> {
+fn start_moving(model: &mut Model, h: FrameHandle) -> benilla_lua::Result<()> {
     if !model.arena.frame(h).is_some_and(|f| f.movable) {
         return Err(not_flagged(model, h, "movable"));
     }
@@ -460,6 +455,10 @@ fn start_moving(model: &mut Model, h: FrameHandle) -> mlua::Result<()> {
         auto_stop: false,
     });
     Ok(())
+}
+
+fn truthy(value: &Value) -> bool {
+    !matches!(value, Value::Nil | Value::Boolean(false))
 }
 
 /// Begin a **title-region** move — mode 2, the drag a mouse-down inside `frame:GetTitleRegion()`

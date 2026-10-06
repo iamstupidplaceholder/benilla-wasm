@@ -1,5 +1,12 @@
 # Rust build artifacts
 /target/
+/dist/
+/deploy/.env
+/.tools/
+/web/pkg/
+/web/pkg-full/
+/web/pkg-audio/
+/web/pkg-auth/
 **/*.rs.bk
 # Cargo.lock IS committed (this workspace produces binaries).
 
@@ -20,4 +27,14 @@ trace-*.json
 *.swp
 /.idea/
 /benilla-config
+/gateway.toml
 /.pnpm-store
+/traces/
+*.log
+.env
+.env.*
+!.env.example
+**/.env
+/server/
+/data/
+/gateway.toml

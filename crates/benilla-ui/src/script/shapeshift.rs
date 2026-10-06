@@ -13,7 +13,7 @@
 //! [`super::action::ActionState::cooldown`] pattern — absolute start, app-converted at feed
 //! time) so `GetShapeshiftFormCooldown` answers the ref's `(start, duration, enable)`.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -83,68 +83,51 @@ fn form_at(model: &Model, i: u32) -> Option<&StoredShapeshiftForm> {
 }
 
 /// Register the shapeshift globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    g.set(
-        "GetNumShapeshiftForms",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.shapeshift_forms.len() as i64)
-        })?,
-    )?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("GetNumShapeshiftForms", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.shapeshift_forms.len() as i64)
+    })?;
 
     // GetShapeshiftFormInfo(i) → texture, name, isActive (1/nil), isCastable (1/nil); out of
     // range → a single nil (the spellbook bindings' out-of-range shape).
-    g.set(
-        "GetShapeshiftFormInfo",
-        lua.create_function(|lua, i: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(form) = form_at(&model, i) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let texture = match &form.view.texture {
-                Some(t) => Value::String(lua.create_string(t)?),
-                None => Value::Nil,
-            };
-            let flag = |b: bool| if b { Value::Integer(1) } else { Value::Nil };
-            Ok(MultiValue::from_vec(vec![
-                texture,
-                Value::String(lua.create_string(&form.view.name)?),
-                flag(form.view.active),
-                flag(form.view.castable),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetShapeshiftFormInfo", |lua, i: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(form) = form_at(&model, i) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let texture = form.view.texture.clone().map_or(Value::Nil, Value::from);
+        let flag = |b: bool| if b { Value::Integer(1) } else { Value::Nil };
+        Ok(MultiValue::from(vec![
+            texture,
+            Value::from(form.view.name.clone()),
+            flag(form.view.active),
+            flag(form.view.castable),
+        ]))
+    })?;
 
     // GetShapeshiftFormCooldown(i) → start, duration, enable — GetActionCooldown's exact triple
     // and elapsed-goes-cold rule (an elapsed/absent cooldown answers (0, 0, 1) so a re-feed never
     // replays the sweep).
-    g.set(
-        "GetShapeshiftFormCooldown",
-        lua.create_function(|lua, i: u32| {
-            let now: f64 = lua.globals().get("__benilla_now").unwrap_or(0.0);
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match form_at(&model, i).and_then(|f| f.cooldown) {
-                Some((start, duration, enabled)) if start + duration > now || !enabled => {
-                    (start, duration, i32::from(enabled))
-                }
-                _ => (0.0, 0.0, 1),
-            })
-        })?,
-    )?;
+    lua.register_function("GetShapeshiftFormCooldown", |lua, i: u32| {
+        let now: f64 = lua.get_global("__benilla_now").unwrap_or(0.0);
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match form_at(&model, i).and_then(|f| f.cooldown) {
+            Some((start, duration, enabled)) if start + duration > now || !enabled => {
+                (start, duration, i32::from(enabled))
+            }
+            _ => (0.0, 0.0, 1),
+        })
+    })?;
 
     // CastShapeshiftForm(i) — queues the form's spell id; an out-of-range index is a no-op.
-    g.set(
-        "CastShapeshiftForm",
-        lua.create_function(|lua, i: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if let Some(spell_id) = form_at(&model, i).map(|f| f.view.spell_id) {
-                model.shapeshift_casts.push(spell_id);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CastShapeshiftForm", |lua, i: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if let Some(spell_id) = form_at(&model, i).map(|f| f.view.spell_id) {
+            model.shapeshift_casts.push(spell_id);
+        }
+        Ok(())
+    })?;
 
     Ok(())
 }

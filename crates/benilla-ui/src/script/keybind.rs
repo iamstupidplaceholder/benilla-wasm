@@ -31,56 +31,12 @@
 
 use std::collections::HashMap;
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use crate::bindings_xml::AddonBinding;
+pub use crate::script_data::{AddonBindingBody, KeybindCommand, KeybindRequest};
 
 use super::Model;
-
-/// One host-registered command: the 1.12 name, its category header's global-string key
-/// (`BINDING_HEADER_MOVEMENT`), whether it has press+release semantics (`runOnUp` — the
-/// release half of a press rides this — `RunCommand 0x4b7bf1`, and nothing else: it is NOT a
-/// bindability rule, see [`normalize_binding_key`]), and the 1.12 default chords.
-#[derive(Clone, Copy, Debug)]
-pub struct KeybindCommand {
-    pub name: &'static str,
-    pub category: &'static str,
-    pub run_on_up: bool,
-    pub default1: Option<&'static str>,
-    pub default2: Option<&'static str>,
-}
-
-/// One addon-declared binding's **runnable half** — what the app's dispatch needs to fire a row
-/// it cannot find in its own `SPECS` registry (decision 1188 phase 4).
-///
-/// The dispatch view is re-derived whenever [`super::UiScript::keybinds_generation`] moves, so
-/// this is a snapshot like [`super::UiScript::keybind_snapshot`] rather than a borrow — same
-/// reason: the app holds it across frames while Lua keeps editing the table underneath.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AddonBindingBody {
-    /// The command name, exactly as registered — what a [`keybind_snapshot`] row is keyed by.
-    ///
-    /// [`keybind_snapshot`]: super::UiScript::keybind_snapshot
-    pub name: String,
-    /// Run the body a second time on the release, with `keystate = "up"` (`runOnUp="true"`).
-    pub run_on_up: bool,
-    /// The `<Binding>` element's Lua chunk, verbatim.
-    pub body: String,
-}
-
-/// A host request queued by Lua: persist the live table as set `1`/`2` (`Save`), on which the
-/// app writes `benilla-config/bindings/…` — and, for `Save(1)` issued while the character set was
-/// active, deletes the character file (the reference's confirmed delete-on-switch); or fire a
-/// named binding's action outright (`Run`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum KeybindRequest {
-    Save(u32),
-    /// `RunBinding("SCREENSHOT")` — run the command's action as if its chord had been pressed.
-    /// It is a *request* rather than something the VM can do itself because a host command's
-    /// action is engine-side by construction (see this module's header): the VM holds the command
-    /// name and its chords, never its body.
-    Run(String),
-}
 
 /// The reference's key-string gate — the whole of `SetBinding`'s refusal (decision 1295), in its
 /// two halves: the alias normalization at the head of `CBindings::SetBinding 0x4b7490`, and the
@@ -479,7 +435,7 @@ impl super::UiScript {
     ///
     /// Host commands are absent by construction (they have no body), which is what lets the app's
     /// dispatch target be a two-armed enum rather than an index space with a sentinel in it.
-    pub fn addon_binding_bodies(&self) -> Vec<AddonBindingBody> {
+    pub fn addon_binding_bodies(&mut self) -> Vec<AddonBindingBody> {
         self.model_mut()
             .keybinds
             .entries
@@ -542,7 +498,7 @@ impl super::UiScript {
 
     /// The live table as `(command, bound chords)` in registration order — the app's dispatch
     /// derivation and the save diff read this.
-    pub fn keybind_snapshot(&self) -> Vec<(String, Vec<String>)> {
+    pub fn keybind_snapshot(&mut self) -> Vec<(String, Vec<String>)> {
         self.model_mut()
             .keybinds
             .entries
@@ -553,7 +509,7 @@ impl super::UiScript {
 
     /// Bumped by every table mutation (Lua or host) — cheap to poll; re-derive dispatch when it
     /// moves (the macros-generation pattern).
-    pub fn keybinds_generation(&self) -> u64 {
+    pub fn keybinds_generation(&mut self) -> u64 {
         self.model_mut().keybinds.generation
     }
 
@@ -563,28 +519,32 @@ impl super::UiScript {
     }
 
     /// Which set the live table edits: 1 account, 2 character.
-    pub fn current_binding_set(&self) -> u32 {
+    pub fn current_binding_set(&mut self) -> u32 {
         self.model_mut().keybinds.current_set
     }
 
     /// Whether a character-specific stored set exists (the checkbox's persisted truth).
-    pub fn character_bindings_exist(&self) -> bool {
+    pub fn character_bindings_exist(&mut self) -> bool {
         self.model_mut().keybinds.stored[1].is_some()
     }
 
     /// The Keybindings page's capture arm — while true, the host swallows raw input and
     /// calls `KeyBindings_OnHostKey("<chord>")` instead of dispatching it.
-    pub fn bind_capture_armed(&self) -> bool {
+    pub fn bind_capture_armed(&mut self) -> bool {
         self.model_mut().keybinds.capture_armed
     }
 }
 
-/// Register one addon's parsed `Bindings.xml` from a bare `&Lua` — the `LoadAddOn` path
+/// Register one addon's parsed `Bindings.xml` from an active Lua context — the `LoadAddOn` path
 /// ([`super::addon::load_addon`]) runs *inside* a Lua binding, synchronously, and has no
 /// [`super::UiScript`] to reach. The exact shape `load_saved_variables` already uses next door,
 /// and for the same reason: both halves of the addon load must do the same thing at the same
 /// position, whichever entered.
-pub(crate) fn register_addon_bindings(lua: &Lua, addon: &str, bindings: &[AddonBinding]) {
+pub(crate) fn register_addon_bindings(
+    lua: &impl LuaContext,
+    addon: &str,
+    bindings: &[AddonBinding],
+) {
     lua.app_data_mut::<Model>()
         .expect("model app_data")
         .keybinds
@@ -597,125 +557,92 @@ pub(crate) fn register_addon_bindings(lua: &Lua, addon: &str, bindings: &[AddonB
 /// `GetNumBindings`/`GetBinding` walk [`KeybindState::visible`] — the table minus the
 /// `hidden="true"` rows — while every other verb here keys on name or chord and so sees the whole
 /// table (a hidden binding is bindable, saved and dispatched, just not listed).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "GetNumBindings",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(model.keybinds.visible().count())
-        })?,
-    )?;
-    lua.globals().set(
-        "GetBinding",
-        lua.create_function(|lua, i: usize| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            let Some(e) = i
-                .checked_sub(1)
-                .and_then(|i| model.keybinds.visible().nth(i))
-            else {
-                return Ok(MultiValue::new());
-            };
-            let mut out = vec![
-                Value::String(lua.create_string(&e.name)?),
-                Value::String(lua.create_string(&e.category)?),
-            ];
-            for k in e.keys.iter().take(2) {
-                out.push(Value::String(lua.create_string(k)?));
-            }
-            Ok(MultiValue::from_iter(out))
-        })?,
-    )?;
-    lua.globals().set(
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("GetNumBindings", |lua, ()| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(model.keybinds.visible().count())
+    })?;
+    lua.register_function("GetBinding", |lua, i: usize| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        let Some(e) = i
+            .checked_sub(1)
+            .and_then(|i| model.keybinds.visible().nth(i))
+        else {
+            return Ok(MultiValue::new());
+        };
+        let mut out = vec![Value::from(e.name.clone()), Value::from(e.category.clone())];
+        for k in e.keys.iter().take(2) {
+            out.push(Value::from(k.clone()));
+        }
+        Ok(MultiValue::from(out))
+    })?;
+    lua.register_function(
         "SetBinding",
-        lua.create_function(|lua, (key, command): (String, Option<String>)| {
+        |lua, (key, command): (String, Option<String>)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let ok = model.keybinds.set_binding(&key, command.as_deref());
             Ok(if ok { Some(1) } else { None })
-        })?,
+        },
     )?;
     // `RunBinding(command)` — the reference's own passthrough verb. Its live caller is
     // `CinematicFrame`'s `OnKeyDown`, which hands the SCREENSHOT chord back to its binding while
     // swallowing every other key, so a player can still photograph a fly-by. Anything the VM
     // holds a body for it could run itself; a host command's action is engine-side, so this
     // queues and the app fires it in the same frame.
-    lua.globals().set(
-        "RunBinding",
-        lua.create_function(|lua, command: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let name = command.to_ascii_uppercase();
-            if model.keybinds.by_name.contains_key(&name) {
-                model.keybinds.requests.push(KeybindRequest::Run(name));
+    lua.register_function("RunBinding", |lua, command: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let name = command.to_ascii_uppercase();
+        if model.keybinds.by_name.contains_key(&name) {
+            model.keybinds.requests.push(KeybindRequest::Run(name));
+        }
+        Ok(())
+    })?;
+    lua.register_function("GetBindingKey", |lua, command: String| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        let kb = &model.keybinds;
+        let mut out = Vec::new();
+        if let Some(&i) = kb.by_name.get(&command.to_ascii_uppercase()) {
+            for k in kb.entries[i].keys.iter().take(2) {
+                out.push(Value::from(k.clone()));
             }
-            Ok(())
-        })?,
-    )?;
-    lua.globals().set(
-        "GetBindingKey",
-        lua.create_function(|lua, command: String| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            let kb = &model.keybinds;
-            let mut out = Vec::new();
-            if let Some(&i) = kb.by_name.get(&command.to_ascii_uppercase()) {
-                for k in kb.entries[i].keys.iter().take(2) {
-                    out.push(Value::String(lua.create_string(k)?));
-                }
-            }
-            Ok(MultiValue::from_iter(out))
-        })?,
-    )?;
-    lua.globals().set(
-        "GetBindingAction",
-        lua.create_function(|lua, key: String| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            let key = key.to_ascii_uppercase();
-            let name = model
-                .keybinds
-                .entries
-                .iter()
-                .find(|e| e.keys.iter().any(|k| k == &key))
-                .map(|e| e.name.as_str())
-                .unwrap_or("");
-            lua.create_string(name)
-        })?,
-    )?;
-    lua.globals().set(
-        "LoadBindings",
-        lua.create_function(|lua, set: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.keybinds.load(set);
-            Ok(())
-        })?,
-    )?;
-    lua.globals().set(
-        "SaveBindings",
-        lua.create_function(|lua, which: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.keybinds.save(which);
-            Ok(())
-        })?,
-    )?;
-    lua.globals().set(
-        "GetCurrentBindingSet",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(model.keybinds.current_set)
-        })?,
-    )?;
-    lua.globals().set(
-        "BenillaCharacterBindingsExist",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(model.keybinds.stored[1].is_some())
-        })?,
-    )?;
-    lua.globals().set(
-        "BenillaBindCapture",
-        lua.create_function(|lua, armed: Option<bool>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.keybinds.capture_armed = armed.unwrap_or(false);
-            Ok(())
-        })?,
-    )
+        }
+        Ok(MultiValue::from(out))
+    })?;
+    lua.register_function("GetBindingAction", |lua, key: String| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        let key = key.to_ascii_uppercase();
+        let name = model
+            .keybinds
+            .entries
+            .iter()
+            .find(|e| e.keys.iter().any(|k| k == &key))
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+        Ok(Value::from(name))
+    })?;
+    lua.register_function("LoadBindings", |lua, set: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.keybinds.load(set);
+        Ok(())
+    })?;
+    lua.register_function("SaveBindings", |lua, which: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.keybinds.save(which);
+        Ok(())
+    })?;
+    lua.register_function("GetCurrentBindingSet", |lua, ()| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(model.keybinds.current_set)
+    })?;
+    lua.register_function("BenillaCharacterBindingsExist", |lua, ()| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(model.keybinds.stored[1].is_some())
+    })?;
+    lua.register_function("BenillaBindCapture", |lua, armed: Option<bool>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.keybinds.capture_armed = armed.unwrap_or(false);
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -754,7 +681,7 @@ mod tests {
 
     #[test]
     fn the_table_reads_like_the_reference() {
-        let s = script();
+        let mut s = script();
         assert_eq!(s.eval::<usize>("return GetNumBindings()").unwrap(), 3);
         // Era 4-tuple: command, category token, key1, key2 — defaults seeded live.
         assert!(s
@@ -778,7 +705,7 @@ mod tests {
 
     #[test]
     fn set_binding_steals_and_refuses_only_a_key_string_that_is_not_a_key() {
-        let s = script();
+        let mut s = script();
         let g0 = s.keybinds_generation();
         // Bind W to JUMP: stolen from MOVEFORWARD (its slot 1 empties, UP slides up), appended
         // to JUMP's list after its defaults.

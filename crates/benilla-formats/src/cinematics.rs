@@ -82,6 +82,7 @@ use benilla_dbc::{FieldType, Schema, SchemaField};
 use benilla_m2::{M2Camera, M2SplineKey, M2Track};
 
 use crate::dbc::{f32_at, parse, str_at, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 const SEQUENCES: &str = "DBFilesClient\\CinematicSequences.dbc";
@@ -154,6 +155,10 @@ impl CinematicCatalog {
     pub fn camera_count(&self) -> usize {
         self.cameras.len()
     }
+
+    pub fn cameras(&self) -> impl Iterator<Item = &CinematicCameraRow> {
+        self.cameras.values()
+    }
 }
 
 /// The archive path for a camera row's model: the table's `.mdx` reference mapped to the `.m2` the
@@ -195,7 +200,7 @@ fn cameras_schema() -> Schema {
 }
 
 /// Read both cinematic tables off the patch chain.
-pub fn load_cinematics(chain: &mut Chain) -> Result<CinematicCatalog> {
+pub fn load_cinematics(chain: &mut impl crate::FileSource) -> Result<CinematicCatalog> {
     let bytes = chain
         .read_file(SEQUENCES)
         .with_context(|| format!("reading {SEQUENCES}"))?;
@@ -296,7 +301,7 @@ pub struct CinematicPath {
 impl CinematicPath {
     /// Build a shot from its camera row: read the `.m2` off the chain, take its camera record, and
     /// plant it at the row's origin/facing.
-    pub fn load(chain: &mut Chain, row: &CinematicCameraRow) -> Result<Self> {
+    pub fn load(chain: &mut impl crate::FileSource, row: &CinematicCameraRow) -> Result<Self> {
         let path = camera_model_path(&row.model);
         let bytes = chain
             .read_file(&path)

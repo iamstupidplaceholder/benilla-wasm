@@ -99,6 +99,35 @@ fn control_verdict(mover: u64, allow_move: bool, self_guid: Option<u64>) -> Cont
     }
 }
 
+fn possession_confirmed(
+    guid: u64,
+    self_guid: Option<u64>,
+    units: (&crate::net::GuidIndex, &Query<&crate::net::ObjectStore>),
+) -> bool {
+    self_guid.is_some_and(|me| {
+        units
+            .0
+             .0
+            .get(&guid)
+            .and_then(|&entity| units.1.get(entity).ok())
+            .is_some_and(|store| store.0.unit_possessed_by(me))
+    })
+}
+
+fn claim_foreign_mover(net: &NetCommands, player: &mut Player, self_guid: Option<u64>, guid: u64) {
+    // Preserve the ordered handoff: stop/yield our body before claiming theirs.
+    // A repeated grant only restores permission; never yield our body twice.
+    if player.foreign_mover.is_none() {
+        yield_own_body(net, player, self_guid);
+    }
+    player.control_lost = false;
+    player.foreign_mover = Some(guid);
+    player.pending_foreign_mover = None;
+    player.reseat = true;
+    super::move_trace::mover_claim("SET_ACTIVE_MOVER", guid);
+    let _ = net.0.send(ClientCommand::SetActiveMover { guid });
+}
+
 /// Drain this frame's server-authored movement messages, apply them to the mover, and send each
 /// ack. Returns the frame's forced-speed changes: pre-control/detached they were acked here with
 /// the parked pose; controlled, the caller's movement stream acks them with its live payload.
@@ -121,6 +150,7 @@ pub(super) fn apply_server_moves(
     self_moves: &mut MessageReader<SelfMoveMessage>,
     control_msgs: &mut MessageReader<ClientControlMessage>,
     self_guid: Option<u64>,
+    control_units: (&crate::net::GuidIndex, &Query<&crate::net::ObjectStore>),
     transports: &Query<
         (&Transform, &Guid, Option<&avian3d::prelude::ColliderAabb>),
         (With<Transport>, Without<Embodied>, Without<FlyCam>),
@@ -129,8 +159,10 @@ pub(super) fn apply_server_moves(
 ) -> Vec<SpeedChangeMessage> {
     // The control handoff (B211). Two questions, and they are NOT the same one: "is this about my
     // own body?" and "may that unit move?". The server revokes by naming *us* with allowMove=0 —
-    // which is what a mind-controlled player receives about themselves — and grants by naming
-    // somebody else, so a single "the mover is now `mover`" reading gets the victim backwards.
+    // which is what a mind-controlled player receives about themselves. A foreign
+    // permission alone is NOT a mover grant: vmangos sends it for ordinary charm
+    // too. Require the descriptor's possession flag and controller identity before
+    // handing over our body; defer across control-packet/field-update ordering gaps.
     //
     // The claim reply is not optional. vmangos discards every `MSG_MOVE_*` for a mover it has not
     // confirmed (`Player::GetConfirmedMover`), so a grant we never answer leaves the possessed unit
@@ -148,6 +180,7 @@ pub(super) fn apply_server_moves(
                 movement_net::park_mover(&net_cmds.0, player);
             }
             ControlVerdict::Restored => {
+                player.pending_foreign_mover = None;
                 player.control_lost = false;
                 player.foreign_mover = None;
                 player.reseat = true;
@@ -184,14 +217,14 @@ pub(super) fn apply_server_moves(
                 // our own body was handed over long ago. Yielding it twice sends a
                 // `CMSG_MOVE_NOT_ACTIVE_MOVER` naming a unit that is not the confirmed mover, which
                 // vmangos rejects with an error log every time the creature is feared.
-                if player.foreign_mover.is_none() {
-                    yield_own_body(net_cmds, player, self_guid);
+                if possession_confirmed(guid, self_guid, control_units) {
+                    claim_foreign_mover(net_cmds, player, self_guid, guid);
+                } else {
+                    // Movement permission also arrives for ordinary owned pets.
+                    // Do not interpret ownership/allowMove alone as possession.
+                    debug!("movement: foreign permission {guid:#x} without confirmed possession — mover unchanged");
+                    player.pending_foreign_mover = Some(guid);
                 }
-                player.control_lost = false;
-                player.foreign_mover = Some(guid);
-                player.reseat = true;
-                super::move_trace::mover_claim("SET_ACTIVE_MOVER", guid);
-                let _ = net_cmds.0.send(ClientCommand::SetActiveMover { guid });
             }
             // "That unit may not move" — about a unit that is not us. Genuinely ambiguous on the
             // wire, because vmangos sends it from two places: the unpossess path (right after the
@@ -207,10 +240,18 @@ pub(super) fn apply_server_moves(
             // our own body while the server still has `m_mover` pointed at the creature, so every
             // step we took would be applied to the creature instead.
             ControlVerdict::Released(guid) => {
+                if player.pending_foreign_mover == Some(guid) {
+                    player.pending_foreign_mover = None;
+                }
                 if player.foreign_mover == Some(guid) {
                     player.control_lost = true;
                 }
             }
+        }
+    }
+    if let Some(guid) = player.pending_foreign_mover {
+        if possession_confirmed(guid, self_guid, control_units) {
+            claim_foreign_mover(net_cmds, player, self_guid, guid);
         }
     }
     // Cross-map worldport (`.tele Orgrimmar`, initial-login map, a boat crossing the sea): the net

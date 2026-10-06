@@ -23,9 +23,9 @@
 //! Node classification, projection, and the route metric are the app's job — and are INTERIM
 //! behind decision 0484's in-flight §5 (I1/I2); this seam only carries the results.
 
-use mlua::{Lua, Table};
+use benilla_lua::{Table, Value, Vm};
 
-use super::region::region_handle_of;
+use super::region::region_handle_of_context;
 use super::Model;
 
 /// A visible node's icon state (`TaxiNodeGetType`) — the reference maps these to the green
@@ -118,69 +118,46 @@ fn node(model: &Model, i: i64) -> Option<&TaxiUiNode> {
 }
 
 /// Register the taxi globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // → how many nodes the open map shows (0 when closed).
-    g.set(
-        "NumTaxiNodes",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(model.taxi.as_ref().map_or(0, |t| t.nodes.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("NumTaxiNodes", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(model.taxi.as_ref().map_or(0, |t| t.nodes.len()) as i64)
+    })?;
 
     // → the node's icon-state string; "NONE" out of range (the reference hides that button).
-    g.set(
-        "TaxiNodeGetType",
-        lua.create_function(|lua, i: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(node(&model, i).map_or("NONE", |n| n.node_type.era_str()))
-        })?,
-    )?;
+    lua.register_function("TaxiNodeGetType", |lua, i: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(node(&model, i).map_or("NONE", |n| n.node_type.era_str()))
+    })?;
 
     // → the node's normalized map position (x, y; BOTTOMLEFT origin).
-    g.set(
-        "TaxiNodePosition",
-        lua.create_function(|lua, i: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            let (x, y) = node(&model, i).map_or((0.0, 0.0), |n| n.pos);
-            Ok((x, y))
-        })?,
-    )?;
+    lua.register_function("TaxiNodePosition", |lua, i: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let (x, y) = node(&model, i).map_or((0.0, 0.0), |n| n.pos);
+        Ok((x, y))
+    })?;
 
-    g.set(
-        "TaxiNodeName",
-        lua.create_function(|lua, i: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(node(&model, i).map_or(String::new(), |n| n.name.clone()))
-        })?,
-    )?;
+    lua.register_function("TaxiNodeName", |lua, i: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(node(&model, i).map_or(String::new(), |n| n.name.clone()))
+    })?;
 
     // → the fare to fly there, in copper (`SetTooltipMoney` renders it).
-    g.set(
-        "TaxiNodeCost",
-        lua.create_function(|lua, i: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(node(&model, i).map_or(0, |n| n.cost) as i64)
-        })?,
-    )?;
+    lua.register_function("TaxiNodeCost", |lua, i: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(node(&model, i).map_or(0, |n| n.cost) as i64)
+    })?;
 
     // The real client arms the hovered node's route computation here; the app pushes every node's
     // route precomputed, so this is a faithful no-op (kept so the reference Lua runs verbatim).
-    g.set(
-        "TaxiNodeSetCurrent",
-        lua.create_function(|_, _: i64| Ok(()))?,
-    )?;
+    lua.register_function("TaxiNodeSetCurrent", |_, _: i64| Ok(()))?;
 
     // → the hover route's hop count for node `i`.
-    g.set(
-        "GetNumRoutes",
-        lua.create_function(|lua, i: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(node(&model, i).map_or(0, |n| n.routes.len()) as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumRoutes", |lua, i: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(node(&model, i).map_or(0, |n| n.routes.len()) as i64)
+    })?;
 
     // → one endpoint coordinate of route hop `hop` (1-based) of node `i` — the four accessors the
     // reference's `DrawRouteLine` loop reads.
@@ -190,59 +167,48 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("TaxiGetDestX", 2),
         ("TaxiGetDestY", 3),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, (i, hop): (i64, i64)| {
-                let model = lua.app_data_ref::<Model>().expect("model");
-                let coord = node(&model, i)
-                    .zip(usize::try_from(hop).ok().and_then(|h| h.checked_sub(1)))
-                    .and_then(|(n, h)| n.routes.get(h))
-                    .map_or(0.0, |seg| seg[pick]);
-                Ok(coord)
-            })?,
-        )?;
+        lua.register_function(name, move |lua, (i, hop): (i64, i64)| {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let coord = node(&model, i)
+                .zip(usize::try_from(hop).ok().and_then(|h| h.checked_sub(1)))
+                .and_then(|(n, h)| n.routes.get(h))
+                .map_or(0.0, |seg| seg[pick]);
+            Ok(coord)
+        })?;
     }
 
     // Queue the click — the app maps the index to a node id and sends the activate packet.
-    g.set(
-        "TakeTaxiNode",
-        lua.create_function(|lua, i: i64| {
-            if let Ok(i) = usize::try_from(i) {
-                lua.app_data_mut::<Model>()
-                    .expect("model")
-                    .taxi_takes
-                    .push(i);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("TakeTaxiNode", |lua, i: i64| {
+        if let Ok(i) = usize::try_from(i) {
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .taxi_takes
+                .push(i);
+        }
+        Ok(())
+    })?;
 
-    g.set(
-        "CloseTaxiMap",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>().expect("model").taxi_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseTaxiMap", |lua, ()| {
+        lua.app_data_mut::<Model>().expect("model").taxi_close = true;
+        Ok(())
+    })?;
 
     // SetTaxiMap(textureRegion) — assign the open map's continent art onto the given Texture
     // region (the engine picked `TAXIMAP<map>`, app-side; the region draws it like any SetTexture).
-    g.set(
-        "SetTaxiMap",
-        lua.create_function(|lua, this: Table| {
-            let rh = region_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            let art = model.taxi.as_ref().map(|t| t.art.clone());
-            if let Some(art) = art {
-                model.region_data.entry(rh).or_default().texture = Some(art);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetTaxiMap", |lua, this: Table| {
+        let rh = region_handle_of_context(lua, &this)?;
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        let art = model.taxi.as_ref().map(|t| t.art.clone());
+        if let Some(art) = art {
+            model.region_data.entry(rh).or_default().texture = Some(art);
+        }
+        Ok(())
+    })?;
 
     // `UnitOnTaxi(unit)` (`0x517a40`) → **the number 1 or nil**, never a Lua boolean — the unit
     // predicate family's one return shape (decisions 1830, 2043; the push law is
-    // `crate::script::binding_abi::flag`). It lives here rather than beside its 22 siblings
+    // `crate::script::binding_abi::neutral_flag`). It lives here rather than beside its 22
+    // siblings
     // because the ride flag it reads is this module's, not `UnitState`'s — which is exactly how it
     // came to be the one predicate still answering a `bool` after the family was fixed.
     //
@@ -252,19 +218,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // The token argument is `Value`, not `String`, so the miss is the reference's own message: the
     // binding carries an `lua_isstring` gate at `0x517a48` whose failure arm is
     // `luaL_error("Usage: UnitOnTaxi(\"unit\")")` (wow-re
-    // `ui/scratch/nil-unit-token-arg-law.md` §10, row 33). A Rust `String` parameter raised mlua's
-    // own type-conversion error there instead.
-    g.set(
-        "UnitOnTaxi",
-        lua.create_function(|lua, unit: mlua::Value| {
-            let unit =
-                crate::script::binding_abi::string_arg(lua, unit, r#"Usage: UnitOnTaxi("unit")"#)?;
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::binding_abi::flag(
-                unit.eq_ignore_ascii_case("player") && model.taxi_riding,
-            ))
-        })?,
-    )?;
+    // `ui/scratch/nil-unit-token-arg-law.md` §10, row 33). A Rust `String` parameter would raise
+    // the wrapper's own type-conversion error there instead.
+    lua.register_function("UnitOnTaxi", |lua, unit: Value| {
+        let unit =
+            crate::script::binding_abi::neutral_string_arg(unit, r#"Usage: UnitOnTaxi("unit")"#)?;
+        let model = lua.app_data_ref::<Model>().expect("model");
+        Ok(crate::script::binding_abi::neutral_flag(
+            unit.eq_ignore_ascii_case("player") && model.taxi_riding,
+        ))
+    })?;
 
     Ok(())
 }

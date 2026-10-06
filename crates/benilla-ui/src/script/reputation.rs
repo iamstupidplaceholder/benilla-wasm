@@ -73,7 +73,7 @@
 
 use std::collections::HashMap;
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -200,14 +200,13 @@ fn header_key(e: &FactionEntry) -> i64 {
 
 /// The VM's own text for a synthetic header key, so a localized client gets its own word. Falls back
 /// to the enUS literals when the strings are absent (a bare test VM).
-fn synthetic_header(lua: &Lua, key: i64) -> String {
+fn synthetic_header(lua: &mut impl LuaContext, key: i64) -> String {
     let (global, fallback) = if key == KEY_INACTIVE {
         ("FACTION_INACTIVE", "Inactive")
     } else {
         ("FACTION_OTHER", "Other")
     };
-    lua.globals()
-        .get::<String>(global)
+    lua.get_global::<String>(global)
         .unwrap_or_else(|_| fallback.into())
 }
 
@@ -344,28 +343,22 @@ fn unknown_faction() -> MultiValue {
     out.extend(std::iter::repeat_n(Value::Integer(0), 3));
     out.extend(std::iter::repeat_n(Value::Nil, 5));
     debug_assert_eq!(out.len(), 11, "the tuple is eleven wide on every path");
-    MultiValue::from_vec(out)
+    MultiValue::from(out)
 }
 
 /// Register the reputation-pane globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumFactions() → the visible row count (0 before any push).
-    g.set(
-        "GetNumFactions",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(num_rows(&model) as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumFactions", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(num_rows(&model) as i64)
+    })?;
 
     // GetFactionInfo(index) → the ref's own eleven (ref-ReputationFrame.lua l.51):
     // name, description, standingID, barMin, barMax, barValue, atWarWith, canToggleAtWar,
     // isHeader, isCollapsed, isWatched. 1-based; ELEVEN wide on every path, a miss included.
-    g.set(
-        "GetFactionInfo",
-        lua.create_function(|lua, index: usize| {
+    lua.register_function("GetFactionInfo", |lua, index: usize| {
+        let header = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let Some(row) = index
                 .checked_sub(1)
@@ -376,31 +369,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             match row {
                 Row::Header(gi) => {
                     let grp = &model.reputation_groups[gi];
-                    let collapsed = model.reputation_collapsed.contains(&grp.key);
-                    let name = if grp.name.is_empty() {
-                        synthetic_header(lua, grp.key)
-                    } else {
-                        grp.name.clone()
-                    };
-                    Ok(MultiValue::from_vec(vec![
-                        Value::String(lua.create_string(&name)?),
-                        Value::String(lua.create_string("")?), // description
-                        Value::Integer(0),                     // standingID
-                        Value::Integer(0),                     // barMin
-                        Value::Integer(0),                     // barMax
-                        Value::Integer(0),                     // barValue
-                        Value::Nil,                            // atWarWith
-                        Value::Nil,                            // canToggleAtWar
-                        Value::Integer(1),                     // isHeader
-                        era_bool(collapsed),                   // isCollapsed
-                        Value::Nil,                            // isWatched
-                    ]))
+                    Some((
+                        grp.key,
+                        grp.name.clone(),
+                        model.reputation_collapsed.contains(&grp.key),
+                    ))
                 }
                 Row::Entry(ei) => {
                     let e = &model.reputation.entries[ei];
-                    Ok(MultiValue::from_vec(vec![
-                        Value::String(lua.create_string(&e.name)?),
-                        Value::String(lua.create_string(&e.description)?),
+                    return Ok(MultiValue::from(vec![
+                        Value::from(e.name.clone()),
+                        Value::from(e.description.clone()),
                         Value::Integer(i64::from(e.standing_id)),
                         Value::Integer(i64::from(e.bar_min)),
                         Value::Integer(i64::from(e.bar_max)),
@@ -410,38 +389,49 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         Value::Nil, // isHeader
                         Value::Nil, // isCollapsed
                         era_bool(model.reputation.watched == Some(e.rep_list_id)),
-                    ]))
+                    ]));
                 }
             }
-        })?,
-    )?;
+        };
+        let (key, mut name, collapsed) = header.expect("header row");
+        if name.is_empty() {
+            name = synthetic_header(lua, key);
+        }
+        Ok(MultiValue::from(vec![
+            Value::from(name),
+            Value::from(""),     // description
+            Value::Integer(0),   // standingID
+            Value::Integer(0),   // barMin
+            Value::Integer(0),   // barMax
+            Value::Integer(0),   // barValue
+            Value::Nil,          // atWarWith
+            Value::Nil,          // canToggleAtWar
+            Value::Integer(1),   // isHeader
+            era_bool(collapsed), // isCollapsed
+            Value::Nil,          // isWatched
+        ]))
+    })?;
 
     // GetSelectedFaction() → the selected row's VISIBLE index, or 0 for none (the ref compares
     // against 0 outright). The selection is HELD by slot, so this re-finds the row each call.
-    g.set(
-        "GetSelectedFaction",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(slot) = model.reputation_selected else {
-                return Ok(0i64);
-            };
-            let found = rows(&model).iter().position(|r| match r {
-                Row::Entry(ei) => model.reputation.entries[*ei].rep_list_id == slot,
-                Row::Header(_) => false,
-            });
-            Ok(found.map_or(0, |i| i as i64 + 1))
-        })?,
-    )?;
+    lua.register_function("GetSelectedFaction", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(slot) = model.reputation_selected else {
+            return Ok(0i64);
+        };
+        let found = rows(&model).iter().position(|r| match r {
+            Row::Entry(ei) => model.reputation.entries[*ei].rep_list_id == slot,
+            Row::Header(_) => false,
+        });
+        Ok(found.map_or(0, |i| i as i64 + 1))
+    })?;
 
     // SetSelectedFaction(index) — a VISIBLE index; a header or an out-of-range index clears it.
-    g.set(
-        "SetSelectedFaction",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.reputation_selected = entry_at(&model, index).map(|e| e.rep_list_id);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetSelectedFaction", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.reputation_selected = entry_at(&model, index).map(|e| e.rep_list_id);
+        Ok(())
+    })?;
 
     // CollapseFactionHeader(index) / ExpandFactionHeader(index) — a VISIBLE header index; `0` or a
     // non-header row acts on EVERY header (the client's own fall-through).
@@ -453,138 +443,117 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // calls the binding and nothing else (ReputationFrame.xml:9-15), and `ReputationFrame_OnEvent`
     // repaints on `UPDATE_FACTION` alone. Our own retired file repainted itself, which is why this
     // was invisible until the pane went stock (1875).
-    g.set(
-        "CollapseFactionHeader",
-        lua.create_function(|lua, index: usize| {
-            {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                set_collapsed(&mut model, index, true);
-            }
-            super::event::fire_global(lua, "UPDATE_FACTION", &[]);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "ExpandFactionHeader",
-        lua.create_function(|lua, index: usize| {
-            {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                set_collapsed(&mut model, index, false);
-            }
-            super::event::fire_global(lua, "UPDATE_FACTION", &[]);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CollapseFactionHeader", |lua, index: usize| {
+        {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            set_collapsed(&mut model, index, true);
+        }
+        super::event::fire_global_context(lua, "UPDATE_FACTION", &[]);
+        Ok(())
+    })?;
+    lua.register_function("ExpandFactionHeader", |lua, index: usize| {
+        {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            set_collapsed(&mut model, index, false);
+        }
+        super::event::fire_global_context(lua, "UPDATE_FACTION", &[]);
+        Ok(())
+    })?;
 
     // FactionToggleAtWar(index) — flip our own AT_WAR bit and queue the send, optimistically
     // (`0x4d6950` writes locally first, and nothing acks it).
-    g.set(
-        "FactionToggleAtWar",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let Some(e) = entry_at_mut(&mut model, index) else {
-                return Ok(());
-            };
-            if !e.can_toggle_at_war {
-                return Ok(());
-            }
-            e.at_war = !e.at_war;
-            let send = ReputationSend::AtWar {
-                rep_list_id: e.rep_list_id,
-                at_war: e.at_war,
-            };
-            model.reputation_sends.push(send);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("FactionToggleAtWar", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let Some(e) = entry_at_mut(&mut model, index) else {
+            return Ok(());
+        };
+        if !e.can_toggle_at_war {
+            return Ok(());
+        }
+        e.at_war = !e.at_war;
+        let send = ReputationSend::AtWar {
+            rep_list_id: e.rep_list_id,
+            at_war: e.at_war,
+        };
+        model.reputation_sends.push(send);
+        Ok(())
+    })?;
 
     // IsFactionInactive(index) / SetFactionInactive(index) / SetFactionActive(index) — optimistic
     // too, and the flip RE-PARENTS the row under the "Inactive" header, so the tree is rebuilt
     // locally (`0x4d69b0`'s own `0x4d5c40` call). The folds are kept across that regroup: it is not
     // a server rebuild, which is the thing that resets them.
-    g.set(
-        "IsFactionInactive",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(era_bool(
-                entry_at(&model, index).is_some_and(|e| e.inactive),
-            ))
-        })?,
-    )?;
+    lua.register_function("IsFactionInactive", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(era_bool(
+            entry_at(&model, index).is_some_and(|e| e.inactive),
+        ))
+    })?;
     for (name, inactive) in [("SetFactionInactive", true), ("SetFactionActive", false)] {
-        g.set(
-            name,
-            lua.create_function(move |lua, index: usize| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let Some(e) = entry_at_mut(&mut model, index) else {
-                    return Ok(());
-                };
-                e.inactive = inactive;
-                let send = ReputationSend::Inactive {
-                    rep_list_id: e.rep_list_id,
-                    inactive,
-                };
-                model.reputation_sends.push(send);
-                let groups = build_groups(&model.reputation.entries);
-                model.reputation_groups = groups;
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(name, move |lua, index: usize| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let Some(e) = entry_at_mut(&mut model, index) else {
+                return Ok(());
+            };
+            e.inactive = inactive;
+            let send = ReputationSend::Inactive {
+                rep_list_id: e.rep_list_id,
+                inactive,
+            };
+            model.reputation_sends.push(send);
+            let groups = build_groups(&model.reputation.entries);
+            model.reputation_groups = groups;
+            Ok(())
+        })?;
     }
 
     // GetWatchedFactionInfo() → name, reaction, min, max, value — or a single nil when nothing is
     // watched (the ref's `if ( name )` gate). `reaction` is the SAME 1-based standingID scale.
-    g.set(
-        "GetWatchedFactionInfo",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let watched = model.reputation.watched.and_then(|slot| {
-                model
-                    .reputation
-                    .entries
-                    .iter()
-                    .find(|e| e.rep_list_id == slot)
-            });
-            let Some(e) = watched else {
-                // FIVE values on the nothing-watched branch too — `0x4d6820` has four guards onto
-                // one label and no raise, so the shape is `nil, 0, 0, 0, 0` (decision 1845).
-                //
-                // Worth carrying with it: the `[0, 64)` bound is **not in the binding**.
-                // `0x4d5620` maps an out-of-range index to `0`, so the "nothing watched" sentinel
-                // passes the `< 0` and `> max` guards and dies at the NULL-DBC-row guard instead.
-                // A port that range-checks inside the binding implements a branch the reference
-                // does not have.
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Integer(0),
-                    Value::Integer(0),
-                    Value::Integer(0),
-                ]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&e.name)?),
-                Value::Integer(i64::from(e.standing_id)),
-                Value::Integer(i64::from(e.bar_min)),
-                Value::Integer(i64::from(e.bar_max)),
-                Value::Integer(i64::from(e.standing)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetWatchedFactionInfo", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let watched = model.reputation.watched.and_then(|slot| {
+            model
+                .reputation
+                .entries
+                .iter()
+                .find(|e| e.rep_list_id == slot)
+        });
+        let Some(e) = watched else {
+            // FIVE values on the nothing-watched branch too — `0x4d6820` has four guards onto
+            // one label and no raise, so the shape is `nil, 0, 0, 0, 0` (decision 1845).
+            //
+            // Worth carrying with it: the `[0, 64)` bound is **not in the binding**.
+            // `0x4d5620` maps an out-of-range index to `0`, so the "nothing watched" sentinel
+            // passes the `< 0` and `> max` guards and dies at the NULL-DBC-row guard instead.
+            // A port that range-checks inside the binding implements a branch the reference
+            // does not have.
+            return Ok(MultiValue::from(vec![
+                Value::Nil,
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+            ]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(e.name.clone()),
+            Value::Integer(i64::from(e.standing_id)),
+            Value::Integer(i64::from(e.bar_min)),
+            Value::Integer(i64::from(e.bar_max)),
+            Value::Integer(i64::from(e.standing)),
+        ]))
+    })?;
 
     // SetWatchedFactionIndex(index) — a VISIBLE index, `0` meaning "stop watching". **Not
     // optimistic** (`0x4d6b60`): the watched slot lives in PLAYER_FIELD_WATCHED_FACTION_INDEX with
     // no client mirror, so the bar only moves once the descriptor update comes back. The `0` → `-1`
     // translation happens at the app's wire edge, since slot 0 is a real faction.
-    g.set(
-        "SetWatchedFactionIndex",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let slot = entry_at(&model, index).map(|e| e.rep_list_id);
-            model.reputation_sends.push(ReputationSend::Watch(slot));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetWatchedFactionIndex", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let slot = entry_at(&model, index).map(|e| e.rep_list_id);
+        model.reputation_sends.push(ReputationSend::Watch(slot));
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -651,8 +620,8 @@ mod tests {
     }
 
     /// Every visible row's name, in order — the shape assertion the rest lean on.
-    fn names(s: &UiScript) -> Vec<String> {
-        s.eval::<Vec<String>>(
+    fn names(s: &mut UiScript) -> Vec<String> {
+        s.eval_sequence::<String>(
             "local t = {} for i = 1, GetNumFactions() do t[i] = (GetFactionInfo(i)) end return t",
         )
         .expect("names")
@@ -666,9 +635,9 @@ mod tests {
     /// sends — so this also pins that a header's own visibility does not gate its group.
     #[test]
     fn the_header_flag_builds_the_tree_and_other_comes_last() {
-        let s = seated();
+        let mut s = seated();
         assert_eq!(
-            names(&s),
+            names(&mut s),
             [
                 "Alliance",
                 "Ironforge",
@@ -682,14 +651,22 @@ mod tests {
             "two named groups sorted by header, then the bucket; children sorted within"
         );
         let (name, _desc, standing_id, _min, _max, _val, at_war, toggle, is_header) = s
-            .eval::<(String, String, i64, i64, i64, i64, Value, Value, i64)>(
-                "return GetFactionInfo(1)",
-            )
+            .eval::<(
+                String,
+                String,
+                i64,
+                i64,
+                i64,
+                i64,
+                Option<i64>,
+                Option<i64>,
+                i64,
+            )>("return GetFactionInfo(1)")
             .unwrap();
         assert_eq!(name, "Alliance", "named from the flagged header row");
         assert_eq!(is_header, 1);
         assert_eq!(standing_id, 0, "a header carries no standing");
-        assert!(at_war.is_nil() && toggle.is_nil(), "nor any war state");
+        assert!(at_war.is_none() && toggle.is_none(), "nor any war state");
         assert!(s.errors().is_empty(), "{:#?}", s.errors());
     }
 
@@ -707,11 +684,11 @@ mod tests {
         }
         s.set_reputation(st);
         assert!(
-            !names(&s).iter().any(|n| n == "Alliance"),
+            !names(&mut s).iter().any(|n| n == "Alliance"),
             "an empty header is not drawn; got {:?}",
-            names(&s)
+            names(&mut s)
         );
-        assert_eq!(names(&s)[0], "Steamwheedle Cartel");
+        assert_eq!(names(&mut s)[0], "Steamwheedle Cartel");
         assert!(s.errors().is_empty(), "{:#?}", s.errors());
     }
 
@@ -720,7 +697,7 @@ mod tests {
     /// `FACTION_BAR_COLORS[standingID]` unguarded, so a nil there would raise rather than blank.
     #[test]
     fn a_bar_row_returns_the_references_eleven_and_so_does_a_miss() {
-        let s = seated();
+        let mut s = seated();
         let got = s
             .eval::<(
                 String,
@@ -729,21 +706,21 @@ mod tests {
                 i64,
                 i64,
                 i64,
-                Value,
-                Value,
-                Value,
-                Value,
-                Value,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
             )>("return GetFactionInfo(3)")
             .unwrap();
         assert_eq!(got.0, "Stormwind");
         assert_eq!(got.1, "About the Stormwind.");
         assert_eq!(got.2, 5, "standingID is 1-based: FACTION_STANDING_LABEL5");
         assert_eq!((got.3, got.4, got.5), (3000, 9000, 4000), "absolute");
-        assert!(got.6.is_nil(), "atWarWith");
-        assert_eq!(got.7, Value::Integer(1), "canToggleAtWar");
-        assert!(got.8.is_nil() && got.9.is_nil(), "isHeader/isCollapsed");
-        assert!(got.10.is_nil(), "isWatched");
+        assert!(got.6.is_none(), "atWarWith");
+        assert_eq!(got.7, Some(1), "canToggleAtWar");
+        assert!(got.8.is_none() && got.9.is_none(), "isHeader/isCollapsed");
+        assert!(got.10.is_none(), "isWatched");
 
         for miss in ["GetFactionInfo(99)", "GetFactionInfo(0)"] {
             let n = s.arity(miss).unwrap();
@@ -760,10 +737,10 @@ mod tests {
     /// row) acts on EVERY header — the client's own fall-through, not a tolerance invented here.
     #[test]
     fn folding_shrinks_the_list_and_index_zero_folds_everything() {
-        let s = seated();
+        let mut s = seated();
         s.run("CollapseFactionHeader(1)").unwrap();
         assert_eq!(
-            names(&s),
+            names(&mut s),
             [
                 "Alliance",
                 "Steamwheedle Cartel",
@@ -774,26 +751,26 @@ mod tests {
             ]
         );
         assert_eq!(
-            s.eval::<Value>("local _,_,_,_,_,_,_,_,_,c = GetFactionInfo(1) return c")
+            s.eval::<Option<i64>>("local _,_,_,_,_,_,_,_,_,c = GetFactionInfo(1) return c")
                 .unwrap(),
-            Value::Integer(1),
+            Some(1),
             "and reports itself collapsed"
         );
         s.run("ExpandFactionHeader(1)").unwrap();
-        assert_eq!(names(&s).len(), 8, "expanded again");
+        assert_eq!(names(&mut s).len(), 8, "expanded again");
 
         // A BAR row is not a header, so it takes the same fall-through: index 2 is Ironforge.
         s.run("CollapseFactionHeader(2)").unwrap();
         assert_eq!(
-            names(&s),
+            names(&mut s),
             ["Alliance", "Steamwheedle Cartel", "Other"],
             "a non-header index folds every header"
         );
         // …and so does index 0, and so does an index off the end of the list.
         s.run("ExpandFactionHeader(0)").unwrap();
-        assert_eq!(names(&s).len(), 8, "index 0 unfolds every header");
+        assert_eq!(names(&mut s).len(), 8, "index 0 unfolds every header");
         s.run("CollapseFactionHeader(99)").unwrap();
-        assert_eq!(names(&s).len(), 3, "so does an out-of-range index");
+        assert_eq!(names(&mut s).len(), 3, "so does an out-of-range index");
         assert!(s.errors().is_empty(), "{:#?}", s.errors());
     }
 
@@ -803,11 +780,11 @@ mod tests {
     fn a_push_resets_the_folds() {
         let mut s = seated();
         s.run("CollapseFactionHeader(1)").unwrap();
-        assert_eq!(names(&s).len(), 6, "folded");
+        assert_eq!(names(&mut s).len(), 6, "folded");
         let mut ticked = state();
         ticked.entries[0].standing = 12345;
         s.set_reputation(ticked);
-        assert_eq!(names(&s).len(), 8, "the rebuild unfolded it again");
+        assert_eq!(names(&mut s).len(), 8, "the rebuild unfolded it again");
         assert!(s.errors().is_empty(), "{:#?}", s.errors());
     }
 
@@ -820,7 +797,7 @@ mod tests {
         st.entries[1].inactive = true; // Argent Dawn, an "Other" row
         s.set_reputation(st);
         assert_eq!(
-            names(&s),
+            names(&mut s),
             [
                 "Alliance",
                 "Ironforge",
@@ -835,7 +812,7 @@ mod tests {
         );
         // Unfolding it reveals exactly the re-parented row.
         s.run("ExpandFactionHeader(8)").unwrap();
-        assert_eq!(names(&s).last().unwrap(), "Argent Dawn");
+        assert_eq!(names(&mut s).last().unwrap(), "Argent Dawn");
         assert!(s.errors().is_empty(), "{:#?}", s.errors());
     }
 
@@ -872,14 +849,14 @@ mod tests {
         let mut s = seated();
         s.run("FactionToggleAtWar(3)").unwrap(); // Stormwind
         assert_eq!(
-            s.eval::<Value>("local _,_,_,_,_,_,w = GetFactionInfo(3) return w")
+            s.eval::<Option<i64>>("local _,_,_,_,_,_,w = GetFactionInfo(3) return w")
                 .unwrap(),
-            Value::Integer(1),
+            Some(1),
             "the pane shows war immediately — nothing acks this"
         );
         s.run("SetFactionInactive(3)").unwrap();
         assert_eq!(
-            names(&s).last().unwrap(),
+            names(&mut s).last().unwrap(),
             "Inactive",
             "and the row re-parents on the spot, without a server rebuild"
         );
@@ -904,9 +881,9 @@ mod tests {
         s.set_reputation(forced);
         s.run("FactionToggleAtWar(3)").unwrap();
         assert!(s
-            .eval::<Value>("local _,_,_,_,_,_,w = GetFactionInfo(3) return w")
+            .eval::<Option<i64>>("local _,_,_,_,_,_,w = GetFactionInfo(3) return w")
             .unwrap()
-            .is_nil());
+            .is_none());
         assert!(s.take_reputation_sends().is_empty());
         assert!(s.errors().is_empty(), "{:#?}", s.errors());
     }
@@ -919,17 +896,17 @@ mod tests {
     fn watching_queues_a_send_but_does_not_move_the_bar_itself() {
         let mut s = seated();
         assert!(
-            s.eval::<Value>("return GetWatchedFactionInfo()")
+            s.eval::<Option<String>>("return GetWatchedFactionInfo()")
                 .unwrap()
-                .is_nil(),
+                .is_none(),
             "nothing watched → one nil, which is the ref's own `if ( name )` gate"
         );
 
         s.run("SetWatchedFactionIndex(3)").unwrap(); // Stormwind
         assert!(
-            s.eval::<Value>("return GetWatchedFactionInfo()")
+            s.eval::<Option<String>>("return GetWatchedFactionInfo()")
                 .unwrap()
-                .is_nil(),
+                .is_none(),
             "still nothing: the server owns this field, so the click alone cannot move the bar"
         );
         assert_eq!(s.take_reputation_sends(), [ReputationSend::Watch(Some(19))]);
@@ -944,9 +921,9 @@ mod tests {
             ("Stormwind".into(), 5, 3000, 9000, 4000)
         );
         assert_eq!(
-            s.eval::<Value>("local _,_,_,_,_,_,_,_,_,_,w = GetFactionInfo(3) return w")
+            s.eval::<Option<i64>>("local _,_,_,_,_,_,_,_,_,_,w = GetFactionInfo(3) return w",)
                 .unwrap(),
-            Value::Integer(1),
+            Some(1),
             "and the row reports itself watched"
         );
 

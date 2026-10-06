@@ -44,7 +44,7 @@
 //! calls, calling into `cursor`'s state machine at the right points rather than touching
 //! [`super::Model::drag`]/[`super::Model::cursor`] directly.
 
-use mlua::Value;
+use benilla_lua::{Value, Vm};
 
 use crate::layout::Rect;
 use crate::order;
@@ -75,6 +75,10 @@ use super::{button, cursor, editbox, event, Model, UiScript};
 /// So the interval does not follow the host OS double-click speed and the player cannot change it.
 pub(super) const DOUBLE_CLICK_SECS: f64 = 0.300;
 
+fn fire_widget(lua: &mut Vm, id: u32, script: &str, args: Vec<Value>) -> Result<(), String> {
+    event::fire_widget_handler_context(lua, id, script, args).map_err(|error| error.to_string())
+}
+
 // ── Input / hit-testing (decision 0068; spec-faithful, not byte-pinned) ─────────────────────
 //
 // The mouse-focus model (`propagation.md`): focus walks frames top-down in reverse draw order;
@@ -88,14 +92,11 @@ pub(super) const DOUBLE_CLICK_SECS: f64 = 0.300;
 /// the engine's y-up UI space (fed by the host's mouse_move/mouse_button) — what the ref's
 /// `MouseIsOver`/FCF hover logic reads (1.12 returns UI-scaled coords; benilla's UI space is
 /// 1:1 logical px, so no scale factor applies).
-pub(super) fn install(lua: &mlua::Lua) -> mlua::Result<()> {
-    lua.globals().set(
-        "GetCursorPosition",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<super::Model>().expect("model app_data");
-            Ok(model.cursor_pos)
-        })?,
-    )?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("GetCursorPosition", |lua, ()| {
+        let model = lua.app_data_ref::<super::Model>().expect("model app_data");
+        Ok(model.cursor_pos)
+    })?;
 
     // `GetMouseFocus()` — the frame the mouse is over, or nil.
     //
@@ -107,24 +108,21 @@ pub(super) fn install(lua: &mlua::Lua) -> mlua::Result<()> {
     //
     // Returns the frame's **wrapper table**, not its name: the reference returns a frame object and
     // callers immediately write `GetMouseFocus():GetName()`.
-    lua.globals().set(
-        "GetMouseFocus",
-        lua.create_function(|lua, ()| {
-            let id = {
-                let mut model = lua.app_data_mut::<super::Model>().expect("model app_data");
-                // Re-check liveness: a frame can be destroyed between the hover and this call, and
-                // handing back a wrapper for a dead handle is worse than answering nil.
-                model
-                    .mouseover
-                    .filter(|&h| model.arena.frame(h).is_some())
-                    .map(|h| model.frame_id(h))
-            };
-            match id {
-                Some(id) => Ok(Value::Table(super::object::frame_wrapper(lua, id)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetMouseFocus", |lua, ()| {
+        let id = {
+            let mut model = lua.app_data_mut::<super::Model>().expect("model app_data");
+            // Re-check liveness: a frame can be destroyed between the hover and this call, and
+            // handing back a wrapper for a dead handle is worse than answering nil.
+            model
+                .mouseover
+                .filter(|&h| model.arena.frame(h).is_some())
+                .map(|h| model.frame_id(h))
+        };
+        match id {
+            Some(id) => Ok(Value::Table(super::object::frame_wrapper_context(lua, id)?)),
+            None => Ok(Value::Nil),
+        }
+    })?;
     Ok(())
 }
 
@@ -218,7 +216,7 @@ impl UiScript {
                 // [`super::UiScript::set_nameplate_hit_test_veto`] for why that distinction is
                 // load-bearing rather than pedantic.
                 && !model.nameplates.vetoes(fh)
-                && model.resolved.get(&fh).is_some_and(|r| {
+                && model.pointer_rect(fh).is_some_and(|r| {
                     point_in_rect(inset_rect(*r, model.arena.hit_rect_insets(fh)), x, y)
                 })
                 && effective_clip(&model, &scroll_sources, fh)
@@ -243,7 +241,7 @@ impl UiScript {
             // It used to also accept `is_mouse_enabled` as a stand-in, because the loader did not
             // arm the wheel kind and no frame ever carried the flag. The loader arms it now.
             model.arena.is_mouse_wheel_enabled(fh)
-                && model.resolved.get(&fh).is_some_and(|r| {
+                && model.pointer_rect(fh).is_some_and(|r| {
                     point_in_rect(inset_rect(*r, model.arena.hit_rect_insets(fh)), x, y)
                 })
                 && effective_clip(&model, &scroll_sources, fh)
@@ -281,9 +279,10 @@ impl UiScript {
     /// fires neither script ([`button::hover_notify_runs`]). Returns the captured frame id (so the app can drive
     /// `PointerOverUi`). Handler errors are collected into [`UiScript::errors`], never panicking.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Option<u32> {
+        self.model_mut().repair_cancel_right_press = false;
         // A drag-active EditBox tracks every move (`0x77a860`): extend the selection to the
         // hovered char, cursor following — before any hover-boundary early return.
-        editbox::drag_update(&self.lua, x, y);
+        editbox::drag_update(&mut self.lua, x, y);
         let new_id = self.hit_test(x, y);
         #[allow(clippy::type_complexity)]
         let (leave_id, drag_start, enter_id, slider_change, color_change): (
@@ -351,44 +350,34 @@ impl UiScript {
         // The thumb-drag value change fires OnValueChanged (outside the borrow) — the scrollbar's
         // OnValueChanged→SetVerticalScroll wiring runs here, exactly as the arrow buttons drive it.
         if let Some((id, value)) = slider_change {
-            if let Err(e) = event::fire_widget_handler(
-                &self.lua,
+            if let Err(e) = fire_widget(
+                &mut self.lua,
                 id,
                 "OnValueChanged",
                 vec![Value::Number(f64::from(value))],
             ) {
-                self.push_error(e);
+                self.model_mut().record_script_error(e);
             }
         }
         if let Some((id, r, g, b)) = color_change {
-            if let Err(e) = super::colorselect::fire_by_id(&self.lua, id, r, g, b) {
-                self.push_error(e);
+            if let Err(e) = super::colorselect::fire_by_id(&mut self.lua, id, r, g, b) {
+                self.model_mut().record_script_error(e.to_string());
             }
         }
         if let Some((id, button)) = drag_start {
-            let btn = match self.lua.create_string(&button) {
-                Ok(s) => Value::String(s),
-                Err(e) => {
-                    self.push_error(e);
-                    return new_id;
-                }
-            };
-            if let Err(e) = event::fire_widget_handler(&self.lua, id, "OnDragStart", vec![btn]) {
-                self.push_error(e);
+            let btn = Value::from(button);
+            if let Err(e) = fire_widget(&mut self.lua, id, "OnDragStart", vec![btn]) {
+                self.model_mut().record_script_error(e);
             }
         }
         if let Some(oid) = leave_id {
-            if let Err(e) =
-                event::fire_widget_handler(&self.lua, oid, "OnLeave", vec![Value::Boolean(true)])
-            {
-                self.push_error(e);
+            if let Err(e) = fire_widget(&mut self.lua, oid, "OnLeave", vec![Value::Boolean(true)]) {
+                self.model_mut().record_script_error(e);
             }
         }
         if let Some(nid) = enter_id {
-            if let Err(e) =
-                event::fire_widget_handler(&self.lua, nid, "OnEnter", vec![Value::Boolean(true)])
-            {
-                self.push_error(e);
+            if let Err(e) = fire_widget(&mut self.lua, nid, "OnEnter", vec![Value::Boolean(true)]) {
+                self.model_mut().record_script_error(e);
             }
         }
         new_id
@@ -445,6 +434,23 @@ impl UiScript {
     /// the event (`hit_id.is_some()` or a world drop was handled) — a new public return; existing
     /// statement-position calls (`script.mouse_button(...);`) are unaffected.
     pub fn mouse_button(&mut self, x: f32, y: f32, button: &str, down: bool) -> bool {
+        if button == "RightButton" {
+            let mut model = self.model_mut();
+            if down {
+                // Cancel the modal, not an item action or a widget click. Keep
+                // the matching release from using/equipping the hovered item.
+                model.repair_cancel_right = model.repair_mode;
+                model.repair_cancel_right_press = model.repair_cancel_right;
+                if model.repair_cancel_right {
+                    model.repair_mode = false;
+                    model.ui_cursor = None;
+                    model.ui_cursor_dirty = true;
+                    return true;
+                }
+            } else if std::mem::take(&mut model.repair_cancel_right) {
+                return true;
+            }
+        }
         let hit_id = self.hit_test(x, y);
         // ── The RAISE, and it happens FIRST ─────────────────────────────────────────────────────
         //
@@ -528,13 +534,7 @@ impl UiScript {
         // beyond the hit ([`Model::last_click`]). Same `GetTime()` seconds every script sees.
         let now = self.now();
         self.model_mut().cursor_pos = (x, y);
-        let btn = match self.lua.create_string(button) {
-            Ok(s) => Value::String(s),
-            Err(e) => {
-                self.push_error(e);
-                return hit_id.is_some();
-            }
-        };
+        let btn = Value::from(button);
         // Resolve the OnClick target (if any), arm/resolve the drag gesture, and handle a world
         // drop — all under one short borrow. A press fires OnClick when the hit frame registered
         // "<Button>ButtonDown"; a release fires it when press+release landed on the same frame AND
@@ -718,19 +718,19 @@ impl UiScript {
         // A track press's value jump fires OnValueChanged first (outside the borrow), the same
         // seam as `mouse_move`'s in-drag changes — the press IS the first move of the gesture.
         if let Some((id, value)) = slider_jump {
-            if let Err(e) = event::fire_widget_handler(
-                &self.lua,
+            if let Err(e) = fire_widget(
+                &mut self.lua,
                 id,
                 "OnValueChanged",
                 vec![Value::Number(f64::from(value))],
             ) {
-                self.push_error(e);
+                self.model_mut().record_script_error(e);
             }
         }
         // The press's colour jump fires OnColorSelect the same way.
         if let Some((id, r, g, b)) = color_jump {
-            if let Err(e) = super::colorselect::fire_by_id(&self.lua, id, r, g, b) {
-                self.push_error(e);
+            if let Err(e) = super::colorselect::fire_by_id(&mut self.lua, id, r, g, b) {
+                self.model_mut().record_script_error(e.to_string());
             }
         }
         // ── `OnMouseUp` goes to the frame that took the PRESS, not to whatever is under the
@@ -774,8 +774,8 @@ impl UiScript {
         // fires `OnMouseUp` and keeps the capture for the button still held.)
         let script = if down { "OnMouseDown" } else { "OnMouseUp" };
         if let Some(id) = if down { hit_id } else { captured_id } {
-            if let Err(e) = event::fire_widget_handler(&self.lua, id, script, vec![btn.clone()]) {
-                self.push_error(e);
+            if let Err(e) = fire_widget(&mut self.lua, id, script, vec![btn.clone()]) {
+                self.model_mut().record_script_error(e);
             }
         }
         // A release inside a hyperlink span fires `OnHyperlinkClick(link, markup, button)` on the
@@ -798,21 +798,9 @@ impl UiScript {
                         })
                 };
                 if let Some((link, markup)) = span {
-                    let args = match (
-                        self.lua.create_string(&link),
-                        self.lua.create_string(&markup),
-                    ) {
-                        (Ok(l), Ok(m)) => {
-                            vec![Value::String(l), Value::String(m), btn.clone()]
-                        }
-                        _ => Vec::new(),
-                    };
-                    if !args.is_empty() {
-                        if let Err(e) =
-                            event::fire_widget_handler(&self.lua, id, "OnHyperlinkClick", args)
-                        {
-                            self.push_error(e);
-                        }
+                    let args = vec![Value::from(link), Value::from(markup), btn.clone()];
+                    if let Err(e) = fire_widget(&mut self.lua, id, "OnHyperlinkClick", args) {
+                        self.model_mut().record_script_error(e);
                     }
                 }
             }
@@ -823,10 +811,10 @@ impl UiScript {
         if button == "LeftButton" {
             if down {
                 if let Some(id) = hit_id {
-                    editbox::click(&self.lua, id, x, y);
+                    editbox::click(&mut self.lua, id, x, y);
                 }
             } else {
-                editbox::drag_end(&self.lua);
+                editbox::drag_end(&mut self.lua);
             }
         }
         // A gesture this press REPLACED gets its `OnDragStop` too, before anything the new press
@@ -840,17 +828,15 @@ impl UiScript {
         if let Some(release) = drag_release.filter(|r| r.started) {
             self.fire_drag_stop(release.source);
             if let Some(id) = hit_id {
-                if let Err(e) =
-                    event::fire_widget_handler(&self.lua, id, "OnReceiveDrag", Vec::new())
-                {
-                    self.push_error(e);
+                if let Err(e) = fire_widget(&mut self.lua, id, "OnReceiveDrag", Vec::new()) {
+                    self.model_mut().record_script_error(e);
                 }
             }
         }
         if let Some(id) = click_id {
             // One click home for the physical and programmatic (`Click()`) paths: gated on a
             // Button's enabled flag, a CheckButton toggles before OnClick fires (button.rs).
-            button::click_button(&self.lua, id, button, down, false);
+            button::click_button(&mut self.lua, id, button, down, false);
         }
         // `OnDoubleClick(self, button)` — fired where `OnClick` would have been and instead of it
         // (`0x77938d call [edx+0x98]`, the mouse-UP dispatcher's exclusive second leg). One
@@ -861,8 +847,8 @@ impl UiScript {
         // it as the documented `down` flag, and drop it here to match the Era-facing
         // `OnDoubleClick(self, button)` signature the corpus is written against.
         if let Some(id) = double_id {
-            if let Err(e) = event::fire_widget_handler(&self.lua, id, "OnDoubleClick", vec![btn]) {
-                self.push_error(e);
+            if let Err(e) = fire_widget(&mut self.lua, id, "OnDoubleClick", vec![btn]) {
+                self.model_mut().record_script_error(e);
             }
         }
         // Whether the **UI** consumed the event. A hit on the world frame is not the UI
@@ -887,8 +873,8 @@ impl UiScript {
                 .flatten()
         };
         if let Some(id) = id {
-            if let Err(e) = event::fire_widget_handler(&self.lua, id, "OnDragStop", Vec::new()) {
-                self.push_error(e);
+            if let Err(e) = fire_widget(&mut self.lua, id, "OnDragStop", Vec::new()) {
+                self.model_mut().record_script_error(e);
             }
         }
     }
@@ -926,13 +912,13 @@ impl UiScript {
             })
         };
         if let Some(id) = target {
-            if let Err(e) = event::fire_widget_handler(
-                &self.lua,
+            if let Err(e) = fire_widget(
+                &mut self.lua,
                 id,
                 "OnMouseWheel",
                 vec![Value::Number(f64::from(delta))],
             ) {
-                self.push_error(e);
+                self.model_mut().record_script_error(e);
             }
         }
     }

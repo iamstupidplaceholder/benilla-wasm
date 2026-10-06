@@ -315,6 +315,11 @@ impl Plugin for WorldFoundation {
         // opts out; the module doc owns the design). Registers NOTHING when opted out —
         // the divert sites see `None` for its resource and the render graph never gains
         // the node.
+        // The retained pass has its own storage-buffer item table. WebGL2 keeps the exact
+        // production entities on the ordinary material lane until that second table receives the
+        // same texture-backed transport as the shared light table; `StaticGx::divert` already
+        // fails open when its resource is absent.
+        #[cfg(not(target_arch = "wasm32"))]
         app.add_plugins(crate::static_gx::StaticGxPlugin);
         // `WOW_MERGE_CENSUS=1` — the 1417 population census (module doc): tally rides the
         // assembler, this is just the quiet-timer printer.

@@ -719,15 +719,33 @@ fn prepare_view_bind(
     view_uniforms: Res<ViewUniforms>,
     light: Option<Res<crate::lighting::SharedLightBuffer>>,
 ) {
-    let (Some(view_binding), Some(light)) = (view_uniforms.uniforms.binding(), light) else {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // StaticGxPlugin is not installed on WebGL2: its separate retained item table has not yet
+        // been moved off storage buffers. Keep this module type-checkable while its ordinary
+        // entity/material fallback remains active.
+        let _ = (
+            commands,
+            pipes,
+            pipeline_cache,
+            render_device,
+            view_uniforms,
+            light,
+        );
         return;
-    };
-    let layout = pipeline_cache.get_bind_group_layout(&pipes.view_layout);
-    commands.insert_resource(GxViewBind(render_device.create_bind_group(
-        "static_gx_view",
-        &layout,
-        &BindGroupEntries::sequential((view_binding, light.0.as_entire_binding())),
-    )));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (Some(view_binding), Some(light)) = (view_uniforms.uniforms.binding(), light) else {
+            return;
+        };
+        let layout = pipeline_cache.get_bind_group_layout(&pipes.view_layout);
+        commands.insert_resource(GxViewBind(render_device.create_bind_group(
+            "static_gx_view",
+            &layout,
+            &BindGroupEntries::sequential((view_binding, light.0.as_entire_binding())),
+        )));
+    }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]

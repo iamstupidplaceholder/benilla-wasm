@@ -439,7 +439,7 @@ fn owner_anchored_tooltip_clamps_to_screen() {
 fn the_duration_ladder_ceils_every_arm_but_seconds() {
     // Deliberately not the shipped wording: what is under test is which key is reached and what
     // number fills it, never what the string says.
-    let table = |key: &str| -> Option<String> {
+    let mut table = |key: &str| -> Option<String> {
         Some(
             match key {
                 "T_DAYS" => "<%d day>",
@@ -455,7 +455,7 @@ fn the_duration_ladder_ceils_every_arm_but_seconds() {
             .to_string(),
         )
     };
-    let d = |ms: u32| crate::script::tooltip::duration_text(ms, "T", true, &table);
+    let mut d = |ms: u32| crate::script::tooltip::duration_text(ms, "T", true, &mut table);
 
     // The three arm boundaries, from the compare instructions — each is exact, and the arm below
     // it counts in its own unit right up to the edge.
@@ -500,19 +500,19 @@ fn the_duration_ladder_ceils_every_arm_but_seconds() {
 
     // roundUp = 0 truncates the top arms too (the parameter is real, not a constant we folded).
     assert_eq!(
-        crate::script::tooltip::duration_text(61_000, "T", false, &table).as_deref(),
+        crate::script::tooltip::duration_text(61_000, "T", false, &mut table).as_deref(),
         Some("<1 min>"),
     );
 
     // A key the string table does not carry yields NO LINE rather than an invented one.
     assert_eq!(
-        crate::script::tooltip::duration_text(1_000, "NOPE", true, &table),
+        crate::script::tooltip::duration_text(1_000, "NOPE", true, &mut table),
         None
     );
     // …and a family shipping only the singular falls back to it rather than vanishing.
-    let singular_only = |key: &str| (key == "S_SEC").then(|| "<%d s>".to_string());
+    let mut singular_only = |key: &str| (key == "S_SEC").then(|| "<%d s>".to_string());
     assert_eq!(
-        crate::script::tooltip::duration_text(5_000, "S", true, &singular_only).as_deref(),
+        crate::script::tooltip::duration_text(5_000, "S", true, &mut singular_only).as_deref(),
         Some("<5 s>"),
     );
 }
@@ -677,7 +677,7 @@ fn set_owner_defaults_to_anchor_left_and_only_preserve_keeps_the_placement() {
 /// through every subsequent hover, where the reference stamps it back to full on each SetOwner.
 #[test]
 fn set_owner_stamps_full_alpha_even_with_no_fade_running() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         Owner = CreateFrame("Frame", "Owner")
@@ -769,7 +769,7 @@ fn show_with_no_lines_self_hides_and_un_owns() {
 /// reference draws the tooltip.
 #[test]
 fn a_non_string_anchor_is_silently_mode_zero_and_never_raises() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         Plate = CreateFrame("GameTooltip", "Plate")
@@ -877,7 +877,7 @@ fn anchor_cursor_follows_the_cursor_every_frame() {
 /// `pfUI/modules/tooltip.lua:97` compares against the literal `"ANCHOR_NONE"`.
 #[test]
 fn tooltip_anchor_type_round_trips_every_reachable_mode() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         AnchorTip = CreateFrame("GameTooltip", "AnchorTip")

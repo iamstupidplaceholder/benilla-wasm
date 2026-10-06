@@ -255,7 +255,7 @@ fn feed_stable(
         .0
         .drain(..)
         .filter_map(|key| {
-            let text = script.lua().globals().get::<String>(key).ok()?;
+            let text = script.global_string(key)?;
             (!text.is_empty()).then(|| crate::ui_action::Shown::keyed(key, text))
         })
         .collect();

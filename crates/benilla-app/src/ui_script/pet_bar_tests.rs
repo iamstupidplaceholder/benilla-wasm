@@ -54,7 +54,7 @@ pub(super) fn load_pet_bar(s: &UiScript) {
 /// GlobalStrings is loaded from the MPQ at runtime, not by the loader — a token slot's `name` is
 /// a KEY into it, so the tests declare the two keys they read. (That the real keys exist in the
 /// shipped file is a separate fact, asserted in `ui_pet`'s own tests by name.)
-pub(super) fn declare_token_strings(s: &UiScript) {
+pub(super) fn declare_token_strings(s: &mut UiScript) {
     s.run(
         "PET_ACTION_ATTACK = 'Attack' \
          PET_MODE_DEFENSIVE = 'Defensive'",
@@ -131,7 +131,7 @@ fn the_shipped_pet_bar_drives_end_to_end() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
 
     // No pet: the bar is hidden, and nothing of it reaches the quad pass.
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
@@ -252,7 +252,7 @@ fn clicks_route_through_the_attack_toggle_fork() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
     s.set_pet_actions(true, true, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
     s.resolve();
@@ -313,9 +313,9 @@ fn a_click_drops_the_ring_and_the_repaint_restores_it() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
 
-    let checked = |s: &UiScript| {
+    let checked = |s: &mut UiScript| {
         s.eval::<bool>("return PetActionButton1:GetChecked()")
             .unwrap()
     };
@@ -326,19 +326,19 @@ fn a_click_drops_the_ring_and_the_repaint_restores_it() {
         s.set_pet_actions(true, true, true, hunter_slots());
         s.fire_event("PET_BAR_UPDATE", vec![]);
         s.resolve();
-        assert!(checked(&s), "{button}: the Attack token starts lit");
+        assert!(checked(&mut s), "{button}: the Attack token starts lit");
 
         s.mouse_button(87.0, 71.0, button, true);
         s.mouse_button(87.0, 71.0, button, false);
         assert!(
-            !checked(&s),
+            !checked(&mut s),
             "{button}: the ref's own SetChecked(0), reproduced"
         );
 
         // A repaint carrying the very SAME views restores it — the property the signal count buys.
         s.fire_event("PET_BAR_UPDATE", vec![]);
         assert!(
-            checked(&s),
+            checked(&mut s),
             "{button}: an unchanged repaint must re-light, not diff to a no-op"
         );
     }
@@ -356,7 +356,7 @@ fn a_disabled_bar_greys_rather_than_hides() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
 
     s.set_pet_actions(true, false, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
@@ -397,7 +397,7 @@ fn pet_bar_row(with_multibar: bool) -> (usize, f32) {
         s.run("SHOW_MULTI_ACTIONBAR_1 = 1 MultiActionBar_Update()")
             .unwrap();
     }
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
 
     s.set_pet_actions(true, true, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
@@ -457,7 +457,7 @@ fn dragging_a_pet_spell_between_slots_moves_it_through_the_shipped_handlers() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
     s.set_pet_actions(true, true, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
     s.resolve();
@@ -510,7 +510,7 @@ fn the_lock_stops_the_pet_bar_drag_but_not_its_shift_click() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
     s.set_pet_actions(true, true, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
     s.resolve();
@@ -559,7 +559,7 @@ fn shift_clicking_a_pet_button_picks_it_up_rather_than_casting() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
     s.set_pet_actions(true, true, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
     s.resolve();
@@ -601,19 +601,19 @@ fn the_keybind_pair_pushes_and_casts_without_the_clicks_forks() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
     s.set_pet_actions(true, true, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
     s.resolve();
 
-    let state = |s: &UiScript| {
+    let state = |s: &mut UiScript| {
         s.eval::<String>("return PetActionButton1:GetButtonState()")
             .unwrap()
     };
 
     // Down shows the pushed art and fires nothing (the ref's runOnUp shape).
     s.run("PetActionButtonDown(1)").unwrap();
-    assert_eq!(state(&s), "PUSHED");
+    assert_eq!(state(&mut s), "PUSHED");
     assert!(
         s.take_pet_actions().is_empty(),
         "the press is visual only — the ref fires on the release"
@@ -623,7 +623,7 @@ fn the_keybind_pair_pushes_and_casts_without_the_clicks_forks() {
     // LEFT CLICK here would call it off instead (a possess bar's case; see the header). The key
     // has no such fork.
     s.run("PetActionButtonUp(1)").unwrap();
-    assert_eq!(state(&s), "NORMAL");
+    assert_eq!(state(&mut s), "NORMAL");
     assert_eq!(s.take_pet_actions(), vec![1]);
     assert_eq!(
         s.take_pet_stop_attacks(),
@@ -640,7 +640,7 @@ fn the_keybind_pair_pushes_and_casts_without_the_clicks_forks() {
     );
     s.run("PetActionButtonDown(1) PetActionButtonDown(1)")
         .unwrap();
-    assert_eq!(state(&s), "PUSHED");
+    assert_eq!(state(&mut s), "PUSHED");
     s.run("PetActionButtonUp(1)").unwrap();
     assert_eq!(s.take_pet_actions(), vec![1], "one press, one cast");
 
@@ -678,14 +678,14 @@ fn hovered_pet_bar() -> UiScript {
     s.register_bindings(&crate::bindings::registry_commands());
     s.register_cvars(crate::cvars::registered_pairs());
     load_pet_bar(&s);
-    declare_token_strings(&s);
+    declare_token_strings(&mut s);
     s.set_pet_actions(true, true, true, hunter_slots());
     s.fire_event("PET_BAR_UPDATE", vec![]);
     s.resolve();
     s
 }
 
-fn tooltip_line1(s: &UiScript) -> String {
+fn tooltip_line1(s: &mut UiScript) -> String {
     s.eval::<String>("return GameTooltipTextLeft1:GetText() or \"\"")
         .unwrap()
 }
@@ -710,7 +710,7 @@ fn token_tooltips_name_their_binding_and_pet_spells_do_not() {
     s.mouse_move(ATTACK_BUTTON.0, ATTACK_BUTTON.1);
     s.resolve();
     assert_eq!(
-        tooltip_line1(&s),
+        tooltip_line1(&mut s),
         "Attack|cffffd200 (CTRL-1)|r",
         "a command token carries BONUSACTIONBUTTON1's key in the normal-font colour"
     );
@@ -724,7 +724,7 @@ fn token_tooltips_name_their_binding_and_pet_spells_do_not() {
     // its name, and nothing in parentheses.
     s.mouse_move(CLAW_BUTTON.0, CLAW_BUTTON.1);
     s.resolve();
-    let claw = tooltip_line1(&s);
+    let claw = tooltip_line1(&mut s);
     assert_eq!(claw, "Claw", "a pet SPELL renders through SetPetAction");
     assert!(
         !claw.contains('('),
@@ -754,7 +754,7 @@ fn an_unbound_token_row_renders_the_references_empty_parentheses() {
     s.mouse_move(ATTACK_BUTTON.0, ATTACK_BUTTON.1);
     s.resolve();
     assert_eq!(
-        tooltip_line1(&s),
+        tooltip_line1(&mut s),
         "Attack|cffffd200 ()|r",
         "unbound: the parentheses stay, empty — the ref's own unguarded concatenation"
     );
@@ -776,7 +776,7 @@ fn ubertooltips_off_takes_the_spells_through_the_token_branch_and_moves_the_plat
     s.mouse_move(CLAW_BUTTON.0, CLAW_BUTTON.1);
     s.resolve();
     assert_eq!(
-        tooltip_line1(&s),
+        tooltip_line1(&mut s),
         "Claw|cffffd200 (CTRL-4)|r",
         "with the CVar off a pet spell is built here too, binding and all"
     );

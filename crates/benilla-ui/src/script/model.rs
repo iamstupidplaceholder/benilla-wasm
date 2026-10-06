@@ -57,10 +57,60 @@ impl<T: Copy> IdMap<T> {
     }
 }
 
+/// The region-name authority, with a lazy inverse for receiver names. Normal
+/// SetPoint calls need that inverse too (for their potential error text), so a
+/// linear scan here is not merely an error-path cost. Keep mutation encapsulated
+/// so no insertion/removal can leave the inverse stale.
+#[derive(Default)]
+pub(crate) struct RegionNames {
+    forward: HashMap<String, u32>,
+    inverse: std::cell::OnceCell<HashMap<u32, String>>,
+}
+
+impl RegionNames {
+    pub(crate) fn get(&self, name: &str) -> Option<&u32> {
+        self.forward.get(name)
+    }
+
+    pub(crate) fn entry(
+        &mut self,
+        name: String,
+    ) -> std::collections::hash_map::Entry<'_, String, u32> {
+        // Entry also permits changing an occupied value. Invalidate before
+        // handing out any mutable access, not merely on a vacant insertion.
+        self.inverse.take();
+        self.forward.entry(name)
+    }
+
+    pub(crate) fn remove_id(&mut self, id: u32) {
+        let before = self.forward.len();
+        self.forward.retain(|_, value| *value != id);
+        if self.forward.len() != before {
+            self.inverse.take();
+        }
+    }
+
+    pub(crate) fn name(&self, id: u32) -> Option<&String> {
+        self.inverse
+            .get_or_init(|| {
+                let mut inverse = HashMap::with_capacity(self.forward.len());
+                for (name, &id) in &self.forward {
+                    // Preserve the former iter().find() result even for aliases:
+                    // first in the current forward map's iteration order wins.
+                    inverse.entry(id).or_insert_with(|| name.clone());
+                }
+                inverse
+            })
+            .get(&id)
+    }
+}
+
 /// The Rust-side model behind the Lua VM — the arena, the layout inputs + resolved rects, the
 /// id↔handle bijection, region visuals, and the event/script registrations. Held in `lua.app_data`
 /// (interior-mutable) so callbacks reach it; contains **no** mlua handles (the MAXCSTACK discipline).
 pub(crate) struct Model {
+    pub(crate) locale: String,
+    pub(crate) damage_school_names: HashMap<u8, String>,
     /// Every discovered addon, in load order — the AddOn API's registry, filled by the host at
     /// world entry ([`super::UiScript::register_addons`]). See [`super::addon`].
     pub(crate) addons: Vec<super::addon::AddOnInfo>,
@@ -81,6 +131,7 @@ pub(crate) struct Model {
     /// chain-internal path — `None` in a VM with no chain behind it, where such an addon
     /// answers `MISSING`.
     pub(crate) addons_chain_reader: Option<super::addon::SharedChainReader>,
+    pub(crate) addons_loose_reader: Option<super::addon::SharedChainReader>,
     /// The host's font engine ([`super::UiScript::set_text_measurer`]) — what lets a metric read
     /// answer inside the Lua call that asked, instead of a frame later. `None` in every VM without
     /// a font atlas, which is the measure round-trip's own world and behaves exactly as it did.
@@ -345,7 +396,7 @@ pub(crate) struct Model {
     /// first, then here — the real client anchors regions to *sibling regions* by name everywhere
     /// (e.g. the merchant label plate to its `$parentSlot` texture), which owner-fallback silently
     /// mis-anchored before (the jutting-plates bug the director's A/B caught).
-    pub(crate) region_names: HashMap<String, u32>,
+    pub(crate) region_names: RegionNames,
 
     /// Which handler kinds each frame has a script for (presence mirror; the closures live Lua-side
     /// in the `REG_SCRIPTS` table). Lets `tick` find OnUpdate frames without scanning Lua.
@@ -443,6 +494,10 @@ pub(crate) struct Model {
     /// when the post-event button mask is empty, so a chorded release keeps it. A title-region
     /// press never reaches `0x7663e6` and so captures nothing.
     pub(crate) mouse_capture: Option<FrameHandle>,
+    pub(crate) presented_input: Option<HashMap<FrameHandle, Rect>>,
+    pub(crate) admitted_domains: std::collections::HashSet<FrameHandle>,
+    pub(crate) pending_art_domains: std::collections::HashSet<FrameHandle>,
+    pub(crate) presentation_art_revision: u64,
     /// Per **frame**, the [`UiScript::now`] second at which its last single `OnClick` fired — the
     /// double-click detector's entire state, and the faithful stand-in for the client's per-widget
     /// timestamp `[CButton+0x334]` (wow-re `ui/scratch/button-doubleclick-law.md`).
@@ -1208,6 +1263,8 @@ pub(crate) struct Model {
     pub(crate) merchant_buybacks: Vec<u32>,
     pub(crate) repair_all: bool,
     pub(crate) repair_mode: bool,
+    pub(crate) repair_cancel_right: bool,
+    pub(crate) repair_cancel_right_press: bool,
 
     /// The stable window's whole state — the pushed snapshot, the selection, the frame-local
     /// drag, and the queued verbs (the stable seam, [`stable`], decision 1676). One sub-struct
@@ -1460,6 +1517,8 @@ pub(crate) struct Model {
     /// The shared item-template store: `item id → full tooltip view` ([`item_stats`] module doc,
     /// decision 0274 P1).
     pub(crate) item_templates: HashMap<u32, ItemTemplateView>,
+    pub(crate) item_repair_levels: HashMap<u32, u32>,
+    pub(crate) repair_tables: Option<std::sync::Arc<dyn super::merchant::RepairCostCatalog>>,
     /// Item ids the renderer asked for that the store lacks — drained by the app
     /// ([`UiScript::take_item_stat_asks`]), answered via [`UiScript::set_item_template`].
     pub(crate) item_stat_asks: HashSet<u32>,
@@ -1891,11 +1950,14 @@ impl Model {
 
     pub(crate) fn new() -> Model {
         Model {
+            locale: "enUS".into(),
+            damage_school_names: HashMap::new(),
             addons: Vec::new(),
             addon_index: Vec::new(),
             addon_info_hidden: None,
             addons_root: None,
             addons_chain_reader: None,
+            addons_loose_reader: None,
             measurer: None,
             texture_probe: None,
             texture_size_probe: None,
@@ -1935,7 +1997,7 @@ impl Model {
             frame_to_id: HashMap::new(),
             id_to_region: IdMap::default(),
             region_to_id: HashMap::new(),
-            region_names: HashMap::new(),
+            region_names: RegionNames::default(),
             scripts: HashMap::new(),
             on_update_frames: Vec::new(),
             on_size_changed_frames: Vec::new(),
@@ -1951,6 +2013,14 @@ impl Model {
             hover_repick: false,
             mouse_down_on: HashMap::new(),
             mouse_capture: None,
+            admitted_domains: Default::default(),
+            pending_art_domains: Default::default(),
+            presentation_art_revision: 0,
+            presented_input: if cfg!(target_arch = "wasm32") {
+                Some(HashMap::new())
+            } else {
+                None
+            },
             last_click: HashMap::new(),
             pending_size_changed: Vec::new(),
             errors: Vec::new(),
@@ -2141,6 +2211,8 @@ impl Model {
             merchant_buybacks: Vec::new(),
             repair_all: false,
             repair_mode: false,
+            repair_cancel_right: false,
+            repair_cancel_right_press: false,
             stable: Default::default(),
             bank: None,
             bank_purchase: false,
@@ -2233,6 +2305,8 @@ impl Model {
             quest_log_pushes: Vec::new(),
             quest_confirms: 0,
             item_templates: HashMap::new(),
+            item_repair_levels: HashMap::new(),
+            repair_tables: None,
             item_sets: HashMap::new(),
             item_set_asks: HashSet::new(),
             random_properties: HashMap::new(),
@@ -2598,12 +2672,12 @@ impl Model {
         use std::sync::OnceLock;
         // Spec `<secs>:<n>`: arm after `secs` (past UI load + settle, so the trace names the
         // STEADY toucher, not the thousands of legitimate load-time touches), then print `n`.
-        static SPEC: OnceLock<Option<(std::time::Instant, f64, AtomicU32)>> = OnceLock::new();
+        static SPEC: OnceLock<Option<(benilla_time::Instant, f64, AtomicU32)>> = OnceLock::new();
         let spec = SPEC.get_or_init(|| {
             let v = std::env::var("WOW_LAYOUT_TOUCH_TRACE").ok()?;
             let (secs, n) = v.split_once(':')?;
             Some((
-                std::time::Instant::now(),
+                benilla_time::Instant::now(),
                 secs.trim().parse().ok()?,
                 AtomicU32::new(n.trim().parse().ok()?),
             ))
@@ -2630,12 +2704,12 @@ impl Model {
 fn derive_trace_armed() -> bool {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::OnceLock;
-    static SPEC: OnceLock<Option<(std::time::Instant, f64, AtomicU32)>> = OnceLock::new();
+    static SPEC: OnceLock<Option<(benilla_time::Instant, f64, AtomicU32)>> = OnceLock::new();
     let Some((t0, delay, left)) = SPEC.get_or_init(|| {
         let v = std::env::var("WOW_LAYOUT_DERIVE_TRACE").ok()?;
         let (secs, n) = v.split_once(':')?;
         Some((
-            std::time::Instant::now(),
+            benilla_time::Instant::now(),
             secs.trim().parse().ok()?,
             AtomicU32::new(n.trim().parse().ok()?),
         ))

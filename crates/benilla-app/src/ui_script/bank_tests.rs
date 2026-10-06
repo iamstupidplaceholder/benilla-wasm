@@ -58,7 +58,7 @@ fn setup() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     s
 }
@@ -290,7 +290,7 @@ fn bag_buttons_tint_by_purchase_count_and_texture_from_the_bank_bag_band() {
     // BagFrame.xml's own bag-bar slots (CharacterBag0Slot..4) fall back to this SAME empty-slot
     // texture, so the search must be scoped to each named bank button's own rect, not the path
     // alone — get each button's center via eval, then read the color off the quad sitting there.
-    let center = |name: &str| -> (f32, f32) {
+    let mut center = |name: &str| -> (f32, f32) {
         let (x, y): (f64, f64) = s
             .eval(&format!(
                 "return ({name}:GetLeft() + {name}:GetRight()) / 2, \

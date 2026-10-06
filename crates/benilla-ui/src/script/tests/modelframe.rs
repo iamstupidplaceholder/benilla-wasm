@@ -291,7 +291,7 @@ fn the_two_model_tables_are_the_references_own() {
     "#,
     )
     .unwrap();
-    let is_fn = |s: &UiScript, frame: &str, name: &str| {
+    let is_fn = |s: &mut UiScript, frame: &str, name: &str| {
         s.eval::<String>(&format!("return type({frame}.{name})"))
             .unwrap()
             == "function"
@@ -302,7 +302,7 @@ fn the_two_model_tables_are_the_references_own() {
         // A `Model` verb resolves on BOTH panes — on the PlayerModel through the chain.
         for frame in ["GuardM", "GuardPM"] {
             assert_eq!(
-                is_fn(&s, frame, name),
+                is_fn(&mut s, frame, name),
                 want,
                 "{frame}.{name}: table 0x878948 has it; built = {want}"
             );
@@ -310,11 +310,11 @@ fn the_two_model_tables_are_the_references_own() {
     }
     for name in PLAYERMODEL_3 {
         assert!(
-            is_fn(&s, "GuardPM", name),
+            is_fn(&mut s, "GuardPM", name),
             "GuardPM.{name}: table 0x84f1fc entry, all three are built"
         );
         assert!(
-            !is_fn(&s, "GuardM", name),
+            !is_fn(&mut s, "GuardM", name),
             "GuardM.{name}: 0x84f1fc is NOT reachable from CSimpleModel's lookup"
         );
     }
@@ -324,7 +324,7 @@ fn the_two_model_tables_are_the_references_own() {
     for name in ["SetCreature", "SetCustomRace"] {
         for frame in ["GuardM", "GuardPM"] {
             assert!(
-                !is_fn(&s, frame, name),
+                !is_fn(&mut s, frame, name),
                 "{frame}.{name} does not exist in 1.12.1.5875"
             );
         }
@@ -353,7 +353,7 @@ fn the_two_sequence_verbs_arm_the_pane_on_its_own_clock() {
     // 1.12 has no `GetSequence`, so the arm is read off the model the way `simplehtml`'s tests
     // read their blocks — through the arena, because there is no Lua getter to read it through.
     let armed = |s: &UiScript| {
-        let lua = s.lua();
+        let lua = s.vm();
         let model = lua.app_data_ref::<crate::script::Model>().expect("model");
         let fh = model.arena.lookup("MSeq").expect("MSeq frame");
         match &model.arena.frame(fh).expect("live frame").kind_state {
@@ -395,7 +395,7 @@ fn the_light_tuple_is_opaque_and_survives_the_round_trip() {
 
     // A fresh pane: the ctor's white, switched off. Both colour blocks are `> 0`, so both come
     // back as `1.0, r, g, b` — arity 13 before anything has ever been set.
-    let fresh: Vec<f64> = s.eval("return { MLight:GetLight() }").unwrap();
+    let fresh: Vec<f64> = s.eval_sequence("return { MLight:GetLight() }").unwrap();
     assert_eq!(
         fresh,
         vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
@@ -405,7 +405,7 @@ fn the_light_tuple_is_opaque_and_survives_the_round_trip() {
     // The commented-out GlueXML line, which is the corpus's only example of the shape.
     s.run("MLight:SetLight(1, 0, 0, -0.707, -0.707, 0.7, 1, 1, 1, 0.8, 1, 1, 0.8)")
         .unwrap();
-    let l: Vec<f64> = s.eval("return { MLight:GetLight() }").unwrap();
+    let l: Vec<f64> = s.eval_sequence("return { MLight:GetLight() }").unwrap();
     assert_eq!(l.len(), 13);
     assert_eq!((l[0], l[1]), (1.0, 0.0), "enabled, directional");
     // The direction is NORMALISED on write (`0x71b6a0`), so `(0, -0.707, -0.707)` comes back as
@@ -428,7 +428,7 @@ fn the_light_tuple_is_opaque_and_survives_the_round_trip() {
     // not a way to switch a light off, and a `<PlayerModel>`'s built-in one cannot be killed.
     s.run("MLight:SetLight(0, 1, 5, 5, 5, 1, 1, 1, 1, 1, 1, 1, 1)")
         .unwrap();
-    let after: Vec<f64> = s.eval("return { MLight:GetLight() }").unwrap();
+    let after: Vec<f64> = s.eval_sequence("return { MLight:GetLight() }").unwrap();
     assert_eq!(after, l, "SetLight(0, …) is a no-op, not a disable");
 
     // TRAP 2: an ambient intensity of 0 makes the walk skip its colour triple WITHOUT advancing
@@ -436,7 +436,7 @@ fn the_light_tuple_is_opaque_and_survives_the_round_trip() {
     // `1, 1, 1` are the ambient rgb the walk never reaches, and `0.5` is index 8 = the diffuse
     // intensity against a white colour.
     s.run("MLight:SetLight(1, 1, 0, 0, 0, 0, 0.5)").unwrap();
-    let t2: Vec<f64> = s.eval("return { MLight:GetLight() }").unwrap();
+    let t2: Vec<f64> = s.eval_sequence("return { MLight:GetLight() }").unwrap();
     assert_eq!(t2.len(), 10, "a zero ambient block collapses the arity");
     assert_eq!(t2[5], 0.0, "ambient (0,0,0) reports as a lone 0");
     assert_eq!(t2[6], 1.0);

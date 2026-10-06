@@ -518,7 +518,8 @@ fn upload_water_clips(
         return;
     }
     *last = Some(clips.generation);
-    queue.write_buffer(
+    benilla_assets::gpu_table::write_gpu_table(
+        &queue,
         &shared.0,
         region_offset(),
         bytemuck::cast_slice(clips.slots.as_slice()),

@@ -29,7 +29,7 @@
 //! press's clear-query jump lands PAST it: items are never power-gated), and the commit's opcode
 //! (`0x6e57d8 push 0xab` vs `push 0x12e`).
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use benilla_protocol::messages::UseItemTarget;
 use bevy::ecs::system::SystemParam;

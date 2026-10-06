@@ -50,7 +50,7 @@ fn harness(rank: u32) -> UiScript {
         "Interface\\FrameXML\\GameTooltip.xml",
         r"Interface\FrameXML\TabardFrame.xml",
     ] {
-        super::test_ui::load_ui(&s, file);
+        super::test_ui::load_ui(&mut s, file);
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
     s

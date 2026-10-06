@@ -153,7 +153,15 @@ fn region_node_hash(data: &RegionData) -> u64 {
         }
         None => node.feed(u64::MAX),
     }
-    match data.measured {
+    // Match the sweep's effective extent, not just the retained measure cache.
+    // Tooltip clear keeps measured text but removes its content: that region
+    // collapses to the FontString floor until text is written again. A settle
+    // between ClearLines/SetOwner and AddLine must not cache that floor as if
+    // the populated line had identical layout inputs.
+    match data
+        .measured
+        .filter(|_| data.text.as_deref().is_some_and(|t| !t.is_empty()))
+    {
         Some(m) => {
             node.f32(m.w);
             node.f32(m.h);
@@ -237,6 +245,54 @@ pub(super) const FONTSTRING_MIN_SPAN: f32 = 1.0;
 /// thousands, so the top bit is free forever.
 const REGION_TAG: u32 = 0x8000_0000;
 
+/// Can a frame geometry getter keep its converged rect despite pending writes?
+/// Only a precise ledger over a still-valid graph can prove this. Follow the
+/// queried node's READ dependencies, not the dirty nodes' dependents: moving a
+/// minimap pin cannot change the minimap it anchors to. Any uncertainty settles
+/// normally; tooltip auto-sizing is a pre-pass outside this graph and is excluded.
+pub(crate) fn frame_geometry_read_is_clean(model: &Model, h: FrameHandle) -> bool {
+    if layout_verify_enabled() {
+        return false;
+    }
+    if model.layout_epoch_resolved == Some(model.layout_epoch) {
+        return true;
+    }
+    if model.layout_epoch_resolved.is_none() || !model.resolved.contains_key(&h) {
+        return false;
+    }
+    let Some(touched) = model.layout_touched.as_ref() else {
+        return false;
+    };
+    let Some(&root) = model.frame_to_id.get(&h) else {
+        return false;
+    };
+    let scope = &model.layout_scope;
+    let mut pending = vec![root];
+    let mut visited = Vec::new();
+    while let Some(id) = pending.pop() {
+        if id == SCREEN || visited.contains(&id) {
+            continue;
+        }
+        if touched.contains(&id) || !scope.has_node(id) {
+            return false;
+        }
+        visited.push(id);
+        let n = scope.node_of[id as usize];
+        if n & REGION_TAG == 0 {
+            let frame = scope.plan[n as usize].0;
+            if model
+                .arena
+                .frame(frame)
+                .is_none_or(|f| matches!(&f.kind_state, KindState::Tooltip(_)))
+            {
+                return false;
+            }
+        }
+        pending.extend_from_slice(&scope.reads[id as usize]);
+    }
+    true
+}
+
 /// Per-node layout scope — the state that lets a resolve touch only what MOVED (decision 1350,
 /// the phase 2 decision 0771 left open).
 ///
@@ -275,12 +331,18 @@ pub(crate) struct LayoutScope {
     dep_head: Vec<u32>,
     dep_to: Vec<u32>,
     dep_next: Vec<u32>,
+    /// The same edges in reader -> targets direction, for assembling a scoped
+    /// solve without searching every node for a dirty dependent. Duplicates are
+    /// retained just like the reverse-edge lists (retarget removes one per anchor).
+    reads: Vec<Vec<u32>>,
     /// Edge slots freed by [`Self::retarget`], for [`Self::edge`] to reuse. Without it a session
     /// of hovers would grow `dep_to` by one entry per retarget forever — bounded only by the next
     /// full derivation, which is exactly the event retargeting exists to avoid.
     dep_free: Vec<u32>,
     /// Per id: in the dirty closure.
     dirty: Vec<bool>,
+    /// Exact dirty population, also used to clear only last pass's dirty marks.
+    dirty_ids: Vec<u32>,
     /// The closure's worklist.
     stack: Vec<u32>,
     /// The frame roster this cached graph describes: `(handle, id, ScrollFrame anchor override)`,
@@ -342,8 +404,13 @@ impl LayoutScope {
         self.dirty.resize(n, false);
         self.dep_to.clear();
         self.dep_next.clear();
+        self.reads.resize_with(n, Vec::new);
+        for targets in &mut self.reads {
+            targets.clear();
+        }
         self.dep_free.clear();
         self.stack.clear();
+        self.dirty_ids.clear();
         self.plan.clear();
         self.regions.clear();
         self.staged.clear();
@@ -354,8 +421,9 @@ impl LayoutScope {
     /// — `begin_full`'s six resizes and the four whole-roster walks that refill them are what a
     /// mutated frame used to pay to rediscover a graph that had not changed shape.
     fn begin_incremental(&mut self) {
-        self.dirty.clear();
-        self.dirty.resize(self.node_of.len(), false);
+        for id in self.dirty_ids.drain(..) {
+            self.dirty[id as usize] = false;
+        }
         self.stack.clear();
         self.staged.clear();
     }
@@ -390,6 +458,7 @@ impl LayoutScope {
             }
         };
         *head = e;
+        self.reads[from as usize].push(to);
     }
 
     /// Re-point node `id`'s outgoing edges after an anchor RETARGET — the write 1388 had to
@@ -454,6 +523,9 @@ impl LayoutScope {
                     self.dep_next[prev as usize] = next;
                 }
                 self.dep_free.push(e);
+                if let Some(i) = self.reads[from as usize].iter().position(|&t| t == to) {
+                    self.reads[from as usize].remove(i);
+                }
                 return;
             }
             prev = e;
@@ -467,6 +539,7 @@ impl LayoutScope {
         if let Some(d) = self.dirty.get_mut(id as usize) {
             if !*d {
                 *d = true;
+                self.dirty_ids.push(id);
                 self.stack.push(id);
             }
         }
@@ -488,9 +561,9 @@ impl LayoutScope {
     /// Everything present is dirty — the fallback for the structural cases a per-node diff cannot
     /// speak about (a death, a screen move, the first pass, a graph left mid-flight by a cycle).
     fn dirty_all(&mut self) {
-        for (id, &n) in self.node_of.iter().enumerate() {
-            if n != u32::MAX {
-                self.dirty[id] = true;
+        for id in 0..self.node_of.len() {
+            if self.node_of[id] != u32::MAX {
+                self.seed(id as u32);
             }
         }
     }
@@ -568,7 +641,7 @@ fn layout_verify_enabled() -> bool {
 #[derive(Default)]
 struct PreambleProf {
     on: bool,
-    last: Option<std::time::Instant>,
+    last: Option<benilla_time::Instant>,
     /// The GameTooltip auto-size pre-pass (`layout_tooltips`) — a whole-frame-roster filter.
     tooltip: u128,
     /// `OnSizeChanged`'s "before" snapshot — a whole-`scripts`-map filter.
@@ -604,7 +677,7 @@ impl PreambleProf {
     fn new(on: bool) -> Self {
         Self {
             on,
-            last: on.then(std::time::Instant::now),
+            last: on.then(benilla_time::Instant::now),
             ..Default::default()
         }
     }
@@ -614,7 +687,7 @@ impl PreambleProf {
         if !self.on {
             return 0;
         }
-        let now = std::time::Instant::now();
+        let now = benilla_time::Instant::now();
         self.last
             .replace(now)
             .map_or(0, |t| now.duration_since(t).as_micros())
@@ -983,10 +1056,10 @@ impl UiScript {
             if full_scope {
                 scope.dirty_all();
             } else {
-                for (id, &n) in scope.node_of.iter().enumerate() {
+                for id in 0..scope.node_of.len() {
+                    let n = scope.node_of[id];
                     if n != u32::MAX && scope.now[id] != scope.last[id] {
-                        scope.stack.push(id as u32);
-                        scope.dirty[id] = true;
+                        scope.seed(id as u32);
                     }
                 }
                 scope.close();
@@ -1001,36 +1074,33 @@ impl UiScript {
         let mut sweep_regions: Vec<u32> = Vec::new();
         let mut seed_frames: Vec<u32> = Vec::new();
         let mut seed_regions: Vec<u32> = Vec::new();
-        // Is any node that reads `id` in the closure? (Seeding is per-node work too, so a rect
-        // nothing dirty reads must not be seeded.)
-        let read_by_dirty = |scope: &LayoutScope, id: u32| -> bool {
-            let mut e = scope.dep_head[id as usize];
-            while e != u32::MAX {
-                if scope.dirty[scope.dep_to[e as usize] as usize] {
-                    return true;
-                }
-                e = scope.dep_next[e as usize];
-            }
-            false
-        };
-        for id in 0..scope.node_of.len() {
+        // EXACTLY the old roster predicate: dirty nodes plus any target read by
+        // a dirty node. Enumerating the same edges from the readers avoids a
+        // whole-UI scan on every interleaved Lua write/getter. Sort by id to keep
+        // frame/region sweep order identical, including cycles and shared targets.
+        let mut candidates = scope.dirty_ids.clone();
+        for &id in &scope.dirty_ids {
+            candidates.extend_from_slice(&scope.reads[id as usize]);
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        for id32 in candidates {
+            let id = id32 as usize;
             let n = scope.node_of[id];
             if n == u32::MAX {
                 continue;
             }
             let (idx, is_region, dirty) = (n & !REGION_TAG, n & REGION_TAG != 0, scope.dirty[id]);
-            #[allow(clippy::cast_possible_truncation)]
-            let id32 = id as u32;
             if is_region {
                 if dirty {
                     sweep_regions.push(idx);
                     seed_regions.push(idx);
-                } else if read_by_dirty(scope, id32) {
+                } else {
                     seed_regions.push(idx);
                 }
             } else if dirty {
                 solve_frames.push(idx);
-            } else if read_by_dirty(scope, id32) {
+            } else {
                 seed_frames.push(idx);
             }
         }
@@ -1049,7 +1119,7 @@ impl UiScript {
         let mut n_regions_swept = 0u64;
         for round in 0..round_cap {
             *layout_rounds += 1;
-            let t_round = prof.then(std::time::Instant::now);
+            let t_round = prof.then(benilla_time::Instant::now);
             let mut changed = false;
 
             // Seed the solver: the screen root, then every rect this pass is NOT recomputing but
@@ -1116,7 +1186,7 @@ impl UiScript {
             if let Some(t) = t_round {
                 t_frames += t.elapsed();
             }
-            let t_reg = prof.then(std::time::Instant::now);
+            let t_reg = prof.then(benilla_time::Instant::now);
             let mut scratch = LayoutInput::default();
             for &ri in &sweep_regions {
                 let RegionRow {

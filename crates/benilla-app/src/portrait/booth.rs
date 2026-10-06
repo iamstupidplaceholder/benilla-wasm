@@ -154,7 +154,7 @@ impl BoothInstance {
 /// `m2-alpha-combine-cull.md`). Marking the marker is therefore also a claim of sole `Visibility`
 /// authority over the parts that carry it; nothing else in the booth writes theirs.
 #[derive(Component)]
-pub(super) struct BoothMatAlpha;
+pub(crate) struct BoothMatAlpha;
 
 /// One bone rider headed into a booth bake ([`PortraitRider`], studio-lit).
 pub(super) struct BoothRider {
@@ -191,7 +191,7 @@ pub(super) struct BoothBillboardSpec {
 /// bakes the bone pivot — the 0130 rig identity), re-faced to THIS booth's camera every frame by
 /// [`face_booth_billboards`]. The card despawns with the booth root's joints on the next re-bake.
 #[derive(Component)]
-pub(super) struct BoothBillboard {
+pub(crate) struct BoothBillboard {
     kind: BillboardKind,
 }
 
@@ -271,7 +271,9 @@ impl BoothRig {
     /// parker can never see a booth `RigPose` without the marker that exempts it.
     pub(super) fn finish(self, commands: &mut Commands) {
         if let Some(rig) = self.rig {
-            commands.entity(self.root).insert((rig, super::StageRig));
+            commands
+                .entity(self.root)
+                .insert((rig, crate::glue_scene_host::StageRig));
         }
     }
 }
@@ -289,7 +291,7 @@ pub(super) fn clear_booth_rig(commands: &mut Commands, root: Entity) {
         benilla_world::rig_anim::GlobalSeqDrive,
         benilla_world::rig_anim::RigPose,
         benilla_world::rig_anim::AnimParked,
-        super::StageRig,
+        crate::glue_scene_host::StageRig,
         benilla_world::rig_palette::RigSkin,
     )>();
 }
@@ -316,7 +318,7 @@ pub(super) fn spawn_booth_effects(
     commands: &mut Commands,
     rig: &mut BoothRig,
     layer: &RenderLayers,
-    light: Option<&bevy::render::render_resource::Buffer>,
+    light: Option<&benilla_assets::gpu_table::GpuTable>,
     effects: &[BoothEffects],
     // The bake's instance-level properties ([`BoothInstance`]). An effect model attached to a
     // translucent instance composes onto it — see the host spawn below.
@@ -435,7 +437,7 @@ pub(super) fn spawn_booth_own_emitters(
     rig: &mut BoothRig,
     root: Entity,
     layer: &RenderLayers,
-    light: Option<&bevy::render::render_resource::Buffer>,
+    light: Option<&benilla_assets::gpu_table::GpuTable>,
     emitters: &[benilla_assets::ModelEmitter],
 ) -> (usize, usize) {
     let mut spawned = 0usize;
@@ -535,7 +537,6 @@ pub(super) fn spawn_booth_model(
         &Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
         Option<&benilla_assets::ModelAnimations>,
     )>,
-    catalog: Option<&benilla_formats::AnimDataCatalog>,
     motion: BoothMotion,
     // Per-hand weapon grip `[right, left]` — hold that hand's `HandsClosed` finger pose because a weapon
     // occupies its attach point (the paperdoll rule, wow-re `hand-grip-mechanism.md` §4c). The glue
@@ -781,7 +782,9 @@ pub(super) fn spawn_booth_model(
     // pose source (`(&AnimationPlayer, &ModelAnimations, &mut RigPose)`) — no `AnimatedBy`
     // targets exist to route bevy's own sweep here, which is the point (decision 1443).
     if let Some(anims) = anims {
-        let stand = catalog.map_or(0, |c| anims.resolve(0, c).id);
+        // Stand is inside every retail model's baked playable-animation table;
+        // resolving it is model data, not a gameplay/DBC policy dependency.
+        let stand = anims.resolve_baked(0).id;
         if let Some(clip) = anims.find(stand) {
             let mut player = AnimationPlayer::default();
             // A portrait is a still (Stand paused at t = 0); the char-create preview is a live scene
@@ -802,7 +805,7 @@ pub(super) fn spawn_booth_model(
                 if let (true, Some(node)) = (want, anims.hand_close[hand]) {
                     let active = player.play(node);
                     active.repeat();
-                    active.set_weight(crate::creature_anim::HAND_GRIP_WEIGHT);
+                    active.set_weight(benilla_world::rig_anim::HAND_GRIP_WEIGHT);
                 }
             }
             commands.entity(root).insert((
@@ -1105,7 +1108,8 @@ fn step_turn(
 /// camera basis; the joint carries translation/scale (the eye pivot, the booth/character scale). The
 /// joint pose is read a frame stale (its global is last propagate's), invisible on the near-static
 /// Stand loop the booth runs — the same latency budget the paper-doll/portrait stills already accept.
-pub(super) fn face_booth_billboards(
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn face_booth_billboards(
     cams: Query<(&GlobalTransform, &RenderLayers, &Camera), With<super::BoothCam>>,
     joints: Query<&GlobalTransform>,
     mut cards: Query<(&BoothBillboard, &ChildOf, &RenderLayers, &mut Transform)>,
@@ -1118,6 +1122,42 @@ pub(super) fn face_booth_billboards(
             .find(|(_, l, c)| c.is_active && l.intersects(layers))
         else {
             continue; // …or the card's booth camera isn't up at all (booth torn down)
+        };
+        let Ok(joint) = joints.get(child_of.parent()) else {
+            continue;
+        };
+        let basis = benilla_world::billboard::billboard_basis(
+            card.kind,
+            Quat::IDENTITY,
+            *cam.forward(),
+            *cam.right(),
+            *cam.up(),
+        );
+        tf.rotation = joint.rotation().inverse() * basis;
+    }
+}
+
+/// Browser glue-stage counterpart of [`face_booth_billboards`]. The card math and ownership stay
+/// in the production booth renderer; only the camera marker differs because the web composition
+/// deliberately does not create the native all-portrait [`super::BoothCam`] registry.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn face_booth_billboards(
+    cams: Query<
+        (&GlobalTransform, &RenderLayers, &Camera),
+        Or<(
+            With<crate::glue_scene_host::GlueSceneCamera>,
+            With<super::BoothCam>,
+        )>,
+    >,
+    joints: Query<&GlobalTransform>,
+    mut cards: Query<(&BoothBillboard, &ChildOf, &RenderLayers, &mut Transform)>,
+) {
+    for (card, child_of, layers, mut tf) in &mut cards {
+        let Some((cam, _, _)) = cams
+            .iter()
+            .find(|(_, l, c)| c.is_active && l.intersects(layers))
+        else {
+            continue;
         };
         let Ok(joint) = joints.get(child_of.parent()) else {
             continue;
@@ -1160,7 +1200,7 @@ pub(super) fn face_booth_billboards(
 /// [`BoothMatAlpha`] spawns the part with a `Mesh3d`, which requires `Visibility` — and a part
 /// without one is not a booth draw at all. Required rather than `Option`, because an optional match
 /// would quietly ship the dimming half alone again, which is the whole defect this system had.
-pub(super) fn push_booth_mat_alpha(
+pub(crate) fn push_booth_mat_alpha(
     mut parts: Query<
         (
             &benilla_world::doodad_anim::MatAnim,
@@ -1187,7 +1227,7 @@ pub(super) fn push_booth_mat_alpha(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use benilla_world::doodad_anim::MatAnim;
@@ -1479,7 +1519,6 @@ mod tests {
                 &parts,
                 &[],
                 Some((&skeleton, &ibp, None)),
-                None,
                 BoothMotion::Frozen,
                 [false, false],
                 &[],

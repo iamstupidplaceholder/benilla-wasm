@@ -29,6 +29,15 @@ use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 use benilla_world::model_fade::apply_render_fade;
 use benilla_world::schedule::WorldStage;
 
+// Browser asset delivery is asynchronous, so wasm cannot open the native `WorldAssets::chain`
+// used by `setup_entities`.  Keep that platform boundary below the production entity module: it
+// publishes the same DBC-backed resources, while this file remains the sole renderer and ECS owner.
+#[cfg(target_arch = "wasm32")]
+#[path = "web/entities/mod.rs"]
+mod web;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web::{WebAppearancePlugin, WebAppearanceReady};
+
 /// Resolving a display id to its [`DisplayModel`] and building its spawn parts once the model asset
 /// loads (materials, skeleton, collider, camera/selection metrics) — the front half of this subsystem,
 /// kept in its own file as it carries the bulk of the per-display cache/build logic.
@@ -41,7 +50,8 @@ use display::{
 /// Attaching a visual to each net entity (the back half of this subsystem) — kept in its own file as it
 /// carries the bulk of the per-entity spawn logic (skeleton/animation, character geoset + skin, fade).
 mod attach;
-use attach::{attach_entity_visuals, build_dressup_preview, build_glue_pet, build_glue_preview};
+use attach::build_dressup_preview;
+use attach::{attach_entity_visuals, build_glue_pet, build_glue_preview};
 
 /// The dynamic point lights an entity's own model carries into the world — the held torch above all:
 /// decision 0016's law applied to the *entity* half of the scene, not just the placed half.
@@ -513,9 +523,18 @@ pub(crate) struct DisplayRig<'a> {
 /// GameObject rendering: the GameObjectDisplayInfo catalog + a per-display [`DisplayModel`] cache. Same
 /// fallback rules as [`Creatures`]; a model-less GameObject renders nothing (effect/trigger).
 #[derive(Resource)]
-struct GameObjects {
+pub(crate) struct GameObjects {
     catalog: GameObjectCatalog,
     models: HashMap<u32, DisplayModel>,
+}
+
+impl GameObjects {
+    pub(crate) fn from_catalog(catalog: GameObjectCatalog) -> Self {
+        Self {
+            catalog,
+            models: HashMap::new(),
+        }
+    }
 }
 
 /// Character geoset selection (decision 0041, Milestone B): the customization → visible-geoset tables.
@@ -541,7 +560,11 @@ pub(crate) struct CharCreate(pub(crate) CharCreateCatalog);
 /// composite is a fresh `Image` asset per build (unlike an `asset_server.load` path, which dedups by
 /// path), so without this cache every player would re-composite and break material dedup downstream.
 #[derive(Resource, Default)]
-struct SkinComposites(benilla_assets::SpatialCache<SkinKey, Handle<Image>>);
+struct SkinComposites(
+    benilla_assets::SpatialCache<SkinKey, Handle<Image>>,
+    // Exact keys requested by production consumers while host delivery is pending.
+    std::collections::HashSet<SkinKey>,
+);
 
 /// The appearance fields that determine a composited body skin (decision 0044): race/sex pick the
 /// CharSections rows; skin/face/facialHair/hairStyle/hairColor pick the base + overlay variations;
@@ -785,6 +808,7 @@ pub(crate) struct EntitiesPlugin;
 
 impl Plugin for EntitiesPlugin {
     fn build(&self, app: &mut App) {
+        crate::creature_anim::register_entity_effect_contract(app);
         app.add_systems(
             Update,
             publish_world_units
@@ -1018,172 +1042,185 @@ fn setup_entities(
         npc_mat: mat(0.9, 0.25, 0.2),    // red: NPCs
     });
 
-    let Some(world_assets) = world_assets else {
-        return;
-    };
-    let mut chain = world_assets.chain.lock_recover();
-    match load_creature_catalog(&mut chain) {
-        Ok(catalog) => {
-            info!(
-                "creature catalog: {} display entries, {} character-model NPC appearances",
-                catalog.len(),
-                catalog.extra_len()
-            );
-            commands.insert_resource(Creatures {
-                catalog,
-                models: HashMap::new(),
-            });
+    // Native opens the synchronous MPQ chain here. The browser publishes the same resources from
+    // `WebAppearancePlugin` after its gateway-backed AssetServer requests finish.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(world_assets) = world_assets else {
+            return;
+        };
+        let mut chain = world_assets.chain.lock_recover();
+        match load_creature_catalog(&mut *chain) {
+            Ok(catalog) => {
+                info!(
+                    "creature catalog: {} display entries, {} character-model NPC appearances",
+                    catalog.len(),
+                    catalog.extra_len()
+                );
+                commands.insert_resource(Creatures {
+                    catalog,
+                    models: HashMap::new(),
+                });
+            }
+            Err(e) => warn!("creature catalog unavailable, NPCs stay cubes: {e:#}"),
         }
-        Err(e) => warn!("creature catalog unavailable, NPCs stay cubes: {e:#}"),
-    }
-    match load_gameobject_catalog(&mut chain) {
-        Ok(catalog) => {
-            info!("gameobject catalog: {} display entries", catalog.len());
-            commands.insert_resource(GameObjects {
-                catalog,
-                models: HashMap::new(),
-            });
+        match load_gameobject_catalog(&mut *chain) {
+            Ok(catalog) => {
+                info!("gameobject catalog: {} display entries", catalog.len());
+                commands.insert_resource(GameObjects {
+                    catalog,
+                    models: HashMap::new(),
+                });
+            }
+            Err(e) => warn!("gameobject catalog unavailable, GameObjects stay cubes: {e:#}"),
         }
-        Err(e) => warn!("gameobject catalog unavailable, GameObjects stay cubes: {e:#}"),
-    }
-    match benilla_formats::load_lock_catalog(&mut chain) {
-        Ok(catalog) => {
-            info!("lock catalog: {} locks", catalog.len());
-            commands.insert_resource(crate::go_templates::Locks(catalog));
+        match benilla_formats::load_lock_catalog(&mut *chain) {
+            Ok(catalog) => {
+                info!("lock catalog: {} locks", catalog.len());
+                commands.insert_resource(crate::go_templates::Locks(catalog));
+            }
+            // No lock data ⇒ every GameObject reads as lockless (right-click sends USE) — degraded, not broken.
+            Err(e) => warn!("lock catalog unavailable, GameObjects treated as lockless: {e:#}"),
         }
-        // No lock data ⇒ every GameObject reads as lockless (right-click sends USE) — degraded, not broken.
-        Err(e) => warn!("lock catalog unavailable, GameObjects treated as lockless: {e:#}"),
-    }
-    match benilla_formats::load_lock_type_catalog(&mut chain) {
-        Ok(catalog) => {
-            info!(
-                "lock-type catalog: {} cursor-bearing lock kinds",
-                catalog.len()
-            );
-            commands.insert_resource(crate::go_templates::LockTypes(catalog));
+        match benilla_formats::load_lock_type_catalog(&mut *chain) {
+            Ok(catalog) => {
+                info!(
+                    "lock-type catalog: {} cursor-bearing lock kinds",
+                    catalog.len()
+                );
+                commands.insert_resource(crate::go_templates::LockTypes(catalog));
+            }
+            // No LockType data ⇒ lock-bearing GOs fall back to the Interact gear cursor — degraded, not broken.
+            Err(e) => {
+                warn!("lock-type catalog unavailable, GO cursors fall back to Interact: {e:#}")
+            }
         }
-        // No LockType data ⇒ lock-bearing GOs fall back to the Interact gear cursor — degraded, not broken.
-        Err(e) => warn!("lock-type catalog unavailable, GO cursors fall back to Interact: {e:#}"),
-    }
-    match (
-        benilla_formats::load_pet_personalities(&mut chain),
-        benilla_formats::load_pet_loyalty_names(&mut chain),
-    ) {
-        (Ok(personalities), Ok(loyalty)) => {
-            info!(
-                "pet stat tables: {} personalities, {} loyalty levels",
-                personalities.len(),
-                loyalty.len()
-            );
-            commands.insert_resource(crate::ui_pet_stats::PetStatTables {
-                personalities,
-                loyalty,
-            });
+        match (
+            benilla_formats::load_pet_personalities(&mut *chain),
+            benilla_formats::load_pet_loyalty_names(&mut *chain),
+        ) {
+            (Ok(personalities), Ok(loyalty)) => {
+                info!(
+                    "pet stat tables: {} personalities, {} loyalty levels",
+                    personalities.len(),
+                    loyalty.len()
+                );
+                commands.insert_resource(crate::ui_pet_stats::PetStatTables {
+                    personalities,
+                    loyalty,
+                });
+            }
+            // No pet tables ⇒ happiness answers its own gate-failure nil (so the icon hides) and the
+            // loyalty line is blank; the rest of the paper doll — XP, training points — reads straight
+            // off the descriptor and is unaffected. Degraded, not wrong.
+            (p, l) => warn!(
+                "pet stat tables unavailable, happiness/loyalty stay blank: {:#}",
+                p.err().or(l.err()).expect("at least one of the two failed")
+            ),
         }
-        // No pet tables ⇒ happiness answers its own gate-failure nil (so the icon hides) and the
-        // loyalty line is blank; the rest of the paper doll — XP, training points — reads straight
-        // off the descriptor and is unaffected. Degraded, not wrong.
-        (p, l) => warn!(
-            "pet stat tables unavailable, happiness/loyalty stay blank: {:#}",
-            p.err().or(l.err()).expect("at least one of the two failed")
-        ),
-    }
-    // The family pair (decision 1062) — its own resource, so it degrades independently of the
-    // happiness tables above rather than taking them down with it.
-    match (
-        benilla_formats::load_creature_families(&mut chain),
-        benilla_formats::load_pet_food_names(&mut chain),
-    ) {
-        (Ok(families), Ok(foods)) => {
-            info!(
-                "pet family tables: {} families, {} food types",
-                families.len(),
-                foods.len()
-            );
-            commands.insert_resource(crate::ui_pet_stats::PetFamilyTables { families, foods });
+        // The family pair (decision 1062) — its own resource, so it degrades independently of the
+        // happiness tables above rather than taking them down with it.
+        match (
+            benilla_formats::load_creature_families(&mut *chain),
+            benilla_formats::load_pet_food_names(&mut *chain),
+        ) {
+            (Ok(families), Ok(foods)) => {
+                info!(
+                    "pet family tables: {} families, {} food types",
+                    families.len(),
+                    foods.len()
+                );
+                commands.insert_resource(crate::ui_pet_stats::PetFamilyTables { families, foods });
+            }
+            // No family tables ⇒ `UnitCreatureFamily("pet")` answers nil, which the reference's own
+            // guard turns into a BLANK level line on the pet page (ref `PetPaperDollFrame.lua:68-70`),
+            // and the diet tooltip shows nothing at all. That is exactly the state 1057 shipped in —
+            // degraded to the faithful fallback, not wrong.
+            (f, p) => warn!(
+                "pet family tables unavailable, the pet's level line stays blank: {:#}",
+                f.err().or(p.err()).expect("at least one of the two failed")
+            ),
         }
-        // No family tables ⇒ `UnitCreatureFamily("pet")` answers nil, which the reference's own
-        // guard turns into a BLANK level line on the pet page (ref `PetPaperDollFrame.lua:68-70`),
-        // and the diet tooltip shows nothing at all. That is exactly the state 1057 shipped in —
-        // degraded to the faithful fallback, not wrong.
-        (f, p) => warn!(
-            "pet family tables unavailable, the pet's level line stays blank: {:#}",
-            f.err().or(p.err()).expect("at least one of the two failed")
-        ),
-    }
-    match CharacterGeosets::load(&mut chain) {
-        Ok(geosets) => commands.insert_resource(Characters(geosets)),
-        Err(e) => warn!("character geosets unavailable, players show every geoset: {e:#}"),
-    }
-    match CharSections::load(&mut chain) {
-        Ok(sections) => commands.insert_resource(SkinSections(sections)),
-        Err(e) => warn!("char sections unavailable, player bodies stay untextured: {e:#}"),
-    }
-    match CharCreateCatalog::load(&mut chain) {
-        Ok(catalog) => commands.insert_resource(CharCreate(catalog)),
-        Err(e) => warn!("char-create catalog unavailable, the create screen is disabled: {e:#}"),
-    }
-    match load_item_display_catalog(&mut chain) {
-        Ok(catalog) => {
-            info!("item display catalog: {} entries", catalog.len());
-            commands.insert_resource(ItemDisplays {
-                catalog,
-                models: HashMap::new(),
-            });
+        match CharacterGeosets::load(&mut *chain) {
+            Ok(geosets) => commands.insert_resource(Characters(geosets)),
+            Err(e) => warn!("character geosets unavailable, players show every geoset: {e:#}"),
         }
-        Err(e) => warn!("item displays unavailable, units hold nothing: {e:#}"),
-    }
-    // The glow chain's ItemVisuals join (decision 0805). Absent, weapons draw unadorned.
-    match benilla_formats::load_item_visual_catalog(&mut chain) {
-        Ok(visuals) => {
-            info!("item visual catalog: {} glow rows", visuals.len());
-            commands.insert_resource(ItemGlows::new(visuals));
+        match CharSections::load(&mut *chain) {
+            Ok(sections) => commands.insert_resource(SkinSections(sections)),
+            Err(e) => warn!("char sections unavailable, player bodies stay untextured: {e:#}"),
         }
-        Err(e) => warn!("item visuals unavailable, weapons never glow: {e:#}"),
-    }
-    // `SpellItemEnchantment`'s two consumer columns — the enchant half of that glow chain, and
-    // the tooltip's enchant line (decision 0915). One load, one resource, both lanes.
-    match benilla_formats::load_enchant_catalog(&mut chain) {
-        Ok(enchants) => {
-            info!(
-                "enchant catalog: {} named, {} carrying a glow",
-                enchants.name_count(),
-                enchants.visual_count()
-            );
-            commands.insert_resource(crate::items::Enchants(enchants));
+        match CharCreateCatalog::load(&mut *chain) {
+            Ok(catalog) => commands.insert_resource(CharCreate(catalog)),
+            Err(e) => {
+                warn!("char-create catalog unavailable, the create screen is disabled: {e:#}")
+            }
         }
-        Err(e) => warn!("enchants unavailable: no enchant glow, no enchant line: {e:#}"),
-    }
-    // `ItemRandomProperties` — the random-suffix roll's name and its enchant slots 2..6 (decision
-    // 1547). Absent, a rolled item reads by its base name and shows no suffix lines.
-    match benilla_formats::load_random_property_catalog(&mut chain) {
-        Ok(props) => {
-            info!("random-property catalog: {} suffix rows", props.len());
-            commands.insert_resource(crate::items::RandomProperties(props));
+        match load_item_display_catalog(&mut *chain) {
+            Ok(catalog) => {
+                info!("item display catalog: {} entries", catalog.len());
+                commands.insert_resource(ItemDisplays {
+                    catalog,
+                    models: HashMap::new(),
+                });
+            }
+            Err(e) => warn!("item displays unavailable, units hold nothing: {e:#}"),
         }
-        Err(e) => {
-            warn!("random properties unavailable: no item name suffix, no suffix line: {e:#}")
+        // The glow chain's ItemVisuals join (decision 0805). Absent, weapons draw unadorned.
+        match benilla_formats::load_item_visual_catalog(&mut *chain) {
+            Ok(visuals) => {
+                info!("item visual catalog: {} glow rows", visuals.len());
+                commands.insert_resource(ItemGlows::new(visuals));
+            }
+            Err(e) => warn!("item visuals unavailable, weapons never glow: {e:#}"),
         }
-    }
-    match benilla_formats::load_durability_tables(&mut chain) {
-        Ok(tables) => commands.insert_resource(crate::ui_merchant::RepairTables(tables)),
-        Err(e) => warn!("durability tables unavailable, repair costs show 0: {e:#}"),
-    }
-    match benilla_formats::load_bank_bag_slot_prices(&mut chain) {
-        Ok(prices) => commands.insert_resource(crate::ui_bank::BankPrices(prices)),
-        Err(e) => warn!("bank bag slot prices unavailable, the purchase row shows 0: {e:#}"),
-    }
-    match benilla_formats::load_stable_slot_prices(&mut chain) {
-        Ok(prices) => commands.insert_resource(crate::ui_stable::StableSlotPrices(prices)),
-        Err(e) => warn!("stable slot prices unavailable, the purchase row shows 0: {e:#}"),
-    }
-    match benilla_formats::load_stationery_catalog(&mut chain) {
-        Ok(catalog) => commands.insert_resource(crate::ui_mail::Stationery(catalog)),
-        Err(e) => warn!("stationery catalog unavailable, mail uses the default backdrop: {e:#}"),
-    }
-    match benilla_formats::load_page_text_material_catalog(&mut chain) {
-        Ok(catalog) => commands.insert_resource(crate::ui_item_text::PageMaterials(catalog)),
-        Err(e) => warn!("page text materials unavailable, books read on parchment: {e:#}"),
+        // `SpellItemEnchantment`'s two consumer columns — the enchant half of that glow chain, and
+        // the tooltip's enchant line (decision 0915). One load, one resource, both lanes.
+        match benilla_formats::load_enchant_catalog(&mut *chain) {
+            Ok(enchants) => {
+                info!(
+                    "enchant catalog: {} named, {} carrying a glow",
+                    enchants.name_count(),
+                    enchants.visual_count()
+                );
+                commands.insert_resource(crate::items::Enchants(enchants));
+            }
+            Err(e) => warn!("enchants unavailable: no enchant glow, no enchant line: {e:#}"),
+        }
+        // `ItemRandomProperties` — the random-suffix roll's name and its enchant slots 2..6 (decision
+        // 1547). Absent, a rolled item reads by its base name and shows no suffix lines.
+        match benilla_formats::load_random_property_catalog(&mut *chain) {
+            Ok(props) => {
+                info!("random-property catalog: {} suffix rows", props.len());
+                commands.insert_resource(crate::items::RandomProperties(props));
+            }
+            Err(e) => {
+                warn!("random properties unavailable: no item name suffix, no suffix line: {e:#}")
+            }
+        }
+        match benilla_formats::load_durability_tables(&mut *chain) {
+            Ok(tables) => commands.insert_resource(crate::ui_merchant::RepairTables(
+                std::sync::Arc::new(crate::ui_merchant::RepairCatalog(tables)),
+            )),
+            Err(e) => warn!("durability tables unavailable, repair costs show 0: {e:#}"),
+        }
+        match benilla_formats::load_bank_bag_slot_prices(&mut *chain) {
+            Ok(prices) => commands.insert_resource(crate::ui_bank::BankPrices(prices)),
+            Err(e) => warn!("bank bag slot prices unavailable, the purchase row shows 0: {e:#}"),
+        }
+        match benilla_formats::load_stable_slot_prices(&mut *chain) {
+            Ok(prices) => commands.insert_resource(crate::ui_stable::StableSlotPrices(prices)),
+            Err(e) => warn!("stable slot prices unavailable, the purchase row shows 0: {e:#}"),
+        }
+        match benilla_formats::load_stationery_catalog(&mut *chain) {
+            Ok(catalog) => commands.insert_resource(crate::ui_mail::Stationery(catalog)),
+            Err(e) => {
+                warn!("stationery catalog unavailable, mail uses the default backdrop: {e:#}")
+            }
+        }
+        match benilla_formats::load_page_text_material_catalog(&mut *chain) {
+            Ok(catalog) => commands.insert_resource(crate::ui_item_text::PageMaterials(catalog)),
+            Err(e) => warn!("page text materials unavailable, books read on parchment: {e:#}"),
+        }
     }
 }
 

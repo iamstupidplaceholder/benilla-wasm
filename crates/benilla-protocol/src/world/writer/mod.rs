@@ -131,6 +131,11 @@ pub struct WorldWriter {
 }
 
 impl WorldWriter {
+    /// Close both halves of this transport, waking any blocked session read.
+    pub fn disconnect(&mut self) -> Result<()> {
+        self.stream.shutdown(std::net::Shutdown::Both)?;
+        Ok(())
+    }
     /// Frame, encrypt, and write one packet. Private, and the sole write path — every verb in the
     /// family modules goes through here, so there is exactly one place framing/encryption happens.
     /// Visible to them because a private item is in scope throughout its module's descendants.

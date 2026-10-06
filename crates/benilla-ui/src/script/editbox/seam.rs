@@ -16,7 +16,7 @@ impl UiScript {
         let h = self.model_mut().focused_editbox?;
         // Materialize the lazy text region first — its resolved font is the table's identity
         // (a just-focused CreateFrame'd box has none until here).
-        let rh = super::ensure_text_region(self.lua(), h)?;
+        let rh = super::ensure_text_region_context(&mut self.lua, h)?;
         let mut model = self.model_mut();
         let (display, multi_line) = match model.arena.frame(h).map(|f| &f.kind_state) {
             Some(KindState::EditBox(eb)) => (eb.display(), eb.multi_line),
@@ -122,7 +122,7 @@ impl UiScript {
         };
         // Focus means "about to type": materialize the lazy text region (the same lazy
         // constructor `sync_text_region` uses), so an empty just-focused box has a caret home.
-        let rh = super::ensure_text_region(self.lua(), h)?;
+        let rh = super::ensure_text_region_context(&mut self.lua, h)?;
         let mut model = self.model_mut();
         // The text region's resolved width; an unanchored region (a CreateFrame'd box without
         // insets) draws over its owner, so the frame's own rect is its width.
@@ -200,12 +200,12 @@ impl UiScript {
     /// Ctrl/Cmd+C for the focused EditBox: the selected substring for the OS clipboard (`None` =
     /// no selection; a password box yields its mask run, never the real text — RF-0082 §4).
     pub fn editbox_copy(&mut self) -> Option<String> {
-        super::copy_selection(self.lua())
+        super::copy_selection(&mut self.lua)
     }
 
     /// Ctrl/Cmd+X for the focused EditBox: copy, then delete the selection.
     pub fn editbox_cut(&mut self) -> Option<String> {
-        super::cut_selection(self.lua())
+        super::cut_selection(&mut self.lua)
     }
 
     /// Push one submitted line into the named box's recall history — the ref's
@@ -214,13 +214,23 @@ impl UiScript {
     /// so by the time the router runs, the box has already cleared and dropped focus. Returns
     /// `false` when `box_name` names no live EditBox.
     pub fn editbox_add_history(&mut self, box_name: &str, line: &str) -> bool {
-        let lua = self.lua();
-        let Ok(t) = lua.globals().get::<mlua::Table>(box_name) else {
+        let lua = &mut self.lua;
+        let Ok(table) = lua.global_table(box_name) else {
             return false;
         };
-        let Ok(h) = crate::script::object::frame_handle_of(lua, &t) else {
+        let Ok(handle) = crate::script::object::frame_handle_of_context(lua, &table) else {
             return false;
         };
-        super::with_eb(lua, h, |eb| eb.add_history_line(line)).is_some()
+        let mut model = lua
+            .app_data_mut::<crate::script::Model>()
+            .expect("model app_data");
+        let Some(frame) = model.arena.frame_mut(handle) else {
+            return false;
+        };
+        let KindState::EditBox(editbox) = &mut frame.kind_state else {
+            return false;
+        };
+        editbox.add_history_line(line);
+        true
     }
 }

@@ -29,7 +29,7 @@
 //!
 //! The app owns the pending records, so this module holds only the intents.
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use super::Model;
 
@@ -72,50 +72,39 @@ impl super::UiScript {
 }
 
 /// Register the three globals (the style [`super::binder`] registers its two).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // EquipPendingItem(index) — `StaticPopupDialogs["EQUIP_BIND"].OnAccept` and its AUTOEQUIP twin
     // (`StaticPopup.lua:612-647`). Re-issues the deferred action; the app owns what that action was.
-    g.set(
-        "EquipPendingItem",
-        lua.create_function(|lua, index: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pending_equip_answers.push(PendingEquipAnswer {
-                index,
-                accept: true,
-            });
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("EquipPendingItem", |lua, index: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pending_equip_answers.push(PendingEquipAnswer {
+            index,
+            accept: true,
+        });
+        Ok(())
+    })?;
 
     // CancelPendingEquip(index) — the same two entries' `OnCancel` AND their `OnHide`, which is not
     // redundancy: `exclusive = 1` means a second bind question hides the standing dialog, and the
     // reference relies on that `OnHide` to cancel the record it supersedes. A superseded pending
     // equip is CANCELLED, never silently overwritten — without it the old item's locks leak.
-    g.set(
-        "CancelPendingEquip",
-        lua.create_function(|lua, index: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.pending_equip_answers.push(PendingEquipAnswer {
-                index,
-                accept: false,
-            });
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CancelPendingEquip", |lua, index: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.pending_equip_answers.push(PendingEquipAnswer {
+            index,
+            accept: false,
+        });
+        Ok(())
+    })?;
 
     // ConfirmBindOnUse() — `StaticPopupDialogs["USE_BIND"].OnAccept` (`StaticPopup.lua:648-658`).
     // No argument and no cancel twin: the use arm's pending state is a single client global, and
     // declining just drops it.
-    g.set(
-        "ConfirmBindOnUse",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.bind_on_use_confirms += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConfirmBindOnUse", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.bind_on_use_confirms += 1;
+        Ok(())
+    })?;
 
     Ok(())
 }

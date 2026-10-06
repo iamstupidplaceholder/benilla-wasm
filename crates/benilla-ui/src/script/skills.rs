@@ -77,7 +77,7 @@
 
 use std::collections::HashMap;
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -317,8 +317,8 @@ fn set_collapsed(model: &mut Model, id: usize, collapse: bool) {
 /// The numeric slots are 4 (`skillRank`), 5 (`numTempPoints`), 6 (`skillModifier`), 7
 /// (`skillMaxRank`), 11 (`minLevel`) and 12 (`skillCostType`). Slots 4 and 5 must be numbers or the
 /// reference's own unguarded `skillRank + numTempPoints` raises.
-fn out_of_range_tuple(_lua: &Lua) -> mlua::Result<MultiValue> {
-    Ok(MultiValue::from_vec(vec![
+fn out_of_range_tuple() -> MultiValue {
+    MultiValue::from(vec![
         Value::Nil,        // 1  skillName
         Value::Nil,        // 2  header
         Value::Nil,        // 3  isExpanded
@@ -332,7 +332,7 @@ fn out_of_range_tuple(_lua: &Lua) -> mlua::Result<MultiValue> {
         Value::Integer(0), // 11 minLevel
         Value::Integer(0), // 12 skillCostType
         Value::Nil,        // 13 skillDescription
-    ]))
+    ])
 }
 
 fn set_selected(model: &mut Model, index: u32) {
@@ -391,17 +391,12 @@ fn era_bool(b: bool) -> Value {
 }
 
 /// Register the skills-pane globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNumSkillLines() → the visible row count (0 before any push).
-    g.set(
-        "GetNumSkillLines",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(num_rows(&model) as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumSkillLines", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(num_rows(&model) as i64)
+    })?;
 
     // GetSkillLineInfo(index) → the ref's own tuple: 13 values on a skill row (`0x4d3a20`), 12 on
     // a header (`0x4d3768`). `index` 1-based.
@@ -421,122 +416,101 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // value" the moment the stock file drives us. Slot 1 being nil is what drives its
     // `if (not skillName …) then … return` at l.211. The selection verbs are NOT the divergence:
     // `GetSelectedSkill 0x4d4090` always pushes exactly one number and legitimately answers 0.
-    g.set(
-        "GetSkillLineInfo",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(n) = index.checked_sub(1) else {
-                return out_of_range_tuple(lua);
-            };
-            let Some(row) = rows(&model).get(n).copied() else {
-                return out_of_range_tuple(lua);
-            };
-            match row {
-                Row::Header(gi) => {
-                    let grp = &model.skills_groups[gi];
-                    let expanded = !model.skills_collapsed.contains(&grp.category_id);
-                    Ok(MultiValue::from_vec(vec![
-                        Value::String(lua.create_string(&grp.name)?),
-                        Value::Integer(1), // isHeader
-                        era_bool(expanded),
-                        Value::Integer(0), // skillRank
-                        Value::Integer(0), // numTempPoints — a real field; 0 because we model no temp points (1919)
-                        Value::Integer(0), // skillModifier
-                        Value::Integer(0), // skillMaxRank
-                        Value::Nil,        // isAbandonable
-                        Value::Nil,        // stepCost
-                        Value::Nil,        // rankCost
-                        Value::Integer(0), // minLevel
-                        Value::Integer(0), // skillCostType — the 12th and LAST header return
-                    ]))
-                }
-                Row::Entry(ei) => {
-                    let e = &model.skills.entries[ei];
-                    let (rank, max) = displayed_ranks(e);
-                    Ok(MultiValue::from_vec(vec![
-                        Value::String(lua.create_string(&e.name)?),
-                        Value::Nil, // isHeader
-                        Value::Nil, // isExpanded
-                        Value::Integer(rank),
-                        Value::Integer(0), // numTempPoints — a real field; 0 because we model no temp points (1919)
-                        Value::Integer(i64::from(e.temp_bonus)), // skillModifier — TEMP only
-                        Value::Integer(max),
-                        era_bool(e.abandonable), // isAbandonable
-                        // stepCost/rankCost are nil on this build for DATA reasons, not code
-                        // ones (module doc) — and nil is load-bearing: `0` is truthy in Lua, so
-                        // returning it would send SkillFrame.lua down its "learnable skill"
-                        // branch on every row.
-                        Value::Nil,
-                        Value::Nil,
-                        Value::Integer(i64::from(e.min_level)), // minLevel — a real number
-                        // skillCostType — SkillCostIndex + 1, the client's own `0x4d3a06`.
-                        Value::Integer(i64::from(e.cost_index) + 1),
-                        Value::String(lua.create_string(&e.description)?), // skillDescription
-                    ]))
-                }
+    lua.register_function("GetSkillLineInfo", |lua, index: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(n) = index.checked_sub(1) else {
+            return Ok(out_of_range_tuple());
+        };
+        let Some(row) = rows(&model).get(n).copied() else {
+            return Ok(out_of_range_tuple());
+        };
+        match row {
+            Row::Header(gi) => {
+                let grp = &model.skills_groups[gi];
+                let expanded = !model.skills_collapsed.contains(&grp.category_id);
+                Ok(MultiValue::from(vec![
+                    Value::from(grp.name.clone()),
+                    Value::Integer(1), // isHeader
+                    era_bool(expanded),
+                    Value::Integer(0), // skillRank
+                    Value::Integer(0), // numTempPoints — a real field; 0 because we model no temp points (1919)
+                    Value::Integer(0), // skillModifier
+                    Value::Integer(0), // skillMaxRank
+                    Value::Nil,        // isAbandonable
+                    Value::Nil,        // stepCost
+                    Value::Nil,        // rankCost
+                    Value::Integer(0), // minLevel
+                    Value::Integer(0), // skillCostType — the 12th and LAST header return
+                ]))
             }
-        })?,
-    )?;
+            Row::Entry(ei) => {
+                let e = &model.skills.entries[ei];
+                let (rank, max) = displayed_ranks(e);
+                Ok(MultiValue::from(vec![
+                    Value::from(e.name.clone()),
+                    Value::Nil, // isHeader
+                    Value::Nil, // isExpanded
+                    Value::Integer(rank),
+                    Value::Integer(0), // numTempPoints — a real field; 0 because we model no temp points (1919)
+                    Value::Integer(i64::from(e.temp_bonus)), // skillModifier — TEMP only
+                    Value::Integer(max),
+                    era_bool(e.abandonable), // isAbandonable
+                    // stepCost/rankCost are nil on this build for DATA reasons, not code
+                    // ones (module doc) — and nil is load-bearing: `0` is truthy in Lua, so
+                    // returning it would send SkillFrame.lua down its "learnable skill"
+                    // branch on every row.
+                    Value::Nil,
+                    Value::Nil,
+                    Value::Integer(i64::from(e.min_level)), // minLevel — a real number
+                    // skillCostType — SkillCostIndex + 1, the client's own `0x4d3a06`.
+                    Value::Integer(i64::from(e.cost_index) + 1),
+                    Value::from(e.description.clone()), // skillDescription
+                ]))
+            }
+        }
+    })?;
 
     // Collapse/ExpandSkillHeader(id) — fold a category by the display index of its header row (id
     // 0 = all groups); a non-header (or OOB) index no-ops.
-    g.set(
-        "CollapseSkillHeader",
-        lua.create_function(|lua, id: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            set_collapsed(&mut model, id, true);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "ExpandSkillHeader",
-        lua.create_function(|lua, id: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            set_collapsed(&mut model, id, false);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CollapseSkillHeader", |lua, id: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        set_collapsed(&mut model, id, true);
+        Ok(())
+    })?;
+    lua.register_function("ExpandSkillHeader", |lua, id: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        set_collapsed(&mut model, id, false);
+        Ok(())
+    })?;
 
     // SetSelectedSkill(index) / GetSelectedSkill() — the engine-held selection, VISIBLE index in,
     // VISIBLE index out, held BY SKILL ID internally (module doc).
-    g.set(
-        "SetSelectedSkill",
-        lua.create_function(|lua, index: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            set_selected(&mut model, index);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "GetSelectedSkill",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(selected_index(&model)))
-        })?,
-    )?;
+    lua.register_function("SetSelectedSkill", |lua, index: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        set_selected(&mut model, index);
+        Ok(())
+    })?;
+    lua.register_function("GetSelectedSkill", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(selected_index(&model)))
+    })?;
 
     // GetAdjustedSkillPoints() → 0 — a vestigial 1.12 leftover the ref reads (module doc); this
     // client has no training-point economy behind a skill line.
-    g.set(
-        "GetAdjustedSkillPoints",
-        lua.create_function(|_, ()| Ok(0i64))?,
-    )?;
+    lua.register_function("GetAdjustedSkillPoints", |_, ()| Ok(0i64))?;
 
     // AbandonSkill(index) — VISIBLE index in (the ref's UNLEARN_SKILL popup passes the row it was
     // opened for), queued out BY SKILL ID for the app's CMSG_UNLEARN_SKILL send. Mutates NOTHING
     // locally: the real client waits for the server's skill-field update (vmangos SetSkill(id,0,0)
     // → our descriptor watcher → a fresh set_skills push → SKILL_LINES_CHANGED). A header or
     // out-of-range index no-ops (only entries carry the unlearn button).
-    g.set(
-        "AbandonSkill",
-        lua.create_function(|lua, index: usize| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if let Some(id) = entry_at(&model, index).map(|e| e.skill_id) {
-                model.skill_abandons.push(id);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("AbandonSkill", |lua, index: usize| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if let Some(id) = entry_at(&model, index).map(|e| e.skill_id) {
+            model.skill_abandons.push(id);
+        }
+        Ok(())
+    })?;
 
     // CancelSkillUps() — `0x4d3e30` → `0x4d35c9` (reference `1.12-shapes.tsv`: no arguments, no
     // returns): the reset leg of the temp-point table, zeroing every entry's `numTempPoints` and
@@ -546,7 +520,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // empty by construction, so the reset moves nothing — the binding's whole effect on this
     // client's data, not a stand-in for it. The day temp points are modelled, this is where
     // they are cleared.
-    g.set("CancelSkillUps", lua.create_function(|_, ()| Ok(()))?)?;
+    lua.register_function("CancelSkillUps", |_, ()| Ok(()))?;
 
     Ok(())
 }
@@ -906,7 +880,7 @@ mod tests {
     /// through one unsigned bounds test (`0x4d3675`).
     #[test]
     fn out_of_range_answers_the_thirteen_value_tuple() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         for idx in ["0", "1", "99"] {
             assert_eq!(
                 s.arity(&format!("GetSkillLineInfo({idx})")).unwrap(),
@@ -931,7 +905,7 @@ mod tests {
 
     #[test]
     fn no_push_reports_zero_rows() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(s.eval::<i64>("return GetNumSkillLines()").unwrap(), 0);
         // The empty pane answers the out-of-range tuple; the test above holds its ARITY, which is
         // the load-bearing half. This line only pins slot 1.

@@ -34,7 +34,7 @@
 //! `TOOLTIP_TALENT_NEXT_RANK` white + the next rank spell's description gold — its view from the
 //! same store) — 0305 didn't walk it.
 
-use mlua::{Lua, MultiValue, Table, Value};
+use benilla_lua::{LuaContext, MultiValue, Table as LuaTable, Value, Vm};
 
 use super::tooltip_spell::{spell_view_of, TalentLines};
 use super::Model;
@@ -139,150 +139,121 @@ fn talent_at(model: &Model, tab: usize, index: usize) -> Option<&TalentView> {
 }
 
 /// Register the talent globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    g.set(
-        "GetNumTalentTabs",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.talents.tabs.len() as i64)
-        })?,
-    )?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("GetNumTalentTabs", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.talents.tabs.len() as i64)
+    })?;
 
     // GetTalentTabInfo(i) -> name, texture, pointsSpent, fileName. `texture` is nil — the
     // reference frame never reads it (module doc); out of range -> a single nil.
-    g.set(
-        "GetTalentTabInfo",
-        lua.create_function(|lua, i: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(tab) = i.checked_sub(1).and_then(|n| model.talents.tabs.get(n)) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&tab.name)?),
-                Value::Nil,
-                Value::Integer(i64::from(tab.points_spent)),
-                Value::String(lua.create_string(&tab.background)?),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetTalentTabInfo", |lua, i: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(tab) = i.checked_sub(1).and_then(|n| model.talents.tabs.get(n)) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(tab.name.clone()),
+            Value::Nil,
+            Value::Integer(i64::from(tab.points_spent)),
+            Value::from(tab.background.clone()),
+        ]))
+    })?;
 
-    g.set(
-        "GetNumTalents",
-        lua.create_function(|lua, tab: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let n = tab
-                .checked_sub(1)
-                .and_then(|t| model.talents.talents.get(t))
-                .map_or(0, Vec::len);
-            Ok(n as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumTalents", |lua, tab: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let n = tab
+            .checked_sub(1)
+            .and_then(|t| model.talents.talents.get(t))
+            .map_or(0, Vec::len);
+        Ok(n as i64)
+    })?;
 
     // GetTalentInfo(tab, i) -> name, icon, tier, column, rank, maxRank, isExceptional,
     // meetsPrereq. `isExceptional` is 0 (pushed nowhere; the reference render ignores it).
-    g.set(
-        "GetTalentInfo",
-        lua.create_function(|lua, (tab, i): (usize, usize)| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(t) = talent_at(&model, tab, i) else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let texture = match &t.texture {
-                Some(tex) => Value::String(lua.create_string(tex)?),
-                None => Value::Nil,
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&t.name)?),
-                texture,
-                Value::Integer(i64::from(t.tier)),
-                Value::Integer(i64::from(t.column)),
-                Value::Integer(i64::from(t.rank)),
-                Value::Integer(i64::from(t.max_rank)),
-                Value::Integer(i64::from(t.exceptional)),
-                Value::Boolean(t.meets_prereq),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetTalentInfo", |lua, (tab, i): (usize, usize)| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(t) = talent_at(&model, tab, i) else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let texture = match &t.texture {
+            Some(tex) => Value::from(tex.clone()),
+            None => Value::Nil,
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(t.name.clone()),
+            texture,
+            Value::Integer(i64::from(t.tier)),
+            Value::Integer(i64::from(t.column)),
+            Value::Integer(i64::from(t.rank)),
+            Value::Integer(i64::from(t.max_rank)),
+            Value::Integer(i64::from(t.exceptional)),
+            Value::Boolean(t.meets_prereq),
+        ]))
+    })?;
 
     // GetTalentPrereqs(tab, i) -> tier, column, isLearnable per prerequisite, flattened (the
     // reference walks `for i=5, arg.n, 3`); none -> empty.
-    g.set(
-        "GetTalentPrereqs",
-        lua.create_function(|lua, (tab, i): (usize, usize)| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::new();
-            if let Some(t) = talent_at(&model, tab, i) {
-                for p in &t.prereqs {
-                    out.push(Value::Integer(i64::from(p.tier)));
-                    out.push(Value::Integer(i64::from(p.column)));
-                    out.push(Value::Boolean(p.learnable));
-                }
+    lua.register_function("GetTalentPrereqs", |lua, (tab, i): (usize, usize)| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::new();
+        if let Some(t) = talent_at(&model, tab, i) {
+            for p in &t.prereqs {
+                out.push(Value::Integer(i64::from(p.tier)));
+                out.push(Value::Integer(i64::from(p.column)));
+                out.push(Value::Boolean(p.learnable));
             }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // LearnTalent(tab, i): queue the click for the app's wire drain. The availability gate is
     // the app's at send time (mirroring its own pushed `learnable`) — the server re-validates
     // regardless (vmangos Player::LearnTalent).
-    g.set(
-        "LearnTalent",
-        lua.create_function(|lua, (tab, i): (u32, u32)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.talent_learns.push((tab, i));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("LearnTalent", |lua, (tab, i): (u32, u32)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.talent_learns.push((tab, i));
+        Ok(())
+    })?;
 
     // ConfirmTalentWipe() — the CONFIRM_TALENT_WIPE dialog's Accept, and the one call in the
     // client that unlearns talents: the trainer's question changed nothing (decision 1580).
     // Zero-arg because the guid it sends is one the client latched from that question — the
     // reference's own `0xc4d7a0` (wow-re `talent-api.md` §ConfirmTalentWipe); here the app holds it.
-    g.set(
-        "ConfirmTalentWipe",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.talent_wipe_confirms += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConfirmTalentWipe", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.talent_wipe_confirms += 1;
+        Ok(())
+    })?;
 
     // CheckTalentMasterDist() — polled from that dialog's OnUpdate; false hides it. The reference
     // re-runs its interact-range test against the latched trainer (`0x5df980`, the same
     // `d² <= [0xc4c28c]` gate `CheckBinderDist` runs), so walking away takes the question off
     // screen with no packet either way.
-    g.set(
-        "CheckTalentMasterDist",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.talent_master_pending)
-        })?,
-    )?;
+    lua.register_function("CheckTalentMasterDist", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.talent_master_pending)
+    })?;
 
     // UnitCharacterPoints(unit) -> cp1 (unspent talent points), cp2 (free professions). The
     // pair is our own player's (PLAYER_CHARACTER_POINTS1/2 are PRIVATE fields) — any other
     // unit token answers the same store, matching the fields only we ever receive.
-    g.set(
-        "UnitCharacterPoints",
-        lua.create_function(|lua, _unit: String| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let (cp1, cp2) = model.talents.points;
-            Ok((i64::from(cp1), i64::from(cp2)))
-        })?,
-    )?;
+    lua.register_function("UnitCharacterPoints", |lua, _unit: String| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let (cp1, cp2) = model.talents.points;
+        Ok((i64::from(cp1), i64::from(cp2)))
+    })?;
 
     Ok(())
 }
 
 /// Register `GameTooltip:SetTalent(tab, index)` into the tooltip kind method table (module doc:
 /// the spell builder with talent lines).
-pub(super) fn install_tooltip_method(lua: &Lua, m: &Table) -> mlua::Result<()> {
-    m.set(
+pub(super) fn install_tooltip_method(vm: &mut Vm, m: &LuaTable) -> benilla_lua::Result<()> {
+    let set_talent = vm.create_function(
         "SetTalent",
-        lua.create_function(|lua, (this, tab, i): (Table, usize, usize)| {
-            let (display, lines) = {
+        |lua, (this, tab, i): (LuaTable, usize, usize)| {
+            let (display, mut lines, rank, max_rank) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 let Some(t) = talent_at(&model, tab, i) else {
                     return Ok(());
@@ -297,39 +268,44 @@ pub(super) fn install_tooltip_method(lua: &Lua, m: &Table) -> mlua::Result<()> {
                             .map(|v| v.description.clone())
                     })
                     .flatten();
-                // `TOOLTIP_TALENT_RANK` = "Rank %d/%d" (`0x854a2c`, pushed at `0x52b213`) —
-                // the key, filled with the two counts, never a sentence of ours (decision 2045).
-                // An install whose string table lacks it shows no rank line at all.
-                let rank_line = crate::strings::global(lua, "TOOLTIP_TALENT_RANK").map(|tmpl| {
-                    crate::strings::fill(
-                        &tmpl,
-                        &[
-                            crate::strings::Arg::D(t.rank.into()),
-                            crate::strings::Arg::D(t.max_rank.into()),
-                        ],
-                    )
-                });
                 (
                     t.display_spell,
                     TalentLines {
-                        rank_line,
+                        rank_line: None,
                         reqs: t.req_lines.clone(),
                         next_spell: t.next_spell,
                         next_desc,
                         learn: t.learnable,
                     },
+                    t.rank,
+                    t.max_rank,
                 )
             };
+            // `TOOLTIP_TALENT_RANK` = "Rank %d/%d" (`0x854a2c`, pushed at `0x52b213`) —
+            // the key, filled with the two counts, never a sentence of ours (decision 2045).
+            // An install whose string table lacks it shows no rank line at all. Resolved
+            // after the model borrow above so the VM is not borrowed twice.
+            lines.rank_line =
+                crate::strings::global_context(lua, "TOOLTIP_TALENT_RANK").map(|tmpl| {
+                    crate::strings::fill(
+                        &tmpl,
+                        &[
+                            crate::strings::Arg::D(rank.into()),
+                            crate::strings::Arg::D(max_rank.into()),
+                        ],
+                    )
+                });
             super::tooltip_spell::set_spell_with_talent(lua, &this, display, lines)
-        })?,
+        },
     )?;
+    vm.table_set_function(m, "SetTalent", &set_talent)?;
     Ok(())
 }
 
 /// The spell-store ask for the next-rank description (kept beside [`install_tooltip_method`] so
 /// the ask-once discipline stays in one place): a `SetTalent` render whose next-rank view is
 /// missing queues it exactly like a primary-view miss.
-pub(super) fn ask_next_rank(lua: &Lua, next_spell: u32) {
+pub(super) fn ask_next_rank(lua: &mut impl LuaContext, next_spell: u32) {
     if next_spell != 0 {
         let _ = spell_view_of(lua, next_spell); // a miss records the ask as a side effect
     }

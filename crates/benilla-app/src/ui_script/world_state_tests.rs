@@ -28,7 +28,7 @@ pub(crate) fn harness() -> UiScript {
         "Interface\\FrameXML\\GameTooltip.xml",
         "Interface\\FrameXML\\WorldStateFrame.xml", // the reference's own (1972)
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     // The outdoor readout is gated on the options uvar `HIDE_OUTDOOR_WORLD_STATE == "0"`
     // (UIOptionsFrame.lua's default, ours in OptionsFrame.xml's uvar block); a harness without

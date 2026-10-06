@@ -26,100 +26,11 @@
 //! vanilla emulator" and deliberately does not store. A client that one day meets a server which
 //! splits channels would need the field; nothing in the corpus reads it.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::Model;
 
-/// The 1-based slot of `name`, case-insensitively — `GetChannelName`'s first return.
-/// One `ChatChannels.dbc` row as the VM needs it for `JoinChannelByName` (decision 1908),
-/// `Add/RemoveChatWindowChannel` and `EnumerateServerChannels` (wow-re chat-cache-grammar.md
-/// §5-6): the id, the **Shortcut** (`General`, `Trade`, … — what every one of those verbs compares
-/// a typed name against, whole and case-folded), the name composed for the zone the player is in
-/// (`General - Elwynn Forest`; `None` while the zone text is empty, which is the verbs' nil leg),
-/// and whether the row is listed here at all (a `flags & 0x10` city row is, only in a city).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ZoneChannelRow {
-    pub id: u32,
-    pub shortcut: String,
-    pub resolved: Option<String>,
-    pub listed: bool,
-}
-
-/// A channel verb's ask, drained by the app into its `CMSG_*` (all of which
-/// `benilla-protocol::messages::client` already builds). The verbs are the stock
-/// `ChatFrame.lua` slash handlers' calls, one variant each.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChannelCommand {
-    /// `JoinChannelByName(name, password)` — sent on both of 1908's non-nil legs.
-    Join {
-        name: String,
-        password: String,
-    },
-    /// `LeaveChannelByName(name)`.
-    Leave {
-        name: String,
-    },
-    /// `ListChannelByName(name)` — `CMSG_CHANNEL_LIST`.
-    List {
-        name: String,
-    },
-    /// `ListChannels()` — the roster of every joined channel.
-    ListAll,
-    /// `DisplayChannelOwner(name)` — `CMSG_CHANNEL_OWNER`.
-    DisplayOwner {
-        name: String,
-    },
-    /// `SetChannelOwner(name, player)`.
-    SetOwner {
-        name: String,
-        player: String,
-    },
-    /// `SetChannelPassword(name, password)`.
-    SetPassword {
-        name: String,
-        password: String,
-    },
-    Ban {
-        name: String,
-        player: String,
-    },
-    Invite {
-        name: String,
-        player: String,
-    },
-    Kick {
-        name: String,
-        player: String,
-    },
-    Moderator {
-        name: String,
-        player: String,
-    },
-    Unmoderator {
-        name: String,
-        player: String,
-    },
-    Mute {
-        name: String,
-        player: String,
-    },
-    Unmute {
-        name: String,
-        player: String,
-    },
-    Unban {
-        name: String,
-        player: String,
-    },
-    /// `ChannelModerate(name)` — toggles moderation.
-    Moderate {
-        name: String,
-    },
-    /// `ChannelToggleAnnouncements(name)`.
-    ToggleAnnouncements {
-        name: String,
-    },
-}
+pub use crate::script_data::{ChannelCommand, ZoneChannelRow};
 
 impl super::UiScript {
     /// The zone-channel catalog for the player's current zone — fed whenever the zone (and so
@@ -173,7 +84,7 @@ impl super::UiScript {
     }
 }
 
-fn push(lua: &Lua, cmd: ChannelCommand) {
+fn push(lua: &impl LuaContext, cmd: ChannelCommand) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     model.channel_commands.push(cmd);
 }
@@ -200,9 +111,7 @@ fn name_at(model: &Model, n: usize) -> Option<&str> {
     model.joined_channels.get(n.checked_sub(1)?)?.as_deref()
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // ── The guild-recruitment auto-join pair (decision 2115) ──────────────────────────────────
     //
     // `GetGuildRecruitmentMode 0x4a0040` / `SetGuildRecruitmentMode 0x4a0060` — the store behind
@@ -227,16 +136,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // 0x443608` is `01 00 00 00` — corroborated twice over: `_SetDefaults` calls
     // `SetGuildRecruitmentMode(1)`, and all 33 `chat-cache.txt` files the reference client itself
     // wrote in this repo's install say `AUTO`. See `Model::guild_recruitment_mode`.
-    g.set(
+    lua.register_function(
         "GetGuildRecruitmentMode",
         // `[0x4a0040, 0x4a0057)` is 23 bytes and one path: `fild dword [0x843608]` (signed i32),
         // `fstp qword [esp]`, `lua_pushnumber`, `mov eax,1`, `ret`. No arguments, no gates — a
         // NUMBER, always, never nil. `UIOptionsFrame_Load` compares it `== 1`, so a nil here would
         // read as a silent "not auto".
-        lua.create_function(|lua, ()| {
+        |lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(f64::from(model.guild_recruitment_mode))
-        })?,
+        },
     )?;
     // ── The `ecx == 1` cascade (decision 2144) ──────────────────────────────────────────
     // `0x49ea70` writes the latch and then tail-jumps into `0x49ea90` **only when the new
@@ -257,7 +166,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `0x49ea90`'s own internal join passes as 0 (so the cascade does not undo the mode it
     // is acting on). That is `reset_guild_recruitment_mode`, called from the app's drain of
     // both verbs.
-    g.set(
+    lua.register_function(
         "SetGuildRecruitmentMode",
         // `[0x4a0060, 0x4a00c4)`. One argument at stack index 1, and **two ways to raise** — this
         // is a shape-A binding (wow-re `numeric-arg-coercion-law.md`), not one of the many that
@@ -274,21 +183,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // neither raise: `UIOptionsFrame_Save` passes `button:GetChecked()` and coerces its nil to
         // 0 itself. An ADDON can, and getting the raise right is the difference between an addon
         // seeing its own bug and seeing ours.
-        lua.create_function(|lua, mode: Option<Value>| {
+        |lua, mode: Option<Value>| {
             let n = match mode.as_ref() {
                 Some(Value::Integer(i)) => *i as f64,
                 Some(Value::Number(n)) => *n,
                 // `lua_isnumber` is true for a string luaO_str2d fully consumes.
                 Some(Value::String(s)) => s
-                    .to_str()
+                    .as_str()
                     .ok()
                     .and_then(|s| s.trim().parse::<f64>().ok())
-                    .ok_or_else(|| mlua::Error::runtime("Usage: SetGuildRecruitmentMode(mode)"))?,
-                _ => return Err(mlua::Error::runtime("Usage: SetGuildRecruitmentMode(mode)")),
+                    .ok_or_else(|| {
+                        benilla_lua::Error::runtime("Usage: SetGuildRecruitmentMode(mode)")
+                    })?,
+                _ => {
+                    return Err(benilla_lua::Error::runtime(
+                        "Usage: SetGuildRecruitmentMode(mode)",
+                    ));
+                }
             };
             let n = n.trunc();
             if !(0.0..2.0).contains(&n) {
-                return Err(mlua::Error::runtime(
+                return Err(benilla_lua::Error::runtime(
                     "SetGuildRecruitmentMode: invalid mode",
                 ));
             }
@@ -307,69 +222,68 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .pending_events
                 .push(("UPDATE_CHAT_WINDOWS".to_string(), Vec::new()));
             Ok(())
-        })?,
+        },
     )?;
 
-    g.set(
-        "GetChannelName",
-        lua.create_function(|lua, key: Value| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let slot = match &key {
-                // The numeric form. The reference bounds-checks `1 <= n <= count` (`0x49bf30`) and
-                // answers only for a CONFIRMED-joined slot; `joined` holds exactly the confirmed
-                // ones (`ui_chat::feed` appends on the server's YOU_JOINED, not on the request), so
-                // the bound is the whole check here.
-                Value::Integer(_) | Value::Number(_) => {
-                    let n = match &key {
-                        Value::Integer(i) => *i,
-                        Value::Number(n) => *n as i64,
-                        _ => unreachable!(),
-                    };
-                    usize::try_from(n)
-                        .ok()
-                        .filter(|n| name_at(&model, *n).is_some())
+    lua.register_function("GetChannelName", |lua, key: Value| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let slot = match &key {
+            // The numeric form. The reference bounds-checks `1 <= n <= count` (`0x49bf30`) and
+            // answers only for a CONFIRMED-joined slot; `joined` holds exactly the confirmed
+            // ones (`ui_chat::feed` appends on the server's YOU_JOINED, not on the request), so
+            // the bound is the whole check here.
+            Value::Integer(_) | Value::Number(_) => {
+                let n = match &key {
+                    Value::Integer(i) => *i,
+                    Value::Number(n) => *n as i64,
+                    _ => unreachable!(),
+                };
+                usize::try_from(n)
+                    .ok()
+                    .filter(|n| name_at(&model, *n).is_some())
+            }
+            // The name form. A numeric STRING arrives here and must still resolve as a number:
+            // `ChatFrame.lua:2113` passes the result of a `gsub` — `GetChannelName("1")` — and
+            // Lua's own coercion is what makes that work on the real client.
+            Value::String(s) => {
+                let name = s
+                    .as_str()
+                    .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?;
+                match name.trim().parse::<usize>() {
+                    Ok(n) if name_at(&model, n).is_some() => Some(n),
+                    Ok(_) => None,
+                    Err(_) => slot_of(&model, &name),
                 }
-                // The name form. A numeric STRING arrives here and must still resolve as a number:
-                // `ChatFrame.lua:2113` passes the result of a `gsub` — `GetChannelName("1")` — and
-                // Lua's own coercion is what makes that work on the real client.
-                Value::String(s) => {
-                    let name = s.to_str()?;
-                    match name.trim().parse::<usize>() {
-                        Ok(n) if name_at(&model, n).is_some() => Some(n),
-                        Ok(_) => None,
-                        Err(_) => slot_of(&model, &name),
-                    }
-                }
-                _ => None,
-            };
+            }
+            _ => None,
+        };
 
-            let Some(slot) = slot else {
-                // **`0, nil, 0` — three values, not one.** This used to push the number alone,
-                // reasoning that `channelName` is unread by every caller on this branch. True of
-                // the callers; not true of the client. `0x4a05e0` pushes three on every path, and
-                // slot 2 is neither the empty string nor the argument echoed back:
-                // `0x4a0659 xor edx,edx` then `lua_pushstring(NULL)`, which tail-jumps to
-                // `lua_pushnil`. Decision 1845.
-                //
-                // "Not joined" is also wider than a bad index: the lookup answers NULL while the
-                // join-pending word is non-zero, so a channel already in the list but not yet
-                // CONFIRMED reads `0, nil, 0` identically — which is what `joined` models here.
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Integer(0),
-                    Value::Nil,
-                    Value::Integer(0),
-                ]));
-            };
-            let name = name_at(&model, slot).unwrap_or_default().to_string();
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(slot as i64),
-                Value::String(lua.create_string(&name)?),
-                // instanceID — see the module doc: 0 on every vanilla emulator, and a number
-                // rather than nil so a caller can compare it like the client's.
+        let Some(slot) = slot else {
+            // **`0, nil, 0` — three values, not one.** This used to push the number alone,
+            // reasoning that `channelName` is unread by every caller on this branch. True of
+            // the callers; not true of the client. `0x4a05e0` pushes three on every path, and
+            // slot 2 is neither the empty string nor the argument echoed back:
+            // `0x4a0659 xor edx,edx` then `lua_pushstring(NULL)`, which tail-jumps to
+            // `lua_pushnil`. Decision 1845.
+            //
+            // "Not joined" is also wider than a bad index: the lookup answers NULL while the
+            // join-pending word is non-zero, so a channel already in the list but not yet
+            // CONFIRMED reads `0, nil, 0` identically — which is what `joined` models here.
+            return Ok(MultiValue::from(vec![
                 Value::Integer(0),
-            ]))
-        })?,
-    )?;
+                Value::Nil,
+                Value::Integer(0),
+            ]));
+        };
+        let name = name_at(&model, slot).unwrap_or_default().to_string();
+        Ok(MultiValue::from(vec![
+            Value::Integer(slot as i64),
+            Value::from(name),
+            // instanceID — see the module doc: 0 on every vanilla emulator, and a number
+            // rather than nil so a caller can compare it like the client's.
+            Value::Integer(0),
+        ]))
+    })?;
 
     // GetChannelList() → slot1, name1, slot2, name2, … over every joined channel, in join order.
     //
@@ -395,23 +309,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // three — FuBar_BGQueueNumber, FuBar_MageFu, FuBar_TankPointsFu — reach it through their
     // embedded AceComm-2.0. That gap between "greps for the name" and "wants the name" is why the
     // survey's own read-back exists (`--why`, d2fcef94) and why a hand grep is not the oracle here.
-    g.set(
-        "GetChannelList",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::with_capacity(model.joined_channels.len() * 2);
-            // Occupied slots only — a freed one is a number nothing is on, so it has no pair to
-            // contribute (the reference walks its record array and skips the cleared entries).
-            for (i, name) in model.joined_channels.iter().enumerate() {
-                let Some(name) = name.as_deref() else {
-                    continue;
-                };
-                out.push(Value::Integer(i as i64 + 1));
-                out.push(Value::String(lua.create_string(name)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetChannelList", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::with_capacity(model.joined_channels.len() * 2);
+        // Occupied slots only — a freed one is a number nothing is on, so it has no pair to
+        // contribute (the reference walks its record array and skips the cleared entries).
+        for (i, name) in model.joined_channels.iter().enumerate() {
+            let Some(name) = name.as_deref() else {
+                continue;
+            };
+            out.push(Value::Integer(i as i64 + 1));
+            out.push(Value::from(name));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // JoinChannelByName(name [, password [, frameId]]) — `0x49ff00` → `0x49eb70`, the contract
     // decision 1908 carved:
@@ -431,83 +342,78 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // window after a `/leave` stripped it — the window's `ZONECHANNELS` word is the character's
     // registration for that channel's lines, and without this a leave-then-join-then-relog left
     // General joined and its every line dropped (decision 2144, live run F).
-    g.set(
+    lua.register_function(
         "JoinChannelByName",
-        lua.create_function(
-            |lua, (name, password, frame): (Option<String>, Option<String>, Value)| {
-                let Some(name) = non_empty(name) else {
-                    return Ok(MultiValue::from_vec(vec![Value::Nil]));
-                };
-                if name.contains(' ') {
-                    return Ok(MultiValue::from_vec(vec![Value::Nil]));
+        |lua, (name, password, frame): (Option<String>, Option<String>, Value)| {
+            let Some(name) = non_empty(name) else {
+                return Ok(MultiValue::from(vec![Value::Nil]));
+            };
+            if name.contains(' ') {
+                return Ok(MultiValue::from(vec![Value::Nil]));
+            }
+            let row = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model
+                    .zone_channel_catalog
+                    .iter()
+                    .find(|r| r.shortcut.eq_ignore_ascii_case(&name))
+                    .cloned()
+            };
+            let (id, resolved, listed_as) = match row {
+                None => (0, None, name.clone()),
+                Some(ZoneChannelRow { resolved: None, .. }) => {
+                    return Ok(MultiValue::from(vec![Value::Nil]));
                 }
-                let row = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    model
-                        .zone_channel_catalog
-                        .iter()
-                        .find(|r| r.shortcut.eq_ignore_ascii_case(&name))
-                        .cloned()
-                };
-                let (id, resolved, listed_as) = match row {
-                    None => (0, None, name.clone()),
-                    Some(ZoneChannelRow { resolved: None, .. }) => {
-                        return Ok(MultiValue::from_vec(vec![Value::Nil]))
-                    }
-                    Some(ZoneChannelRow {
-                        id,
-                        resolved,
-                        shortcut,
-                        ..
-                    }) => (id, resolved, shortcut),
-                };
-                // `0x49ff6b edi = -1` / `0x49ff8a dec edi`; `0x49ec27 cmp esi,0xa; jae` skips.
-                let window = match frame {
-                    Value::Integer(n) => Some(n as f64),
-                    Value::Number(n) => Some(n),
-                    _ => None,
-                }
-                .map(|n| n.trunc() as i64 - 1)
-                .and_then(|i| usize::try_from(i).ok())
-                .filter(|i| *i < 10);
-                if let Some(i) = window {
-                    lua.app_data_mut::<Model>()
-                        .expect("model app_data")
-                        .register_window_channel(i, listed_as, id);
-                }
-                push(
-                    lua,
-                    ChannelCommand::Join {
-                        name: resolved.clone().unwrap_or_else(|| name.clone()),
-                        password: password.unwrap_or_default(),
-                    },
-                );
-                Ok(MultiValue::from_vec(vec![
-                    Value::Integer(i64::from(id)),
-                    match resolved {
-                        Some(r) => Value::String(lua.create_string(&r)?),
-                        None => Value::Nil,
-                    },
-                ]))
-            },
-        )?,
+                Some(ZoneChannelRow {
+                    id,
+                    resolved,
+                    shortcut,
+                    ..
+                }) => (id, resolved, shortcut),
+            };
+            // `0x49ff6b edi = -1` / `0x49ff8a dec edi`; `0x49ec27 cmp esi,0xa; jae` skips.
+            let window = match frame {
+                Value::Integer(n) => Some(n as f64),
+                Value::Number(n) => Some(n),
+                _ => None,
+            }
+            .map(|n| n.trunc() as i64 - 1)
+            .and_then(|i| usize::try_from(i).ok())
+            .filter(|i| *i < 10);
+            if let Some(i) = window {
+                lua.app_data_mut::<Model>()
+                    .expect("model app_data")
+                    .register_window_channel(i, listed_as, id);
+            }
+            push(
+                lua,
+                ChannelCommand::Join {
+                    name: resolved.clone().unwrap_or_else(|| name.clone()),
+                    password: password.unwrap_or_default(),
+                },
+            );
+            Ok(MultiValue::from(vec![
+                Value::Integer(i64::from(id)),
+                match resolved {
+                    Some(r) => Value::from(r),
+                    None => Value::Nil,
+                },
+            ]))
+        },
     )?;
 
     // EnumerateServerChannels() — `0x4a1790` (chat-cache-grammar.md §6): the `ChatChannels.dbc`
     // **shortcuts** in row order, a `flags & 0x10` row only when the zone is a city
     // (`AreaTable.Flags & 0x8`); 0 values while the zone is unresolvable (an empty catalog here).
     // Never the composed `<name> - <zone>`: `FCFDropDown_LoadServerChannels` shows these bare.
-    g.set(
-        "EnumerateServerChannels",
-        lua.create_function(|lua, _ignored: MultiValue| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let mut out = Vec::new();
-            for row in model.zone_channel_catalog.iter().filter(|r| r.listed) {
-                out.push(Value::String(lua.create_string(&row.shortcut)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("EnumerateServerChannels", |lua, _ignored: MultiValue| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let mut out = Vec::new();
+        for row in model.zone_channel_catalog.iter().filter(|r| r.listed) {
+            out.push(Value::from(row.shortcut.clone()));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // LeaveChannelByName(name) — `0x4a0000` → `0x49ee70`, the contract wow-re
     // `leavechannelbyname-contract.md` §11 carved (decision 2144). The only stock caller is
@@ -530,44 +436,48 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // Nothing local is freed here and no event fires (§6, §10): the slot goes when the server's
     // `YOU_LEFT` matches its stored name, and the mask bit with it — both the app's.
-    g.set(
-        "LeaveChannelByName",
-        lua.create_function(|lua, name: Option<Value>| {
-            let key = match name {
-                Some(Value::String(s)) => s.to_str().map(|s| s.to_string())?,
-                Some(Value::Integer(i)) => i.to_string(),
-                Some(Value::Number(n)) => format!("{n:.14}")
-                    .trim_end_matches('0')
-                    .trim_end_matches('.')
-                    .to_string(),
-                _ => return Err(mlua::Error::runtime(r#"Usage: LeaveChannelByName("name")"#)),
-            };
-            if super::chat_window::leading_int(&key) != 0 {
-                push(lua, ChannelCommand::Leave { name: key });
-                return Ok(());
+    lua.register_function("LeaveChannelByName", |lua, name: Option<Value>| {
+        let key = match name {
+            Some(Value::String(s)) => s
+                .as_str()
+                .map(str::to_string)
+                .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?,
+            Some(Value::Integer(i)) => i.to_string(),
+            Some(Value::Number(n)) => format!("{n:.14}")
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string(),
+            _ => {
+                return Err(benilla_lua::Error::runtime(
+                    r#"Usage: LeaveChannelByName("name")"#,
+                ));
             }
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let row = model
-                .zone_channel_catalog
-                .iter()
-                .find(|r| r.shortcut.eq_ignore_ascii_case(&key))
-                .cloned();
-            let (wire, strip_key) = match row {
-                Some(ZoneChannelRow { resolved: None, .. }) => return Ok(()),
-                Some(ZoneChannelRow {
-                    resolved: Some(r),
-                    shortcut,
-                    ..
-                }) => (r, shortcut),
-                None => (key.clone(), key),
-            };
-            model.strip_window_channel(&strip_key);
-            model
-                .channel_commands
-                .push(ChannelCommand::Leave { name: wire });
-            Ok(())
-        })?,
-    )?;
+        };
+        if super::chat_window::leading_int(&key) != 0 {
+            push(lua, ChannelCommand::Leave { name: key });
+            return Ok(());
+        }
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let row = model
+            .zone_channel_catalog
+            .iter()
+            .find(|r| r.shortcut.eq_ignore_ascii_case(&key))
+            .cloned();
+        let (wire, strip_key) = match row {
+            Some(ZoneChannelRow { resolved: None, .. }) => return Ok(()),
+            Some(ZoneChannelRow {
+                resolved: Some(r),
+                shortcut,
+                ..
+            }) => (r, shortcut),
+            None => (key.clone(), key),
+        };
+        model.strip_window_channel(&strip_key);
+        model
+            .channel_commands
+            .push(ChannelCommand::Leave { name: wire });
+        Ok(())
+    })?;
 
     // The one-name verbs: each queues its `CMSG_*` and returns nothing.
     for (verb, make) in [
@@ -583,24 +493,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             ChannelCommand::ToggleAnnouncements { name }
         }),
     ] {
-        g.set(
-            verb,
-            lua.create_function(move |lua, name: Option<String>| {
-                if let Some(name) = non_empty(name) {
-                    push(lua, make(name));
-                }
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(verb, move |lua, name: Option<String>| {
+            if let Some(name) = non_empty(name) {
+                push(lua, make(name));
+            }
+            Ok(())
+        })?;
     }
 
-    g.set(
-        "ListChannels",
-        lua.create_function(|lua, _ignored: MultiValue| {
-            push(lua, ChannelCommand::ListAll);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ListChannels", |lua, _ignored: MultiValue| {
+        push(lua, ChannelCommand::ListAll);
+        Ok(())
+    })?;
 
     // The two-name verbs: (channel, player) — or (channel, password) for the password.
     for (verb, make) in [
@@ -643,21 +547,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             player,
         }),
     ] {
-        g.set(
+        lua.register_function(
             verb,
-            lua.create_function(
-                move |lua, (name, second): (Option<String>, Option<String>)| {
-                    if let Some(name) = non_empty(name) {
-                        // A password may legitimately be empty (`/password General` clears it); a
-                        // player name may not.
-                        let second = second.unwrap_or_default();
-                        if verb == "SetChannelPassword" || !second.trim().is_empty() {
-                            push(lua, make(name, second.trim().to_string()));
-                        }
+            move |lua, (name, second): (Option<String>, Option<String>)| {
+                if let Some(name) = non_empty(name) {
+                    // A password may legitimately be empty (`/password General` clears it); a
+                    // player name may not.
+                    let second = second.unwrap_or_default();
+                    if verb == "SetChannelPassword" || !second.trim().is_empty() {
+                        push(lua, make(name, second.trim().to_string()));
                     }
-                    Ok(())
-                },
-            )?,
+                }
+                Ok(())
+            },
         )?;
     }
 
@@ -748,7 +650,7 @@ mod command_tests {
         );
         s.set_zone_channel_catalog(catalog());
         assert_eq!(
-            s.eval::<Vec<String>>("return {EnumerateServerChannels()}")
+            s.eval_sequence::<String>("return {EnumerateServerChannels()}")
                 .unwrap(),
             vec!["General".to_string()],
             "the shortcut, never the composed name; a city row only in a city"

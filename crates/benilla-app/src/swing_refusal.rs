@@ -67,7 +67,7 @@
 //! Whole seam §5-verified in wow-re `object-layer/scratch/attackswing-refusal-law.md` (decision
 //! 2037), which corrected three prior glosses of these same addresses.
 
-use std::time::Duration;
+use benilla_time::Duration;
 
 use benilla_protocol::messages::AttackSwingError;
 use bevy::prelude::*;

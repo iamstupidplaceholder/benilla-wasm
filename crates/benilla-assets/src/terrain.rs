@@ -325,6 +325,7 @@ pub(crate) fn layer_array_image(size: u32, layer_count: u32, packed: PackedLayer
         format,
         mip_count,
     } = packed;
+    let (data, layer_count) = webgl_array_payload(data, layer_count);
     let mut image = array_image(size, layer_count, format);
     image.data = Some(data);
     image.texture_descriptor.mip_level_count = mip_count;
@@ -350,6 +351,7 @@ pub(crate) fn layer_array_image(size: u32, layer_count: u32, packed: PackedLayer
 /// Stack `layer_count` per-chunk alpha maps (each `size²`, concatenated) into a linear `2d_array` —
 /// the tile's blend weights (R/G/B = layers 1/2/3 opacity). Non-colour, so `Rgba8Unorm`.
 pub(crate) fn alpha_array_image(size: u32, layer_count: u32, rgba: Vec<u8>) -> Image {
+    let (rgba, layer_count) = webgl_array_payload(rgba, layer_count);
     let mut image = array_image(size, layer_count, TextureFormat::Rgba8Unorm);
     image.data = Some(rgba);
     image
@@ -358,9 +360,26 @@ pub(crate) fn alpha_array_image(size: u32, layer_count: u32, rgba: Vec<u8>) -> I
 /// Stack `layer_count` MCSH shadow maps (each `size²`, one byte/texel) into a single-channel
 /// `2d_array` — WoW's pre-baked static terrain shadows (`R` = shadowed, 0 = lit).
 pub(crate) fn shadow_array_image(size: u32, layer_count: u32, data: Vec<u8>) -> Image {
+    let (data, layer_count) = webgl_array_payload(data, layer_count);
     let mut image = array_image(size, layer_count, TextureFormat::R8Unorm);
     image.data = Some(data);
     image
+}
+
+/// GLES infers `D2` for one layer, `Cube` for six, and `CubeArray` for larger
+/// multiples of six, even when the requested view is explicitly `D2Array`.
+/// Append one duplicate physical layer for those ambiguous counts. Mesh layer
+/// indices remain unchanged, so the duplicate is never sampled. Native
+/// allocation is untouched.
+pub(crate) fn webgl_array_payload(mut data: Vec<u8>, layer_count: u32) -> (Vec<u8>, u32) {
+    #[cfg(target_arch = "wasm32")]
+    if layer_count == 1 || (layer_count > 0 && layer_count % 6 == 0) {
+        let layer_bytes = data.len() / layer_count as usize;
+        let last_layer = data.len() - layer_bytes;
+        data.extend_from_within(last_layer..);
+        return (data, layer_count + 1);
+    }
+    (data, layer_count)
 }
 
 /// Build a `2d_array` `Image` from concatenated per-layer bytes, with a `D2Array` view so the

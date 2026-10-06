@@ -46,7 +46,7 @@ fn chat_ui() -> UiScript {
         "Interface\\FrameXML\\UIPanelTemplates.xml",
         "Interface\\FrameXML\\FloatingChatFrame.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     super::fire_chat_login(&mut s);
     s.set_screen_size(1600.0, 900.0);
@@ -130,7 +130,7 @@ fn grab_grip(s: &mut UiScript, grip: &str) -> (f32, f32) {
 #[test]
 fn both_dock_windows_ship_locked() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = chat_ui();
+    let mut s = chat_ui();
     for i in 1..=2 {
         assert_eq!(
             s.eval::<i64>(&format!(

@@ -63,16 +63,20 @@ struct ViewCtx<'a> {
     /// `SPELLMOD_COST` landed means the modified one (`crate::ui_action::usable::power_cost`).
     spell_mods: &'a crate::spell_mods::SpellModifiers,
     /// The VM's own `GlobalStrings.lua` (decision 2045) — every cell this builder composes is a
-    /// key, and this is where they resolve. `text` is the `%d`-filling twin the `$`-engine's
-    /// keyed tokens take (`benilla_formats::TokenContext::text`).
-    get: &'a dyn Fn(&str) -> Option<String>,
-    text: &'a dyn Fn(&str, &[i64]) -> Option<String>,
+    /// key, and this is where they resolve. The `%d`-filling twin the `$`-engine's keyed
+    /// tokens take is built per view off this same lookup (`token_text`), so the one
+    /// exclusive VM borrow chains instead of forking.
+    get: &'a mut dyn FnMut(&str) -> Option<String>,
 }
 
 /// Fill a key's template out of the VM's own `GlobalStrings.lua`, or nothing at all when the
 /// chain has no string for it — the reference's data-suppression face, and the reason no cell
 /// here carries a fallback sentence (decision 2045).
-fn keyed(get: &dyn Fn(&str) -> Option<String>, key: &str, args: &[Arg<'_>]) -> Option<String> {
+fn keyed(
+    get: &mut dyn FnMut(&str) -> Option<String>,
+    key: &str,
+    args: &[Arg<'_>],
+) -> Option<String> {
     let text = benilla_ui::strings::fill(&get(key)?, args);
     (!text.is_empty()).then_some(text)
 }
@@ -101,12 +105,27 @@ fn spell_tooltip_view(
     let d = spells.catalog.get(spell_id)?;
     let home_area = vctx.home_area;
     let form = vctx.form;
-    let ctx = benilla_formats::TokenContext {
-        durations: &spells.durations,
-        radii: &spells.radii,
-        lookup: &|id| spells.catalog.get(id),
-        home_area,
-        text: vctx.text,
+    // Scoped: the `$`-engine's borrow of the lookup ends with this block, so the
+    // `keyed` cells below reborrow it one call at a time.
+    let (description, aura_description) = {
+        let mut text = crate::ui_script::token_text(&mut *vctx.get);
+        let mut ctx = benilla_formats::TokenContext {
+            durations: &spells.durations,
+            radii: &spells.radii,
+            lookup: &|id| spells.catalog.get(id),
+            home_area,
+            text: &mut text,
+        };
+        (
+            d.description
+                .as_deref()
+                .map(|t| benilla_formats::substitute(t, d, &mut ctx))
+                .unwrap_or_default(),
+            d.aura_description
+                .as_deref()
+                .map(|t| benilla_formats::substitute(t, d, &mut ctx))
+                .unwrap_or_default(),
+        )
     };
     // The cost cell (law §3.3, the `0x52e8ad` caller): the RESOLVED cost — `GetPowerCost`'s
     // number, the same `power_cost` the usable walk compares (0948) — through the power-type key
@@ -127,24 +146,27 @@ fn spell_tooltip_view(
         // The one `0x6e7130` table, not a local `if power_type == 1` — decision 2117 found three
         // hand-rolled copies of it and one of them had been applied at a single site out of four.
         let div = benilla_protocol::messages::power_display_scale(d.power_type);
-        let unit = match d.power_type {
-            0 => "Mana",
-            1 => "Rage",
-            2 => "Focus",
-            3 => "Energy",
-            4 => "Happiness",
-            _ => "Health",
+        let key = match d.power_type {
+            0 => "MANA_COST",
+            1 => "RAGE_COST",
+            2 => "FOCUS_COST",
+            3 => "ENERGY_COST",
+            4 => "HAPPINESS_COST",
+            _ => "HEALTH_COST",
         };
         if resolved_cost == 0 && d.mana_per_second == 0 {
             None
         } else if d.mana_per_second > 0 {
-            Some(format!(
-                "{} {unit}, plus {} per sec",
-                resolved_cost / div,
-                d.mana_per_second / div
-            ))
+            keyed(
+                &mut *vctx.get,
+                &format!("{key}_PER_TIME"),
+                &[
+                    Arg::D((resolved_cost / div).into()),
+                    Arg::D((d.mana_per_second / div).into()),
+                ],
+            )
         } else {
-            Some(format!("{} {unit}", resolved_cost / div))
+            keyed(&mut *vctx.get, key, &[Arg::D((resolved_cost / div).into())])
         }
     };
     // The range cell (law §3.3 / wow-re `tooltip-globalstring-key-resolves.md` §A3, VERIFIED):
@@ -184,7 +206,7 @@ fn spell_tooltip_view(
             } else {
                 format!("{}", yd(max))
             };
-            keyed(vctx.get, "SPELL_RANGE", &[Arg::S(&yards)])
+            keyed(&mut *vctx.get, "SPELL_RANGE", &[Arg::S(&yards)])
         })
         .flatten();
     // Law §3.4's own gate — wider than the spellbook's `passive`: a TRADE_SKILL or ATTACK
@@ -212,7 +234,7 @@ fn spell_tooltip_view(
             } else {
                 ("SPELL_CAST_TIME_SEC", f64::from(base) / 1000.0)
             };
-            keyed(vctx.get, key, &[Arg::F(v)])
+            keyed(&mut *vctx.get, key, &[Arg::F(v)])
         } else {
             let key = if base < 0 {
                 "SPELL_CAST_TIME_INSTANT"
@@ -229,7 +251,7 @@ fn spell_tooltip_view(
                 // exists at all.
                 "SPELL_CAST_TIME_INSTANT_NO_MANA"
             };
-            keyed(vctx.get, key, &[])
+            keyed(&mut *vctx.get, key, &[])
         }
     };
     // The cooldown cell reads BOTH recovery columns (law §3.4: `max([+0x4c],[+0x50])>0` —
@@ -243,7 +265,7 @@ fn spell_tooltip_view(
             } else {
                 ("SPELL_RECAST_TIME_SEC", secs)
             };
-            keyed(vctx.get, key, &[Arg::F(v)])
+            keyed(&mut *vctx.get, key, &[Arg::F(v)])
         })
         .flatten();
     // The required-form line (law §3.6): the Stances mask's form names off
@@ -276,7 +298,7 @@ fn spell_tooltip_view(
             (!names.is_empty())
                 .then(|| {
                     keyed(
-                        vctx.get,
+                        &mut *vctx.get,
                         "SPELL_REQUIRED_FORM",
                         &[Arg::S(&names.join(", "))],
                     )
@@ -297,7 +319,7 @@ fn spell_tooltip_view(
                 .requirement_name(d.equipped_item_class as u32, d.equipped_item_subclass_mask)
         })
         .flatten()
-        .and_then(|name| keyed(vctx.get, "SPELL_EQUIPPED_ITEM", &[Arg::S(&name)]));
+        .and_then(|name| keyed(&mut *vctx.get, "SPELL_EQUIPPED_ITEM", &[Arg::S(&name)]));
     // The chance-to-X line (law line 10, §3-CHANCE): `Effect[0]` picks which of the player's four
     // avoidance/crit percentages to print, and — except for ATTACK, which bypasses the gate — the
     // spell must be passive. The percentages are already percents on the wire.
@@ -351,16 +373,8 @@ fn spell_tooltip_view(
         form_met,
         chance,
         reagents,
-        description: d
-            .description
-            .as_deref()
-            .map(|t| benilla_formats::substitute(t, d, &ctx))
-            .unwrap_or_default(),
-        aura_description: d
-            .aura_description
-            .as_deref()
-            .map(|t| benilla_formats::substitute(t, d, &ctx))
-            .unwrap_or_default(),
+        description,
+        aura_description,
     })
 }
 
@@ -603,8 +617,7 @@ fn feed_spell_tooltips(
     // borrow ends with this block.
     let mut built: Vec<(u32, benilla_ui::script::SpellTooltipView)> = Vec::new();
     {
-        let get = |key: &str| benilla_ui::strings::global(script.lua(), key);
-        let text = crate::ui_script::token_text(&script);
+        let mut get = |key: &str| benilla_ui::strings::global_context(script.vm_mut(), key);
         let mut vctx = ViewCtx {
             home_area: home_area.as_deref(),
             form,
@@ -615,8 +628,7 @@ fn feed_spell_tooltips(
             commands: &commands,
             sub_classes: sub_classes.as_deref().map(|c| &c.0),
             spell_mods,
-            get: &get,
-            text: &text,
+            get: &mut get,
         };
         for id in wanted {
             if let Some(view) = spell_tooltip_view(id, spells, &mut vctx) {
@@ -741,7 +753,7 @@ fn drive_mouseover_tooltip(
     mut memo: HoverMemo,
     // `ChrClasses.dbc` field 16 — `UnitHasRelicSlot`'s only input. Absent when the client data
     // failed to load, in which case no class reads as having a relic slot.
-    classes: Option<Res<crate::chr_classes::ChrClassTable>>,
+    catalogs: crate::ui_unit::UnitCatalogs,
 ) {
     let Some(mut script) = script else {
         return;
@@ -750,7 +762,7 @@ fn drive_mouseover_tooltip(
     let last = last.get(&script);
     let last_lines = last_lines.get(&script);
     let self_store = self_q.iter().next();
-    let chr = classes.as_deref().map(|t| &t.0);
+    let chr = catalogs.classes.as_deref().map(|t| &t.0);
 
     // The hovered UNIT's snapshot (a hovered non-unit resolves no store here).
     let unit = hovered.target.zip(hovered.guid).and_then(|(entity, guid)| {
@@ -770,6 +782,7 @@ fn drive_mouseover_tooltip(
             store,
             rx.factions.as_deref(),
             self_store,
+            catalogs.names.as_deref().map(|n| &n.0),
         );
         Some((guid, s))
     });
@@ -845,7 +858,7 @@ fn drive_mouseover_tooltip(
         // `CORPSE_TOOLTIP = "Corpse of %s"` — the builder's own key (`0x52aef0`). No string, no
         // plate, which is the reference's data-suppression face.
         let Some(plate) = keyed(
-            &|key: &str| benilla_ui::strings::global(script.lua(), key),
+            &mut |key: &str| benilla_ui::strings::global_context(script.vm_mut(), key),
             "CORPSE_TOOLTIP",
             &[Arg::S(&name)],
         ) else {
@@ -895,7 +908,7 @@ fn drive_mouseover_tooltip(
                     // The headless probe's aim stands in for a cursor the window does not have
                     // (2250), so an automated run can carry a GENERIC plate — which is
                     // cursor-seated — all the way to the screen. A person's pointer always wins.
-                    w.cursor_position()
+                    crate::cursor::position(w)
                         .or_else(crate::target::hover_probe_point)
                         .map(|c| (c.x / s, (w.height() - c.y) / s))
                 })
@@ -966,7 +979,7 @@ fn drive_mouseover_tooltip(
         let mut lines: Vec<(String, TooltipTint)> = Vec::new();
         // The lock lines' string table, taken for the length of the build. Every one of them is a
         // key whose enUS value is "Requires %s" and whose identity only the binary settles.
-        let go_get = |key: &str| benilla_ui::strings::global(script.lua(), key);
+        let mut go_get = |key: &str| benilla_ui::strings::global_context(script.vm_mut(), key);
         if flag_locked {
             // **The "Locked" line is coloured by whether you can actually open it** (director-
             // reported: a door you hold the key for read red). The builder sets red `0xc0d3a8` as
@@ -994,7 +1007,7 @@ fn drive_mouseover_tooltip(
                     &mut matched,
                 )
             });
-            if let Some(text) = keyed(&go_get, "LOCKED", &[]) {
+            if let Some(text) = keyed(&mut go_get, "LOCKED", &[]) {
                 lines.push((text, locked_line_tint(outcome)));
             }
         }
@@ -1008,7 +1021,9 @@ fn drive_mouseover_tooltip(
                         // `LOCKED_WITH_ITEM`, resolved at `0x52acb8` — one of eleven 1.12 keys
                         // whose enUS value is exactly "Requires %s", and the only one this arm
                         // reaches (wow-re `tooltip-globalstring-key-resolves.md` §B).
-                        if let Some(text) = keyed(&go_get, "LOCKED_WITH_ITEM", &[Arg::S(&t.name)]) {
+                        if let Some(text) =
+                            keyed(&mut go_get, "LOCKED_WITH_ITEM", &[Arg::S(&t.name)])
+                        {
                             lines.push((text, TooltipTint::White));
                         }
                     }
@@ -1032,7 +1047,7 @@ fn drive_mouseover_tooltip(
                         .as_deref()
                         .and_then(|c| c.0.name(slot0.index));
                     if let Some(text) =
-                        word.and_then(|w| keyed(&go_get, "LOCKED_WITH_SPELL", &[Arg::S(w)]))
+                        word.and_then(|w| keyed(&mut go_get, "LOCKED_WITH_SPELL", &[Arg::S(w)]))
                     {
                         lines.push((text, TooltipTint::Red));
                     }

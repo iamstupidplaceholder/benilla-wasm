@@ -179,7 +179,7 @@ fn setpoint_relative_to_expands_parent_against_the_first_named_ancestor() {
 /// `$parent`-prefixed name reaches them literally and fails to resolve.
 #[test]
 fn setparent_does_not_expand_parent() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         Root = CreateFrame("Frame", "Root")
@@ -201,7 +201,7 @@ fn setparent_does_not_expand_parent() {
 /// re-parents every stock button by alias before it anchors it.
 #[test]
 fn setparent_resolves_an_alias_global() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         Holder = CreateFrame("Frame", "Holder")
@@ -254,7 +254,7 @@ fn setallpoints_resolves_an_alias_global() {
 /// `input:CreateTexture("$parentSearchIcon", "OVERLAY")`.
 #[test]
 fn a_constructor_name_expands_parent() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         Root = CreateFrame("Frame", "Root")

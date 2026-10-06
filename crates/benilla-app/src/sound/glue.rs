@@ -13,8 +13,12 @@
 
 use bevy::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::char_select::ClientState;
-use benilla_assets::{LockRecover, WorldAssets};
+use benilla_assets::LockRecover;
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
 
 use super::kit::{self, KitRef, SoundCategory, SoundKits};
 use super::{mixer, SoundConfig, SoundOutput};
@@ -46,7 +50,7 @@ pub(crate) struct GlueSound(pub(crate) &'static str);
 /// window, and [`watch_glue_music`] can only see a stream it still holds. Since 1550 the theme
 /// itself rides that whole burst too — all the more reason for the watch to be able to see it.
 struct GlueMusic {
-    handle: Option<mixer::StreamingSoundHandle<kira::sound::FromFileError>>,
+    handle: Option<mixer::StreamingSoundHandle<mixer::FromFileError>>,
     watch: mixer::StreamWatch,
     /// The stop-fade is armed and running. The per-frame slider feed stands off while it is set,
     /// so a live `MusicVolume` change cannot stomp the ramp back up to full mid-fade — the hazard
@@ -204,7 +208,7 @@ fn watch_glue_music(
     let Some(h) = music.handle.as_ref() else {
         return;
     };
-    if h.state() == kira::sound::PlaybackState::Stopped {
+    if h.state() == mixer::PlaybackState::Stopped {
         // The theme's end, said out loud — the counterpart to the `glue music: <path>` start line.
         // With the theme now outliving world entry (1550), "did it actually stop, or is it playing
         // under the world?" is a real question about a stream nothing else reports on, and it must
@@ -225,7 +229,7 @@ fn report_stream_voices(music: NonSend<GlueMusic>, mut out: NonSendMut<super::So
         music
             .handle
             .as_ref()
-            .is_some_and(|h| h.state() != kira::sound::PlaybackState::Stopped),
+            .is_some_and(|h| h.state() != mixer::PlaybackState::Stopped),
     );
 }
 

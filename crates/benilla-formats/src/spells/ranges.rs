@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -147,7 +147,7 @@ const SPELL_RANGE: &str = "DBFilesClient\\SpellRange.dbc";
 const SPELL_RANGE_FIELDS: usize = 22;
 
 /// Load `SpellRange.dbc` off the patch chain ([`SpellRange`]'s row law).
-pub fn load_spell_ranges(chain: &mut Chain) -> Result<SpellRangeCatalog> {
+pub fn load_spell_ranges(chain: &mut impl FileSource) -> Result<SpellRangeCatalog> {
     let bytes = chain
         .read_file(SPELL_RANGE)
         .context("reading SpellRange.dbc")?;

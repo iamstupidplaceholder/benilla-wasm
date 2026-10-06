@@ -34,12 +34,12 @@ fn harness() -> UiScript {
         // the one reader that speaks both stores, and it is why that helper exists.
         "Interface\\FrameXML\\DurabilityFrame.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     // The app installs this at the end of every real load; a test VM has to say so itself. It is
     // benilla's stated repair of a reference bug — the seat going stale when a side glyph appears
     // while the frame is already shown — and its whole reasoning is at the constant.
-    super::manifest::install_durability_reseat(&s).unwrap();
+    super::manifest::install_durability_reseat(&mut s).unwrap();
     s
 }
 
@@ -415,9 +415,9 @@ fn the_quest_tracker_stacks_below_the_durability_guy() {
         r"Interface\FrameXML\MainMenuBarMicroButtons.xml",
         "Interface\\FrameXML\\QuestLogFrame.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
-    super::manifest::install_durability_reseat(&s).unwrap();
+    super::manifest::install_durability_reseat(&mut s).unwrap();
 
     // A right-side glyph shows the 65-tall durability frame under the minimap.
     let mut inv: InventorySlots = Default::default();

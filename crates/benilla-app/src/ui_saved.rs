@@ -62,7 +62,7 @@ pub(crate) fn load_saved_variables(
 ) {
     // `None` = hermetic capture, or no install — session-only state, and the event below still fires.
     if let Some(path) = crate::local_state::saved_variables_path() {
-        match std::fs::read_to_string(&path) {
+        match crate::local_state::read_to_string(&path) {
             Ok(text) => {
                 if let Err(e) = script.run(&text) {
                     warn!(
@@ -126,7 +126,7 @@ mod tests {
 
     /// A VM with one declared global and a `VARIABLES_LOADED` witness.
     fn script(value: &str) -> UiScript {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(&format!(
             "KEPT = {value} RegisterForSave(\"KEPT\") \
              VL_SEEN = 0 \

@@ -24,6 +24,13 @@ impl StaticSoundData {
 		Self::from_media_source(cursor)
 	}
 
+	/// The same decoder with a hard PCM residency budget, for asynchronous hosts.
+	pub fn from_cursor_bounded<T: AsRef<[u8]> + Send + Sync + 'static>(
+		cursor: Cursor<T>, max_frames: usize,
+	) -> Result<StaticSoundData, FromFileError> {
+		Self::from_boxed_media_source_bounded(Box::new(cursor), max_frames)
+	}
+
 	/// Loads an audio file from a type that implements Symphonia's [`MediaSource`]
 	/// trait.
 	#[cfg_attr(docsrs, doc(cfg(feature = "symphonia")))]
@@ -34,6 +41,10 @@ impl StaticSoundData {
 	}
 
 	fn from_boxed_media_source(media_source: Box<dyn MediaSource>) -> Result<Self, FromFileError> {
+		Self::from_boxed_media_source_bounded(media_source, usize::MAX)
+	}
+
+	fn from_boxed_media_source_bounded(media_source: Box<dyn MediaSource>, max_frames: usize) -> Result<Self, FromFileError> {
 		let codecs = symphonia::default::get_codecs();
 		let probe = symphonia::default::get_probe();
 		let mss = MediaSourceStream::new(media_source, Default::default());
@@ -60,6 +71,9 @@ impl StaticSoundData {
 				Ok(packet) => {
 					if default_track_id == packet.track_id() {
 						let buffer = decoder.decode(&packet)?;
+						if buffer.frames() > max_frames.saturating_sub(frames.len()) {
+							return Err(std::io::Error::other("decoded sound exceeds PCM budget").into());
+						}
 						frames.append(&mut load_frames_from_buffer_ref(&buffer)?);
 					}
 				}

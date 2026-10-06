@@ -72,6 +72,28 @@ fn open_world_assets(mut commands: Commands, device: Res<RenderDevice>) {
     let shared_light = crate::lighting::new_shared_light_buffer(&device);
     let light_buf = shared_light.0.clone();
     commands.insert_resource(shared_light);
+
+    // Browser bytes are owned by the asynchronous `AssetServer` source, so there is deliberately
+    // no synchronous `WorldAssets::chain` to manufacture. The world adapter supplies typed DBC
+    // catalogs; terrain/model assets continue through their ordinary `mpq://` loaders. What this
+    // foundation must still publish is the renderer table and the non-I/O stream policy.
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Shared entity caches may be populated on character selection and reused
+        // in-world. Their source materials bind this world table from the start;
+        // glue/portrait variants select their authored tables independently.
+        commands.insert_resource(crate::model_render::SharedModelLight(light_buf));
+        commands.insert_resource(RenderConfig {
+            tex_tiles: 8.0,
+            unload_budget: 1,
+        });
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let model_light = light_buf.clone();
+
+    #[cfg(not(target_arch = "wasm32"))]
     let Some(data) = benilla_formats::wow_data() else {
         warn!(
             "no WoW install found — looked in {:?}; starting with no world",
@@ -83,23 +105,27 @@ fn open_world_assets(mut commands: Commands, device: Res<RenderDevice>) {
     // live `farclip` (`view::ViewDistance`, the player's Terrain Distance setting) the way the
     // reference does — `terrain_stream::window`, decision 1513. `$WOW_TILE_RADIUS` is retired.
     // Ground-texture repeats per chunk; tunable live in the panel afterward.
+    #[cfg(not(target_arch = "wasm32"))]
     let tex_tiles = std::env::var("WOW_TEX_TILES")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
         .unwrap_or(8.0);
     // See the field doc: the tile-unload budget (B181). Default 1 — even the fastest focus
     // (boosted free-fly, ~1 stale row/s) produces stale tiles far slower than 60/s drains them.
+    #[cfg(not(target_arch = "wasm32"))]
     let unload_budget = std::env::var("WOW_TILE_UNLOAD")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
+    #[cfg(not(target_arch = "wasm32"))]
     commands.insert_resource(RenderConfig {
         tex_tiles,
         unload_budget,
     });
 
+    #[cfg(not(target_arch = "wasm32"))]
     match open_chain(&data) {
-        Ok(chain) => commands.insert_resource(WorldAssets::open(chain, light_buf)),
+        Ok(chain) => commands.insert_resource(WorldAssets::open(chain, light_buf, model_light)),
         Err(e) => error!("failed to open client data: {e:#}"),
     }
 }

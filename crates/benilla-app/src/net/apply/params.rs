@@ -23,21 +23,15 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::super::{
-    AiReactionMessage, CharActionResultMessage, CharListMessage, EmoteMessage, EnteredWorldMessage,
-    LoggedOutMessage, ObjectStore, PendingTransfer, PetDismissSoundMessage, PetTalkMessage,
-    RemoteMotion, SelfPlayer, ServerSoundMessage, ServerTime, ServerWallClock, TeleportMessage,
-    UnitMoveModes, WorldportMessage,
+    AiReactionMessage, CharActionResultMessage, CharListMessage, EmoteMessage, LoggedOutMessage,
+    ObjectStore, PendingTransfer, PetDismissSoundMessage, PetTalkMessage, SelfPlayer,
+    ServerSoundMessage, WorldportMessage,
 };
 use benilla_world::weather::WeatherMessage;
 
 /// The clocks: the server's two, and our real one.
 #[derive(SystemParam)]
 pub(crate) struct Clocks<'w> {
-    /// The in-game day/night clock the lighting reads (`SMSG_LOGIN_SETTIMESPEED`).
-    pub server_time: ResMut<'w, ServerTime>,
-    /// The wall clock the absolute descriptor stamps are dated in (decision 1150). A different
-    /// quantity from the one above, from the same handler file.
-    pub wall_clock: ResMut<'w, ServerWallClock>,
     /// `Time<Real>`, NOT the default virtual one, and every reader here is the reason: a span
     /// the SERVER sends us (an aura's remaining duration, the corpse-reclaim delay, a relayed
     /// mover's fire-time) counts down in real seconds, so it must be stamped and read on a real
@@ -55,15 +49,6 @@ pub(crate) struct Clocks<'w> {
 pub(crate) struct ObjectQueries<'w, 's> {
     pub transforms: Query<'w, 's, &'static mut Transform>,
     pub stores: Query<'w, 's, &'static mut ObjectStore>,
-    /// A relayed player's dead-reckon.
-    pub remote: Query<'w, 's, &'static mut RemoteMotion>,
-    /// Any unit's server-granted movement modes (decision 1780).
-    pub modes: Query<'w, 's, &'static mut UnitMoveModes>,
-    /// The deck a unit is standing on and its pose there (decision 1936).
-    pub riders: Query<'w, 's, &'static mut crate::transport::TransportRider>,
-    /// READ-only: every write to a mover's speed set goes through the drain's
-    /// `objects::SpeedStage` and lands in one flush at the end (decision 1478).
-    pub speeds: Query<'w, 's, &'static super::super::UnitSpeeds>,
     /// The armed-transport lens for the worldport's spare predicate (decision 0455: a boat whose
     /// path touches the destination map survives the purge).
     pub transports: Query<'w, 's, &'static crate::transport::Transport>,
@@ -73,16 +58,12 @@ pub(crate) struct ObjectQueries<'w, 's> {
     /// [`crate::creature_anim::Engaged`] — read by the GO handler's deferred auto-attack start
     /// (`0x6e83e7`, decision 1593). Filter-only, so it conflicts with nothing else in the drain.
     pub engaged_self: Query<'w, 's, (), (With<crate::creature_anim::Engaged>, With<SelfPlayer>)>,
-    /// The per-field descriptor edges the merge reports (decision 2297) — the reference's
-    /// `CMirrorHandler` notify pass, emitted from the one write that holds both sides.
-    pub field_changes: MessageWriter<'w, super::super::FieldChanged>,
 }
 
 /// The session lifecycle: the glue-screen edges, the player's own teleports and mover
 /// handshakes, and the entry/transfer state those edges write (decision 0193).
 #[derive(SystemParam)]
 pub(crate) struct Session<'w> {
-    pub teleports: MessageWriter<'w, TeleportMessage>,
     pub worldports: MessageWriter<'w, WorldportMessage>,
     /// The two park publications: the realm list and the character roster are the same thing
     /// one park apart, each published so the app's policy can answer it.
@@ -92,13 +73,7 @@ pub(crate) struct Session<'w> {
     /// pick itself.
     pub char_actions: MessageWriter<'w, CharActionResultMessage>,
     pub char_login_failures: MessageWriter<'w, super::super::CharacterLoginFailedMessage>,
-    /// The world-entry pair, one edge: the entry message, and the `SMSG_ADDON_INFO` verdict that
-    /// the entry's own UI load reads before the first addon's file-scope code asks
-    /// `GetNumAddOns()` (2175).
-    pub entered_world: MessageWriter<'w, EnteredWorldMessage>,
-    pub addon_reply: ResMut<'w, crate::net::AddonInfoReply>,
     pub logged_out: MessageWriter<'w, LoggedOutMessage>,
-    pub speed_changes: MessageWriter<'w, super::super::SpeedChangeMessage>,
     /// The two server-authored mover edges the controller both *applies* and *answers*: a
     /// granted mode (decisions 0308, 0866) and a knockback launch (decision 1702) are the same
     /// handshake, an edge the server may not act on until our own live pose comes back.
@@ -113,9 +88,6 @@ pub(crate) struct Session<'w> {
     /// The server's own answer to a GM dot-command, readable rather than only logged — the probe
     /// shield's confirmation channel (decision 0677).
     pub server_said: MessageWriter<'w, super::super::ServerSaidMessage>,
-    /// A `MSG_MOVE_*` the server addressed to OUR mover (decision 0725): a pose it wrote, with no
-    /// handshake — the controller applies it in `player::wire_in`.
-    pub self_moves: MessageWriter<'w, super::super::SelfMoveMessage>,
     /// The possession handoff (`SMSG_CLIENT_CONTROL_UPDATE`): control of a unit granted or
     /// revoked. Forwarded verbatim — only the controller knows the pose it would have to park.
     pub client_control: MessageWriter<'w, super::super::ClientControlMessage>,
@@ -139,7 +111,6 @@ pub(crate) struct WindowStores<'w> {
     pub loot_latch: ResMut<'w, crate::ui_loot::LootLatch>,
     pub chat_log: ResMut<'w, crate::ui_chat::ChatLog>,
     pub quest: ResMut<'w, crate::ui_quest::QuestGiver>,
-    pub go_templates: ResMut<'w, crate::go_templates::GameObjectTemplates>,
     pub home_bind: ResMut<'w, crate::net::HomeBind>,
     pub proficiencies: ResMut<'w, crate::net::Proficiencies>,
     pub dropped: ResMut<'w, crate::net::DroppedOpcodes>,
@@ -153,9 +124,6 @@ pub(crate) struct WindowStores<'w> {
     /// Read-only here since 2312 — the social handlers own it (`ui_social::net`); the chat arm
     /// still reads the ignore list.
     pub social: Res<'w, crate::ui_social::SocialState>,
-    /// The pending logout/quit (decision 0674): the server's response and cancel-ack land here,
-    /// and `crate::ui_logout` turns them into the countdown dialog.
-    pub logout: ResMut<'w, crate::ui_logout::LogoutState>,
     /// The pet action bar's server-authoritative state + its own cooldown store (decision 0982),
     /// replaced wholesale on every `SMSG_PET_SPELLS`.
     pub pet_bar: ResMut<'w, crate::ui_pet::PetBar>,
@@ -231,9 +199,6 @@ pub(crate) struct AnimWriters<'w> {
     /// The aggro/alert vocal flare + the pushed-kit play (decision 0280).
     pub ai_reactions: MessageWriter<'w, AiReactionMessage>,
     pub kit_pushes: MessageWriter<'w, crate::creature_anim::KitPush>,
-    /// The remote landing predictor's report (decision 0415): a relayed FALL_LAND fires the grunt
-    /// + dust puff for an observed mover, the way the self controller does for us.
-    pub hard_landings: MessageWriter<'w, crate::creature_anim::HardLanding>,
     /// An observed rider's flourish (`SMSG_MOUNTSPECIAL_ANIM`, decision 0441 P2) — the unit →
     /// mount-child hop happens in `creature_anim::flourish_to_anim`.
     pub mount_flourishes: MessageWriter<'w, crate::creature_anim::MountFlourish>,

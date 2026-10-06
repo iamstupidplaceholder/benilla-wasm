@@ -30,7 +30,7 @@ use super::common::script;
 /// Each row: the Lua that must not raise, and what a reader must say afterwards.
 #[test]
 fn every_shape_c_colour_position_takes_nil_as_zero_and_never_raises() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         F = CreateFrame("Frame", "F")

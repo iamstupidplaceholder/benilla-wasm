@@ -27,6 +27,10 @@ mod decoder;
 mod handle;
 mod settings;
 mod sound;
+#[cfg(feature = "browser-streaming")]
+mod external;
+#[cfg(feature = "browser-streaming")]
+pub use external::*;
 
 pub use data::*;
 pub use decoder::*;

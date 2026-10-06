@@ -33,7 +33,7 @@
 //! the unit's `UNIT_FIELD_BYTES_1` byte for streamed units, and from the controller (echo + in-flight
 //! request) for our own avatar (decision 0080c).
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use benilla_assets::{AnimClip, ModelAnimations};
 use benilla_formats::AnimDataCatalog;
@@ -632,7 +632,7 @@ pub(crate) struct HandGrip {
 /// as the sheath ceremony and the upper-body one-shot overlays. Shared by the live driver
 /// ([`driver::drive_hand_grip`]) and the glue-booth spawn ([`crate::portrait`]) so both blend the grip
 /// identically.
-pub(crate) const HAND_GRIP_WEIGHT: f32 = 8.0;
+pub(crate) use benilla_world::rig_anim::HAND_GRIP_WEIGHT;
 
 /// One completed melee swing for `attacker` (`SMSG_ATTACKERSTATEUPDATE` → the net bridge; decision
 /// 0073: one packet = one swing animation, no client-side timer). `hit_info` bit `0x4` = offhand
@@ -1163,8 +1163,45 @@ impl AnimDriver {
 /// splines and the controller writes our avatar's state), so what it reads is the current frame's.
 pub(crate) struct CreatureAnimPlugin;
 
+/// Decode asynchronously delivered browser files with the production catalogs.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn publish_browser_catalogs(
+    commands: &mut Commands,
+    source: &mut impl benilla_formats::FileSource,
+) -> anyhow::Result<()> {
+    let anim = benilla_formats::load_anim_data_catalog(source)?;
+    let visuals = benilla_formats::load_spell_visual_catalog(source)?;
+    let blood = benilla_formats::load_blood_catalog(source)?;
+    let environment = benilla_formats::load_environmental_damage(source)?;
+    info!(
+        "browser animation catalogs ready: {} animation policies, {} spell visuals",
+        anim.len(),
+        visuals.len()
+    );
+    commands.insert_resource(AnimData(anim));
+    commands.insert_resource(SpellVisuals(visuals));
+    commands.insert_resource(blood::BloodTables(blood));
+    commands.insert_resource(EnvDamageTable(environment));
+    Ok(())
+}
+
+/// Shared animation/effect transport. Entity effect consumers may be installed
+/// without the animation driver (for example while the browser catalogs load).
+/// Register the real messages and sequence allocator independently of systems.
+pub(crate) fn register_entity_effect_contract(app: &mut App) {
+    app.add_message::<AnimSoundEvent>()
+        .add_message::<DefenseAnim>()
+        .add_message::<CastEvent>()
+        .add_message::<SpellKitSound>()
+        .add_message::<SpellKitFx>()
+        .add_message::<MissileSpawn>()
+        .add_message::<ChainProcPlay>()
+        .init_resource::<PlaySeq>();
+}
+
 impl Plugin for CreatureAnimPlugin {
     fn build(&self, app: &mut App) {
+        register_entity_effect_contract(app);
         twist::plugin(app);
         lod::plugin(app);
         breath::register(app);
@@ -1175,14 +1212,11 @@ impl Plugin for CreatureAnimPlugin {
             Update,
             classify_breath.after(benilla_world::terrain_stream::AreaAuthoritySet),
         );
-        app.add_message::<AnimSoundEvent>()
-            .add_message::<SwingMessage>()
+        app.add_message::<SwingMessage>()
             .add_message::<SwingImpact>()
             .add_message::<SwingFlush>()
-            .add_message::<DefenseAnim>()
             .add_message::<SwingSlowdown>()
             .init_resource::<PendingImpacts>()
-            .init_resource::<PlaySeq>()
             .init_resource::<gesture::GestureQueue>()
             .add_message::<EmoteAnim>()
             .add_message::<BaseAnimRecompute>()
@@ -1190,14 +1224,8 @@ impl Plugin for CreatureAnimPlugin {
             .add_message::<WoundAnim>()
             .add_message::<SheathSwapMessage>()
             .add_message::<SheathRequest>()
-            .add_message::<CastEvent>()
             .add_message::<SpellGoTargets>()
-            .add_message::<SpellKitSound>()
             .add_message::<SpellKitShake>()
-            .add_message::<SpellKitFx>()
-            .add_message::<MissileSpawn>()
-            // The kit's beam edge (0955) — `crate::entities` owns what it becomes.
-            .add_message::<ChainProcPlay>()
             .add_message::<KitPush>()
             // The aura CharProc edges the slot watcher emits alongside its effect-model ones —
             // drained by `crate::aura_visual`, which owns the body's alpha/tint for an aura's life.

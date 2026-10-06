@@ -25,13 +25,13 @@ fn session() -> UiScript {
         r"Interface\FrameXML\UIPanelTemplates.xml",
         "Interface\\FrameXML\\TutorialFrame.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s.resolve();
     s
 }
 
-fn visible(s: &UiScript, frame: &str) -> bool {
+fn visible(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsVisible()"))
         .unwrap()
 }
@@ -46,12 +46,12 @@ fn trigger(s: &mut UiScript, published: i64) {
 fn a_trigger_queues_an_alert_whose_click_opens_the_window_and_flags_it() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = session();
-    assert!(!visible(&s, "TutorialFrameAlertButton1"));
-    assert!(!visible(&s, "TutorialFrame"));
+    assert!(!visible(&mut s, "TutorialFrameAlertButton1"));
+    assert!(!visible(&mut s, "TutorialFrame"));
 
     trigger(&mut s, 41);
     assert!(
-        visible(&s, "TutorialFrameAlertButton1"),
+        visible(&mut s, "TutorialFrameAlertButton1"),
         "the alert button shows"
     );
     assert_eq!(
@@ -61,12 +61,12 @@ fn a_trigger_queues_an_alert_whose_click_opens_the_window_and_flags_it() {
     );
     trigger(&mut s, 42);
     assert!(
-        visible(&s, "TutorialFrameAlertButton2"),
+        visible(&mut s, "TutorialFrameAlertButton2"),
         "a second id takes the next button"
     );
 
     s.run("TutorialFrameAlertButton1:Click()").unwrap();
-    assert!(visible(&s, "TutorialFrame"), "the click opens the window");
+    assert!(visible(&mut s, "TutorialFrame"), "the click opens the window");
     assert_eq!(
         s.eval::<String>("return TutorialFrameTitle:GetText()")
             .unwrap(),
@@ -82,14 +82,14 @@ fn a_trigger_queues_an_alert_whose_click_opens_the_window_and_flags_it() {
         "FlagTutorial(41) → the 0-based id"
     );
     assert!(
-        !visible(&s, "TutorialFrameAlertButton1"),
+        !visible(&mut s, "TutorialFrameAlertButton1"),
         "the clicked alert is spent; the other stays"
     );
-    assert!(visible(&s, "TutorialFrameAlertButton2"));
+    assert!(visible(&mut s, "TutorialFrameAlertButton2"));
 
     // Okay hides it; the checkbox is ticked, so nothing is cleared.
     s.run("TutorialFrameOkayButton:Click()").unwrap();
-    assert!(!visible(&s, "TutorialFrame"));
+    assert!(!visible(&mut s, "TutorialFrame"));
     assert_eq!(s.take_tutorial_clears(), 0);
 }
 
@@ -106,7 +106,7 @@ fn an_unticked_checkbox_clears_the_tutorials_on_hide() {
         .unwrap();
     assert_eq!(s.take_tutorial_clears(), 1, "ClearTutorials() on hide");
     assert!(
-        !visible(&s, "TutorialFrameAlertButton2"),
+        !visible(&mut s, "TutorialFrameAlertButton2"),
         "every alert dropped"
     );
 }
@@ -120,7 +120,7 @@ fn cinematic_stop_opens_the_welcome_window() {
     trigger(&mut s, 42);
     trigger(&mut s, 1);
     s.fire_event("CINEMATIC_STOP", vec![]);
-    assert!(visible(&s, "TutorialFrame"));
+    assert!(visible(&mut s, "TutorialFrame"));
     assert_eq!(
         s.eval::<String>("return TutorialFrameTitle:GetText()")
             .unwrap(),
@@ -128,7 +128,7 @@ fn cinematic_stop_opens_the_welcome_window() {
     );
     assert_eq!(s.take_tutorial_flag_requests(), vec![41]);
     assert!(
-        visible(&s, "TutorialFrameAlertButton2"),
+        visible(&mut s, "TutorialFrameAlertButton2"),
         "the Questgivers alert stays queued"
     );
 }

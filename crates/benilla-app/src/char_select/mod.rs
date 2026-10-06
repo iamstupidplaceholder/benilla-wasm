@@ -149,7 +149,7 @@ impl Plugin for CharSelectPlugin {
                     )
                         .chain(),
                     (
-                        screen::materialize_screen,
+                        screen::materialize_screen.after(crate::glue::GlueArtLoad),
                         input::select_input,
                         input::rotate_model,
                         debug_select_dialog,
@@ -796,6 +796,7 @@ fn debug_glue_roundtrip(
 /// hand-written `AppExit` from `Update` skipped that question for this smoke's whole life, and the
 /// bug it would have caught — every saved variable, every addon file and the camera pose lost on
 /// every window close — shipped underneath it.
+#[cfg(not(target_arch = "wasm32"))]
 fn debug_logout_smoke(
     state: Res<State<ClientState>>,
     player: Res<crate::player::Player>,
@@ -888,6 +889,9 @@ fn debug_logout_smoke(
         _ => {}
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+fn debug_logout_smoke() {}
 
 /// The select-screen **walk** instrument (`WOW_CHARSELECT_WALK=<period_s>[:<enter_after_s>]`) —
 /// the thing a headless run had no way to do at all: *click a row*. It steps the selection one row

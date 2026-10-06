@@ -30,7 +30,7 @@
 //! deferral lives app-side in `crate::ui_petition`; the getters here still answer honestly at any
 //! moment, because an addon may call them whenever it likes.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -229,17 +229,12 @@ fn era_bool(on: bool) -> Value {
 }
 
 /// A cached name pushes as a string; an uncached one pushes **nil**.
-fn name_value(lua: &Lua, name: Option<&String>) -> mlua::Result<Value> {
-    match name {
-        Some(n) => Ok(Value::String(lua.create_string(n)?)),
-        None => Ok(Value::Nil),
-    }
+fn name_value(name: Option<&String>) -> Value {
+    name.cloned().map_or(Value::Nil, Value::from)
 }
 
 /// Register the charter globals against the snapshot store.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // ── The petition window ──────────────────────────────────────────────────────────────────
     // GetPetitionInfo() (`0x4f43d0`) — **exactly six values on BOTH legs** (`mov eax,0x6` at
     // `0x4f4493` and `0x4f44d4`), in the order the reference destructures them
@@ -249,41 +244,38 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // fourth pushed as the *number* zero (`0x4f44b4 push 0; push 0; call 0x6f3810`). This file
     // first shipped an empty return, which reads identically through the reference's own
     // destructure and differently to anything that counts its arguments.
-    g.set(
-        "GetPetitionInfo",
-        lua.create_function(|lua, ()| {
+    lua.register_function("GetPetitionInfo", |lua, ()| {
+        let record = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(r) = model.petition.record.as_ref() else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Nil,
-                    Value::Nil,
-                ]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&r.petition_type)?),
-                Value::String(lua.create_string(&r.title)?),
-                Value::String(lua.create_string(&r.body_text)?),
-                Value::Integer(i64::from(r.max_signatures)),
-                name_value(lua, r.originator.as_ref())?,
-                era_bool(r.is_originator),
-            ]))
-        })?,
-    )?;
+            model.petition.record.clone()
+        };
+        let Some(r) = record else {
+            return Ok(MultiValue::from(vec![
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(0),
+                Value::Nil,
+                Value::Nil,
+            ]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(r.petition_type),
+            Value::from(r.title),
+            Value::from(r.body_text),
+            Value::Integer(i64::from(r.max_signatures)),
+            name_value(r.originator.as_ref()),
+            era_bool(r.is_originator),
+        ]))
+    })?;
 
     // GetNumPetitionNames() (`0x4f44e0`, 44 bytes — one field read) — `[0xbdce20]`, pushed
     // UNSIGNED. It counts **signatures only**; the owner is painted separately by the window and is
     // never in this list.
-    g.set(
-        "GetNumPetitionNames",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.petition.signers.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumPetitionNames", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.petition.signers.len() as i64)
+    })?;
 
     // GetPetitionNameInfo(index) (`0x4f4510`) — **1-based** (`0x4f4569 dec eax`), one value on
     // every leg. The bound test `0x4f456c jae` is UNSIGNED, so index `< 1` wraps to `0xffffffff`
@@ -291,21 +283,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // than the last row. An uncached name is **nil**, not `""`.
     //
     // A non-numeric argument is `luaL_error("Usage: GetPetitionNameInfo(index)")`, which longjmps;
-    // mlua's coercion raises for us on the same input, so the shape is preserved.
-    g.set(
-        "GetPetitionNameInfo",
-        lua.create_function(|lua, index: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(name) = usize::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_sub(1))
-                .and_then(|i| model.petition.signers.get(i))
-            else {
-                return Ok(Value::Nil);
-            };
-            name_value(lua, name.as_ref())
-        })?,
-    )?;
+    // The wrapper's coercion raises for us on the same input, so the shape is preserved.
+    lua.register_function("GetPetitionNameInfo", |lua, index: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(name) = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| model.petition.signers.get(i))
+        else {
+            return Ok(Value::Nil);
+        };
+        Ok(name_value(name.as_ref()))
+    })?;
 
     // CanSignPetition() (`0x4f45e0`) — the Sign button's only gate.
     //
@@ -314,23 +303,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // straight into the signer scan, over an array the close path has already zeroed. A client that
     // treats this as a sufficient precondition lets the user click Sign with nothing to sign — so
     // the window's own `isOriginator` branch is what actually keeps the button off screen.
-    g.set(
-        "CanSignPetition",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(era_bool(model.petition.can_sign))
-        })?,
-    )?;
+    lua.register_function("CanSignPetition", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(era_bool(model.petition.can_sign))
+    })?;
 
     // ── The registrar window ─────────────────────────────────────────────────────────────────
     // GetGuildCharterCost() (`0x4f5230`) — copper, unsigned, `0` before any showlist.
-    g.set(
-        "GetGuildCharterCost",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.petition.charter_cost))
-        })?,
-    )?;
+    lua.register_function("GetGuildCharterCost", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.petition.charter_cost))
+    })?;
 
     // ── The verbs ────────────────────────────────────────────────────────────────────────────
     // The four that carry nothing and push nothing. None may touch the snapshot: none of them is
@@ -341,72 +324,60 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("OfferPetition", PetitionRequest::Offer),
         ("ClosePetition", PetitionRequest::ClosePetition),
     ] {
-        g.set(
-            global,
-            lua.create_function(move |lua, ()| {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.petition_requests.push(request.clone());
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(global, move |lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.petition_requests.push(request.clone());
+            Ok(())
+        })?;
     }
 
     // SignPetition([n]) (`0x4f46d0`) — the argument is OPTIONAL and rides the wire as a byte,
     // defaulting to **1**, not 0 (`0x4f46d9 edi = 1`, `0x4f4749 Put8`). The server skips the byte,
     // so nothing observable depends on it — which is exactly why it is easy to ship as 0 and never
     // find out.
-    g.set(
-        "SignPetition",
-        lua.create_function(|lua, n: Option<f64>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // `trunc` toward zero, then narrowed the way the `Put8` does.
-            let byte = n.map_or(1i8, |v| v.trunc() as i64 as i8);
-            model.petition_requests.push(PetitionRequest::Sign(byte));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SignPetition", |lua, n: Option<f64>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // `trunc` toward zero, then narrowed the way the `Put8` does.
+        let byte = n.map_or(1i8, |v| v.trunc() as i64 as i8);
+        model.petition_requests.push(PetitionRequest::Sign(byte));
+        Ok(())
+    })?;
 
     // BuyGuildCharter(guildName) (`0x4f5260`) — **returns the number `1` or `nil`**, and what it
     // reports is NAME VALIDITY, not that a packet was sent: `0x4f5294` runs the shared validator and
     // only its non-zero return reaches the action, which then has five silent refusals of its own.
     // Nothing in the shipped FrameXML reads the return; an addon can.
-    g.set(
-        "BuyGuildCharter",
-        lua.create_function(|lua, name: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            match validate_guild_name(&name) {
-                Ok(()) => {
-                    model.petition_requests.push(PetitionRequest::Buy(name));
-                    Ok(Value::Integer(1))
-                }
-                Err(key) => {
-                    model
-                        .petition_requests
-                        .push(PetitionRequest::NameRefused(key));
-                    Ok(Value::Nil)
-                }
+    lua.register_function("BuyGuildCharter", |lua, name: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        match validate_guild_name(&name) {
+            Ok(()) => {
+                model.petition_requests.push(PetitionRequest::Buy(name));
+                Ok(Value::Integer(1))
             }
-        })?,
-    )?;
+            Err(key) => {
+                model
+                    .petition_requests
+                    .push(PetitionRequest::NameRefused(key));
+                Ok(Value::Nil)
+            }
+        }
+    })?;
 
     // RenamePetition(name) (`0x4f4930`) — **0 values**, the SAME validator, and silent on refusal
     // beyond the validator's own message. (Its usage string is literally
     // `Usage(RenamePetition("name")` in the binary — Blizzard's own unbalanced parenthesis. It is
-    // unreachable from our binding, which raises through mlua's coercion instead, and is recorded
-    // here rather than reproduced.)
-    g.set(
-        "RenamePetition",
-        lua.create_function(|lua, name: String| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            match validate_guild_name(&name) {
-                Ok(()) => model.petition_requests.push(PetitionRequest::Rename(name)),
-                Err(key) => model
-                    .petition_requests
-                    .push(PetitionRequest::NameRefused(key)),
-            }
-            Ok(())
-        })?,
-    )?;
+    // unreachable from our binding, which raises through the wrapper's coercion instead, and is
+    // recorded here rather than reproduced.)
+    lua.register_function("RenamePetition", |lua, name: String| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        match validate_guild_name(&name) {
+            Ok(()) => model.petition_requests.push(PetitionRequest::Rename(name)),
+            Err(key) => model
+                .petition_requests
+                .push(PetitionRequest::NameRefused(key)),
+        }
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -476,7 +447,7 @@ mod tests {
     /// of the test.
     #[test]
     fn the_no_record_leg_is_six_values_with_a_numeric_zero() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.arity("GetPetitionInfo()").unwrap(),
             6,
@@ -540,7 +511,7 @@ mod tests {
     /// own asymmetry, pinned so nobody "fixes" it into a nil.
     #[test]
     fn can_sign_petition_answers_one_with_nothing_open() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<Option<u32>>("return CanSignPetition()").unwrap(),
             None,

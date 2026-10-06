@@ -136,7 +136,7 @@ fn our_globals_stay_inside_the_1_12_surface() {
     let allowed = allowed_beyond_1_12();
 
     let ours: Vec<String> = script()
-        .eval(
+        .eval_sequence(
             "local out = {} \
              for k in pairs(_G) do if type(k) == 'string' then table.insert(out, k) end end \
              return out",
@@ -172,7 +172,7 @@ fn our_globals_stay_inside_the_1_12_surface() {
 fn the_exception_list_has_no_dead_entries() {
     let known: HashSet<String> = reference().into_iter().map(|(n, _)| n).collect();
     let ours: HashSet<String> = script()
-        .eval::<Vec<String>>(
+        .eval_sequence::<String>(
             "local out = {} \
              for k in pairs(_G) do if type(k) == 'string' then table.insert(out, k) end end \
              return out",
@@ -220,7 +220,7 @@ fn the_exception_list_has_no_dead_entries() {
 /// exactly the direction callers test for.
 #[test]
 fn get_texture_returns_the_stripped_path_and_solid_texture_for_a_fill() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         f = CreateFrame("Frame", "GTF")
@@ -292,7 +292,7 @@ fn get_texture_returns_the_stripped_path_and_solid_texture_for_a_fill() {
 /// point of its line is that whatever `GameFontNormal` carries arrives intact.
 #[test]
 fn region_shadow_accessors_round_trip_four_values() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(r#"f = CreateFrame("Frame", "SHF") fs = f:CreateFontString("SHFText", "ARTWORK")"#)
         .unwrap();
 
@@ -447,7 +447,7 @@ fn region_set_parent_relinks_the_draw_owner_and_leaves_anchors_alone() {
 /// which `GetFontString()` would report.
 #[test]
 fn button_set_font_returns_nothing_and_is_a_no_op_without_a_label() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         Bare = CreateFrame("Button", "SFBare")
@@ -547,7 +547,7 @@ fn button_set_font_returns_nothing_and_is_a_no_op_without_a_label() {
 /// call ENABLES** it; the default is on, so it is not a query.
 #[test]
 fn non_space_wrap_defaults_on_and_answers_one_or_nil() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(r#"f = CreateFrame("Frame", "NSF") fs = f:CreateFontString("NSFText", "ARTWORK")"#)
         .unwrap();
 
@@ -602,7 +602,7 @@ fn non_space_wrap_defaults_on_and_answers_one_or_nil() {
 /// `SetTextHeight`/`GetStringWidth` (FontString only).
 #[test]
 fn editbox_carries_the_font_block_its_registrar_table_declares() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(r#"EB = CreateFrame("EditBox", "EBFont")"#).unwrap();
 
     for name in [
@@ -665,7 +665,7 @@ fn editbox_carries_the_font_block_its_registrar_table_declares() {
 /// answer and silently drops the alpha.
 #[test]
 fn editbox_font_block_return_shapes_are_the_shared_implementations() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         EB = CreateFrame("EditBox", "EBShape")
@@ -766,7 +766,7 @@ fn editbox_font_block_return_shapes_are_the_shared_implementations() {
 /// `AceGUIWidget-Slider.lua:204-210` is the same shape with `SetJustifyH("CENTER")` on the end.
 #[test]
 fn the_dewdrop_editbox_font_shape_resolves_and_paints() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         CreateFont("ChatFontNormal")
@@ -817,7 +817,7 @@ fn the_dewdrop_editbox_font_shape_resolves_and_paints() {
 ///    literal `"UNKNOWN"` (`0x6f1a00`, `.data 0x838044`). No error is raised either way.
 #[test]
 fn editbox_justify_masks_to_its_axis_and_answers_unknown() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(r#"EB = CreateFrame("EditBox", "EBJustify")"#)
         .unwrap();
 
@@ -947,7 +947,7 @@ fn editbox_justify_v_echoes_but_multiline_alone_decides_the_pixels() {
 /// `FuBar_Panel.lua:43` → Dewdrop `AddLine` → `button.arrow:SetDesaturated(true)`, unguarded.
 #[test]
 fn set_desaturated_reports_shader_support_and_does_not_raise() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(r#"f = CreateFrame("Frame", "DsF") tex = f:CreateTexture("DsTex", "ARTWORK")"#)
         .unwrap();
 
@@ -1059,7 +1059,7 @@ fn unit_creature_type_answers_the_record_then_falls_back_to_humanoid() {
 /// interpolate the offending name.
 #[test]
 fn get_inventory_slot_info_folds_case_and_flags_only_the_ranged_slot() {
-    let s = script();
+    let mut s = script();
 
     // The exact spelling, and the two case variants the corpus actually ships.
     for name in ["AmmoSlot", "ammoSlot", "AMMOSLOT"] {
@@ -1278,7 +1278,7 @@ fn the_region_map_readers_answer_the_way_the_edges_do() {
 /// rather than with me.
 #[test]
 fn the_type_identity_verbs_answer_what_the_binary_answers() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         TIOwner = CreateFrame("Frame", "TIOwner")
@@ -1417,7 +1417,7 @@ fn the_type_identity_verbs_answer_what_the_binary_answers() {
 /// `LookNFeel.lua:737: attempt to index field 'playerModel'` on screen.
 #[test]
 fn the_frame_side_type_identity_verbs_are_1_12s_own_names() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     s.run(
         r#"
         FTFrame = CreateFrame("Frame", "FTFrame")
@@ -1495,7 +1495,7 @@ fn the_frame_side_type_identity_verbs_are_1_12s_own_names() {
 /// class in the binary rather than a runtime parent walk.
 #[test]
 fn a_frames_type_chain_matches_the_roster() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     // (CreateFrame kind, GetObjectType string, full chain)
     let cases: &[(&str, &str, &[&str])] = &[
         ("Frame", "Frame", &["Frame", "Region"]),
@@ -1621,14 +1621,19 @@ fn a_frames_type_chain_matches_the_roster() {
 /// table the VM actually holds rather than the source that builds it.
 #[test]
 fn every_installed_region_method_lands_in_a_leaf() {
+    use benilla_lua::{LuaContext, Table, Value};
+
     use crate::script::{
         FONTSTRING_ONLY_METHODS, REGION_LEAF_SHARED, REGION_MAP_METHODS, TEXTURE_ONLY_METHODS,
     };
-    let s = crate::script::UiScript::new().unwrap();
-    let full: mlua::Table = s
-        .lua()
-        .named_registry_value(crate::script::REG_REGION_METHODS_FOR_TEST)
-        .expect("the full region method table");
+    let mut s = crate::script::UiScript::new().unwrap();
+    let entries = {
+        let lua = s.vm_mut();
+        let full: Table = lua
+            .get_registry(crate::script::REG_REGION_METHODS_FOR_TEST)
+            .expect("the full region method table");
+        lua.table_entries(&full).expect("region method entries")
+    };
 
     let mut known: std::collections::HashSet<&str> = std::collections::HashSet::new();
     known.extend(REGION_MAP_METHODS);
@@ -1637,8 +1642,14 @@ fn every_installed_region_method_lands_in_a_leaf() {
     known.extend(FONTSTRING_ONLY_METHODS);
 
     let mut orphans: Vec<String> = Vec::new();
-    for pair in full.pairs::<String, mlua::Value>() {
-        let (name, _) = pair.expect("region method entry");
+    for (name, _) in entries {
+        let Value::String(name) = name else {
+            panic!("region method name is not a string")
+        };
+        let name = name
+            .as_str()
+            .expect("region method name is valid UTF-8")
+            .to_owned();
         if !known.contains(name.as_str()) {
             orphans.push(name);
         }
@@ -1656,19 +1667,19 @@ fn every_installed_region_method_lands_in_a_leaf() {
 /// carries the carve and `script::cvars::install_world_detail_verbs` the reasoning.
 #[test]
 fn set_world_detail_writes_the_stop_table_and_validates_like_the_reference() {
-    let s = script();
+    let mut s = script();
     s.register_cvars([
         (crate::script::CVAR_WORLD_DETAIL, "1"),
         (crate::script::CVAR_FRILL_DENSITY, "32"),
     ]);
-    let frill = |s: &crate::script::UiScript| s.cvar(crate::script::CVAR_FRILL_DENSITY);
-    let stop = |s: &crate::script::UiScript| s.cvar(crate::script::CVAR_WORLD_DETAIL);
+    let frill = |s: &mut crate::script::UiScript| s.cvar(crate::script::CVAR_FRILL_DENSITY);
+    let stop = |s: &mut crate::script::UiScript| s.cvar(crate::script::CVAR_WORLD_DETAIL);
 
     // The preset table at `0x804518`, verbatim: {16, 32, 48}.
     for (n, want) in [(0, "16"), (1, "32"), (2, "48")] {
         s.run(&format!("SetWorldDetail({n})")).unwrap();
         assert_eq!(
-            frill(&s).as_deref(),
+            frill(&mut s).as_deref(),
             Some(want),
             "stop {n} writes frillDensity"
         );
@@ -1687,17 +1698,17 @@ fn set_world_detail_writes_the_stop_table_and_validates_like_the_reference() {
     // **Truncation is toward zero** (`0x40a2b0` forces RC = chop), so a fractional stop floors
     // toward 0 from both sides — and -0.5 is therefore stop 0, ACCEPTED.
     s.run("SetWorldDetail(2.9)").unwrap();
-    assert_eq!(frill(&s).as_deref(), Some("48"));
+    assert_eq!(frill(&mut s).as_deref(), Some("48"));
     s.run("SetWorldDetail(-0.5)").unwrap();
     assert_eq!(
-        frill(&s).as_deref(),
+        frill(&mut s).as_deref(),
         Some("16"),
         "-0.5 truncates to 0, which is in range: only <= -1 raises"
     );
 
     // **`lua_isnumber` accepts a numeric string.**
     s.run(r#"SetWorldDetail("2")"#).unwrap();
-    assert_eq!(frill(&s).as_deref(), Some("48"));
+    assert_eq!(frill(&mut s).as_deref(), Some("48"));
 
     // Both raise paths, with the reference's own strings.
     for bad in [
@@ -1739,7 +1750,7 @@ fn set_world_detail_writes_the_stop_table_and_validates_like_the_reference() {
     // The getter reads no argument — pfUI declares its replacement `function(arg)` and the stock
     // one it chains to is called with one.
     assert_eq!(s.eval::<i64>("return GetWorldDetail(7)").unwrap(), 1);
-    assert_eq!(stop(&s).as_deref(), Some("1"));
+    assert_eq!(stop(&mut s).as_deref(), Some("1"));
 }
 
 /// **pfUI's `hdgraphic` module, run against the real bindings.**
@@ -1749,7 +1760,7 @@ fn set_world_detail_writes_the_stop_table_and_validates_like_the_reference() {
 /// module works" are different claims and only the second one is the point.
 #[test]
 fn the_pfui_hdgraphic_extended_arm_runs() {
-    let s = script();
+    let mut s = script();
     s.register_cvars([
         (crate::script::CVAR_WORLD_DETAIL, "1"),
         (crate::script::CVAR_FRILL_DENSITY, "32"),
@@ -1807,36 +1818,36 @@ fn the_pfui_hdgraphic_extended_arm_runs() {
 ///   from one nil for a caller that counts.
 #[test]
 fn the_nameplate_verbs_ignore_their_arguments_and_return_nothing() {
-    let s = script();
+    let mut s = script();
     s.register_cvars([
         (crate::script::CVAR_NAMEPLATE_ENEMIES, "1"),
         (crate::script::CVAR_NAMEPLATE_FRIENDS, "0"),
     ]);
 
-    let get = |s: &crate::script::UiScript, n: &str| s.cvar(n);
+    let get = |s: &mut crate::script::UiScript, n: &str| s.cvar(n);
     assert_eq!(
-        get(&s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
+        get(&mut s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
         Some("1")
     );
 
     // Each verb writes its own bit and leaves the other alone.
     s.run("HideNameplates()").unwrap();
     assert_eq!(
-        get(&s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
+        get(&mut s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
         Some("0")
     );
     assert_eq!(
-        get(&s, crate::script::CVAR_NAMEPLATE_FRIENDS).as_deref(),
+        get(&mut s, crate::script::CVAR_NAMEPLATE_FRIENDS).as_deref(),
         Some("0"),
         "the friendly bit is a separate setter — hiding enemies must not touch it"
     );
     s.run("ShowFriendNameplates()").unwrap();
     assert_eq!(
-        get(&s, crate::script::CVAR_NAMEPLATE_FRIENDS).as_deref(),
+        get(&mut s, crate::script::CVAR_NAMEPLATE_FRIENDS).as_deref(),
         Some("1")
     );
     assert_eq!(
-        get(&s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
+        get(&mut s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
         Some("0"),
         "...and back the other way"
     );
@@ -1845,7 +1856,7 @@ fn the_nameplate_verbs_ignore_their_arguments_and_return_nothing() {
     // reason the reference ships four verbs rather than two taking a flag.
     s.run("ShowNameplates(false)").unwrap();
     assert_eq!(
-        get(&s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
+        get(&mut s, crate::script::CVAR_NAMEPLATE_ENEMIES).as_deref(),
         Some("1"),
         "the verb IS the value — a falsy argument does not invert it"
     );

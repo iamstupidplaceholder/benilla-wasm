@@ -20,16 +20,16 @@ use super::test_ui::load_ui as load_xml;
 fn harness(extra: &[&str]) -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
     // `FACTION_BAR_COLORS`, which the stock `GameTooltip_UnitColor` indexes on every unit hover:
     // the reference defines it at ReputationFrame.lua's file scope (1968).
-    load_xml(&s, r"Interface\FrameXML\ReputationFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\ReputationFrame.lua");
     for f in extra {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     // The stock tooltip declares no size: it sizes from its lines through the font engine, as
     // the client's does (1968) — every test here reads its rect, so the fixed-width font is
@@ -287,7 +287,7 @@ fn your_own_portrait_explains_the_menu_instead_of_showing_your_health() {
 /// table so the pass means what it says.
 #[test]
 fn action_button_hover_takes_the_default_corner() {
-    let s = harness(&[
+    let mut s = harness(&[
         "Interface\\FrameXML\\Cooldown.xml",
         "Interface\\FrameXML\\ActionButtonTemplate.xml",
         "Interface\\FrameXML\\TextStatusBar.lua",
@@ -354,7 +354,7 @@ fn ubertooltips_off_seats_action_bar_plates_beside_the_button() {
     s.register_cvars(crate::cvars::registered_pairs());
     s.set_cvar_engine("UberTooltips", "0");
 
-    let seat = |s: &UiScript| {
+    let seat = |s: &mut UiScript| {
         s.eval::<String>(
             "local p, rel, rp = GameTooltip:GetPoint() \
              return p .. \"/\" .. (rel and rel:GetName() or \"?\") .. \"/\" .. rp",
@@ -374,7 +374,7 @@ fn ubertooltips_off_seats_action_bar_plates_beside_the_button() {
         "…owned by the button it opened from"
     );
     assert_eq!(
-        seat(&s),
+        seat(&mut s),
         "BOTTOMLEFT/ActionButton3/TOPRIGHT",
         "ANCHOR_RIGHT — the main bar is not in the ref's LEFT set"
     );
@@ -385,7 +385,7 @@ fn ubertooltips_off_seats_action_bar_plates_beside_the_button() {
         s.run(&format!("this = {bar}Button1 ActionButton_SetTooltip()"))
             .unwrap();
         assert_eq!(
-            seat(&s),
+            seat(&mut s),
             format!("BOTTOMRIGHT/{bar}Button1/TOPLEFT"),
             "ANCHOR_LEFT — {bar} opens toward screen centre"
         );

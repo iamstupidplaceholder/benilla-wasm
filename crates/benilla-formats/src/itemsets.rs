@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 const ITEM_SET: &str = "DBFilesClient\\ItemSet.dbc";
@@ -74,7 +75,7 @@ fn item_set_schema() -> Schema {
 }
 
 /// Load ItemSet.dbc from the patch chain into an [`ItemSetCatalog`].
-pub fn load_item_sets(chain: &mut Chain) -> Result<ItemSetCatalog> {
+pub fn load_item_sets(chain: &mut impl crate::FileSource) -> Result<ItemSetCatalog> {
     let bytes = chain
         .read_file(ITEM_SET)
         .with_context(|| format!("reading {ITEM_SET}"))?;

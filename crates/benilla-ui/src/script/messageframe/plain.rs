@@ -22,9 +22,9 @@
 //! binding over it. The band emit and the wrapped-row measure round-trip are shared with the
 //! scrolling class and live in [`super`].
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table, Value, Vm};
 
-use crate::script::object::frame_handle_of;
+use crate::script::object::frame_handle_of_context;
 use crate::script::Model;
 use crate::widget::{InsertMode, KindState, MessageFrameState};
 
@@ -36,19 +36,19 @@ pub(crate) const REG_MESSAGEFRAME_METHODS: &str = "__benilla_plain_messageframe_
 /// a live MessageFrame (unreachable through the kind dispatcher, but the method table is a plain
 /// Lua value — a caller could fish it out and misapply it).
 fn with_mf<T>(
-    lua: &Lua,
+    lua: &mut impl LuaContext,
     this: &Table,
     f: impl FnOnce(&mut MessageFrameState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::Message(mf) => Ok(f(mf)),
-        _ => Err(mlua::Error::runtime("not a MessageFrame")),
+        _ => Err(benilla_lua::Error::runtime("not a MessageFrame")),
     }
 }
 
@@ -61,12 +61,12 @@ fn num_f32(v: &Value) -> f32 {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let m = lua.create_table()?;
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let m = vm.create_table()?;
 
     // The justify quartet, shared with the sibling class — see [`super::install_justify`] for the
     // method-table bytes that put all four on BOTH tables.
-    super::install_justify(lua, &m, "MessageFrame")?;
+    super::install_justify_context(vm, &m, "MessageFrame")?;
 
     // AddMessage(text [, r, g, b [, a]]) — binding 0x795590.
     //
@@ -88,48 +88,51 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // first five and drops the rest, exactly as the real binding does by reading five stack slots.
     // Adding a `holdTime` parameter here would make benilla show those messages for a duration no
     // 1.12 client ever showed them for.
-    m.set(
-        "AddMessage",
-        lua.create_function(
-            |lua, (this, text, r, g, b, a): (Table, Value, Value, Value, Value, Value)| {
-                let Some(text) = super::message_text(lua, &text) else {
-                    return Ok(());
-                };
-                let has_rgb = !matches!(
-                    (&r, &g, &b),
-                    (Value::Nil, _, _) | (_, Value::Nil, _) | (_, _, Value::Nil)
-                );
-                let (r, g, b) = if has_rgb {
-                    (num_f32(&r), num_f32(&g), num_f32(&b))
-                } else {
-                    (1.0, 1.0, 1.0)
-                };
-                // Alpha only counts when rgb came with it — the client reads arg 5 off the same
-                // parse that required the trio, and a lone `AddMessage(text, nil, nil, nil, 0.5)`
-                // has no colour to apply it to.
-                let a = match (&a, has_rgb) {
-                    (Value::Number(_) | Value::Integer(_), true) => num_f32(&a),
-                    _ => 1.0,
-                };
-                with_mf(lua, &this, |mf| mf.add(text, r, g, b, a))
-            },
-        )?,
+    let function = vm.create_function(
+        "MessageFrame:AddMessage",
+        |lua, (this, text, r, g, b, a): (Table, Value, Value, Value, Value, Value)| {
+            let Some(text) = super::message_text_context(&text) else {
+                return Ok(());
+            };
+            let has_rgb = !matches!(
+                (&r, &g, &b),
+                (Value::Nil, _, _) | (_, Value::Nil, _) | (_, _, Value::Nil)
+            );
+            let (r, g, b) = if has_rgb {
+                (num_f32(&r), num_f32(&g), num_f32(&b))
+            } else {
+                (1.0, 1.0, 1.0)
+            };
+            // Alpha only counts when rgb came with it — the client reads arg 5 off the same
+            // parse that required the trio, and a lone `AddMessage(text, nil, nil, nil, 0.5)`
+            // has no colour to apply it to.
+            let a = match (&a, has_rgb) {
+                (Value::Number(_) | Value::Integer(_), true) => num_f32(&a),
+                _ => 1.0,
+            };
+            with_mf(lua, &this, |mf| mf.add(text, r, g, b, a))
+        },
     )?;
+    vm.table_set(&m, "AddMessage", function)?;
 
-    m.set(
-        "Clear",
-        lua.create_function(|lua, this: Table| with_mf(lua, &this, MessageFrameState::clear))?,
-    )?;
+    let function = vm.create_function("MessageFrame:Clear", |lua, this: Table| {
+        with_mf(lua, &this, MessageFrameState::clear)
+    })?;
+    vm.table_set(&m, "Clear", function)?;
 
     // SetInsertMode("TOP"|"BOTTOM") / GetInsertMode — 0x794ed0 / 0x794ff0, THIS CLASS ONLY. The
     // client compares the string against "BOTTOM" (0x871404) and stores `streq-BOTTOM`, so anything
     // that is not literally BOTTOM lands on TOP; the ctor default is 1 = BOTTOM.
-    m.set(
-        "SetInsertMode",
-        lua.create_function(|lua, (this, mode): (Table, Value)| {
+    let function = vm.create_function(
+        "MessageFrame:SetInsertMode",
+        |lua, (this, mode): (Table, Value)| {
             let mode = match &mode {
                 Value::String(s) => {
-                    if s.to_str()?.trim().eq_ignore_ascii_case("BOTTOM") {
+                    if s.as_str()
+                        .map_err(|error| benilla_lua::Error::runtime(error.to_string()))?
+                        .trim()
+                        .eq_ignore_ascii_case("BOTTOM")
+                    {
                         InsertMode::Bottom
                     } else {
                         InsertMode::Top
@@ -140,57 +143,53 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 _ => InsertMode::Top,
             };
             with_mf(lua, &this, |mf| mf.insert_mode = mode)
-        })?,
+        },
     )?;
-    m.set(
-        "GetInsertMode",
-        lua.create_function(|lua, this: Table| {
-            with_mf(lua, &this, |mf| match mf.insert_mode {
-                InsertMode::Top => "TOP",
-                InsertMode::Bottom => "BOTTOM",
-            })
-        })?,
-    )?;
+    vm.table_set(&m, "SetInsertMode", function)?;
+    let function = vm.create_function("MessageFrame:GetInsertMode", |lua, this: Table| {
+        with_mf(lua, &this, |mf| match mf.insert_mode {
+            InsertMode::Top => "TOP",
+            InsertMode::Bottom => "BOTTOM",
+        })
+    })?;
+    vm.table_set(&m, "GetInsertMode", function)?;
 
     // The fade trio — the same names and the same field the scrolling class exposes (the XML attr
     // is `displayDuration`, the Lua accessors call it `TimeVisible`), over this class's own state.
-    m.set(
-        "SetFading",
-        lua.create_function(|lua, (this, on): (Table, Value)| {
+    let function = vm.create_function(
+        "MessageFrame:SetFading",
+        |lua, (this, on): (Table, Value)| {
             let on = !matches!(on, Value::Nil | Value::Boolean(false));
             with_mf(lua, &this, |mf| mf.fading_enabled = on)
-        })?,
+        },
     )?;
+    vm.table_set(&m, "SetFading", function)?;
     // 1/nil, the reference's predicate shape — `binding-shapes.tsv` has this row as
     // `(nil) | (number)`, like every other 1.12 predicate (decision 2118).
-    m.set(
-        "GetFading",
-        lua.create_function(|lua, this: Table| {
-            with_mf(lua, &this, |mf| {
-                crate::script::binding_abi::flag(mf.fading_enabled)
-            })
-        })?,
+    let function = vm.create_function("MessageFrame:GetFading", |lua, this: Table| {
+        with_mf(lua, &this, |mf| {
+            crate::script::binding_abi::neutral_flag(mf.fading_enabled)
+        })
+    })?;
+    vm.table_set(&m, "GetFading", function)?;
+    let function = vm.create_function(
+        "MessageFrame:SetTimeVisible",
+        |lua, (this, s): (Table, f32)| with_mf(lua, &this, |mf| mf.time_visible = s.max(0.0)),
     )?;
-    m.set(
-        "SetTimeVisible",
-        lua.create_function(|lua, (this, s): (Table, f32)| {
-            with_mf(lua, &this, |mf| mf.time_visible = s.max(0.0))
-        })?,
+    vm.table_set(&m, "SetTimeVisible", function)?;
+    let function = vm.create_function("MessageFrame:GetTimeVisible", |lua, this: Table| {
+        with_mf(lua, &this, |mf| mf.time_visible)
+    })?;
+    vm.table_set(&m, "GetTimeVisible", function)?;
+    let function = vm.create_function(
+        "MessageFrame:SetFadeDuration",
+        |lua, (this, s): (Table, f32)| with_mf(lua, &this, |mf| mf.fade_duration = s.max(0.0)),
     )?;
-    m.set(
-        "GetTimeVisible",
-        lua.create_function(|lua, this: Table| with_mf(lua, &this, |mf| mf.time_visible))?,
-    )?;
-    m.set(
-        "SetFadeDuration",
-        lua.create_function(|lua, (this, s): (Table, f32)| {
-            with_mf(lua, &this, |mf| mf.fade_duration = s.max(0.0))
-        })?,
-    )?;
-    m.set(
-        "GetFadeDuration",
-        lua.create_function(|lua, this: Table| with_mf(lua, &this, |mf| mf.fade_duration))?,
-    )?;
+    vm.table_set(&m, "SetFadeDuration", function)?;
+    let function = vm.create_function("MessageFrame:GetFadeDuration", |lua, this: Table| {
+        with_mf(lua, &this, |mf| mf.fade_duration)
+    })?;
+    vm.table_set(&m, "GetFadeDuration", function)?;
 
     // ── the shared font block ───────────────────────────────────────────────────────────────
     //
@@ -205,19 +204,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Demand is observed, not counted: `BigWigs/Plugins/Messages.lua:212` is
     // `self.msgframe:SetFontObject(GameFontNormalLarge)` on a frame it has just given
     // `SetInsertMode("TOP")`, and BigWigs dies there every session.
-    crate::script::font_block::install(
-        lua,
+    vm.put_registry(REG_MESSAGEFRAME_METHODS, m.clone())?;
+    crate::script::font_block::install_context(
+        vm,
         &m,
-        |lua, this| {
-            let h = frame_handle_of(lua, this)?;
-            super::ensure_font_region(lua, h)
-                .ok_or_else(|| mlua::Error::runtime("not a MessageFrame"))
-        },
+        super::plain_font_region_callback,
         "MessageFrame",
-    )?;
-
-    lua.set_named_registry_value(REG_MESSAGEFRAME_METHODS, m)?;
-    Ok(())
+    )
 }
 
 #[cfg(test)]
@@ -279,7 +272,7 @@ mod tests {
     /// guards still raise. Reading the text gate as a general argument law is exactly 1717's error.
     #[test]
     fn addmessage_swallows_a_text_it_cannot_use_and_only_the_text() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("CreateFrame('MessageFrame', 'MF')").unwrap();
 
         // `lua_isstring 0x6f3510` accepts tags 4 and 3 only — everything else jumps to 0x79582b.
@@ -322,7 +315,7 @@ mod tests {
     /// and a ScrollingMessageFrame both resolve it to nil, which is what a duck-typing addon reads.
     #[test]
     fn set_insert_mode_is_messageframe_only() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             "CreateFrame('MessageFrame', 'MF')\n\
              CreateFrame('Frame', 'PlainF')\n\
@@ -361,7 +354,7 @@ mod tests {
     /// is an id and the line stays opaque.
     #[test]
     fn messageframe_addmessage_is_not_the_scrolling_ones() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run(
             "CreateFrame('MessageFrame', 'MF')\n\
              CreateFrame('ScrollingMessageFrame', 'SMF')",
@@ -509,15 +502,15 @@ mod tests {
     /// setters' round trip.
     #[test]
     fn ctor_defaults_and_the_fade_accessors() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.run("CreateFrame('MessageFrame', 'MF')").unwrap();
-        assert!(s.eval::<bool>("return MF:GetFading()").unwrap());
+        assert!(s.eval_truthy("return MF:GetFading()").unwrap());
         assert_eq!(s.eval::<f32>("return MF:GetTimeVisible()").unwrap(), 10.0);
         assert_eq!(s.eval::<f32>("return MF:GetFadeDuration()").unwrap(), 3.0);
         s.run("MF:SetTimeVisible(5) MF:SetFadeDuration(1) MF:SetFading(false)")
             .unwrap();
         assert_eq!(s.eval::<f32>("return MF:GetTimeVisible()").unwrap(), 5.0);
         assert_eq!(s.eval::<f32>("return MF:GetFadeDuration()").unwrap(), 1.0);
-        assert!(!s.eval::<bool>("return MF:GetFading()").unwrap());
+        assert!(!s.eval_truthy("return MF:GetFading()").unwrap());
     }
 }

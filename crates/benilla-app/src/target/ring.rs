@@ -38,12 +38,11 @@
 //! legs are live (0434 phase 6 — pale blue / pale green off the roster). Deferred selector
 //! states: the full PvP attackability matrix (X/Y), forced reactions, contested-guard.
 
-use benilla_formats::{load_faction_catalog, reputation_rank, FactionCatalog, Reaction};
+use benilla_formats::{reputation_rank, FactionCatalog, Reaction};
 use benilla_protocol::EntityKind;
 use bevy::prelude::*;
 
 use crate::net::{NetEntity, ObjectStore, Reputations, SelfPlayer};
-use benilla_assets::{LockRecover, WorldAssets};
 use benilla_world::decal::{DecalFrame, WorldDecal};
 use benilla_world::particles::buffer::EffectVertex;
 
@@ -116,7 +115,7 @@ const RING_PARTY_PVP: Color = Color::linear_rgb(0.667, 1.0, 0.667); // 0xFFAAFFA
 /// The FactionTemplate.dbc catalog, for the ring's reaction colour. Absent if the DBC failed to load
 /// (the ring then stays the neutral fallback).
 #[derive(Resource)]
-pub(crate) struct Factions(FactionCatalog);
+pub(crate) struct Factions(pub(super) FactionCatalog);
 
 impl Factions {
     /// The loaded catalog — for sibling faction consumers (the zone PvP state reads our own
@@ -232,22 +231,6 @@ pub(super) fn setup_ring(mut commands: Commands, asset_server: Res<AssetServer>)
     let texture = asset_server.load::<Image>(RING_TEXTURE);
     commands.insert_resource(RingAssets { texture });
     commands.init_resource::<RingState>();
-}
-
-/// Startup (after the MPQ chain opens): load FactionTemplate.dbc for the reaction colour. On failure
-/// the resource is simply absent and the ring stays neutral yellow.
-pub(super) fn load_factions(mut commands: Commands, world_assets: Option<Res<WorldAssets>>) {
-    let Some(world_assets) = world_assets else {
-        return;
-    };
-    let mut chain = world_assets.chain.lock_recover();
-    match load_faction_catalog(&mut chain) {
-        Ok(catalog) => {
-            info!("faction catalog: {} template rows", catalog.len());
-            commands.insert_resource(Factions(catalog));
-        }
-        Err(e) => warn!("faction catalog unavailable, ring stays neutral: {e:#}"),
-    }
 }
 
 /// Position, size, colour + show the ring under the current target each frame; hide it when nothing is

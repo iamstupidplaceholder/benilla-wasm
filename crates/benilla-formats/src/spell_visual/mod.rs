@@ -91,7 +91,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, i32_at, parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 pub mod chain_effects;
 
@@ -722,7 +722,7 @@ fn some_unless_none(v: u32) -> Option<u32> {
 }
 
 /// Read `SpellVisual.dbc` + `SpellVisualKit.dbc` off the patch chain.
-pub fn load_spell_visual_catalog(chain: &mut Chain) -> Result<SpellVisualCatalog> {
+pub fn load_spell_visual_catalog(chain: &mut impl FileSource) -> Result<SpellVisualCatalog> {
     let sv_bytes = chain
         .read_file(SPELL_VISUAL)
         .context("reading SpellVisual.dbc")?;

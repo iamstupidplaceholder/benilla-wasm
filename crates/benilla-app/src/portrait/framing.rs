@@ -53,7 +53,7 @@ pub(super) fn diag_to_vert(fov: f32, aspect: f32) -> f32 {
 /// design space is exactly `1024×768` — the resolution every `UI_<Race>` diorama and its camera-0
 /// framing were authored against. One definition, in the crate that also measures the art
 /// against it ([`benilla_formats::glue_art_extent`]).
-pub(super) use benilla_formats::{ArtExtent, GLUE_AUTHORED_ASPECT};
+pub(crate) use benilla_formats::{ArtExtent, GLUE_AUTHORED_ASPECT};
 
 /// The **glue scene's** vertical opening angle — the authored 4:3 view box, never cropped.
 ///
@@ -123,7 +123,7 @@ pub(super) use benilla_formats::{ArtExtent, GLUE_AUTHORED_ASPECT};
 /// Scoped to the full-screen glue scene on purpose. A `<PlayerModel>` pane renders into a fixed
 /// rect that is *not* the window, so its crop is its own `W/H` and stays verbatim ([`diag_to_vert`],
 /// decisions 1089/1543).
-pub(super) fn glue_scene_framing(fov: f32, window_aspect: f32, art: Option<ArtExtent>) -> f32 {
+pub(crate) fn glue_scene_framing(fov: f32, window_aspect: f32, art: Option<ArtExtent>) -> f32 {
     let authored = diag_to_vert(fov, GLUE_AUTHORED_ASPECT);
     if window_aspect <= 0.0 {
         return authored; // a degenerate (mid-resize) window: the authored opening, finite
@@ -170,7 +170,7 @@ pub(crate) fn glue_box_aspect(window_aspect: f32) -> Option<f32> {
 /// the seven allow. Pinned — with the two facts it rests on, that no scene's art is narrower than
 /// the frame and that no scene's authored box is wider — by
 /// [`tests::the_glue_frame_is_the_narrowest_box_no_scene_pays_for`].
-pub(super) const GLUE_BOX_ASPECT: f32 = 1.672_042_7;
+pub(crate) const GLUE_BOX_ASPECT: f32 = 1.672_042_7;
 
 /// The panel the reference was played on without complaint for fifteen years — the aspect whose
 /// reference framing is the zoom floor, and the one the modern client fills before it boxes.
@@ -179,7 +179,7 @@ pub(super) const REFERENCE_PANEL: f32 = 16.0 / 9.0;
 /// The **zoom floor** — the vertical half-extent (tan units) the glue scene is never framed
 /// tighter than: the reference's own opening at [`REFERENCE_PANEL`], `tan(½·fov/√((16/9)²+1))`.
 /// See [`glue_scene_framing`].
-pub(super) fn glue_zoom_floor(fov: f32) -> f32 {
+pub(crate) fn glue_zoom_floor(fov: f32) -> f32 {
     (diag_to_vert(fov, REFERENCE_PANEL) * 0.5).tan()
 }
 

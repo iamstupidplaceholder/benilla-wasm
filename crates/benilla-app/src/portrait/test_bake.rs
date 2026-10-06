@@ -7,9 +7,9 @@
 use benilla_assets::M2Model;
 use bevy::prelude::*;
 
-use super::booth::{spawn_booth_model, BoothInstance, BoothMotion, BoothPart, BoothTwins};
-use super::framing::{body_frame, frame, head_anchor, PortraitAnchors};
-use super::{aim, test_mode, BoothCam, BoothLight, Booths, PaperDollBooth, PAPERDOLL_SLOT, SLOTS};
+use super::booth::{BoothInstance, BoothMotion, BoothPart, BoothTwins, spawn_booth_model};
+use super::framing::{PortraitAnchors, body_frame, frame, head_anchor};
+use super::{BoothCam, BoothLight, Booths, PAPERDOLL_SLOT, PaperDollBooth, SLOTS, aim, test_mode};
 use benilla_assets::m2_url;
 
 /// The debug bake driver: when `WOW_PORTRAIT_TEST` is set, bake the named model into every slot once
@@ -25,7 +25,6 @@ pub(super) fn sync_test_portraits(
     mut test_done: Local<bool>,
     mut env_cache: Local<Option<bool>>,
     mut cams: Query<(&BoothCam, &mut Transform, &mut Projection)>,
-    anim_data: Option<Res<crate::creature_anim::AnimData>>,
     mut palettes: ResMut<benilla_world::rig_palette::RigPalettes>,
     mut forms: ResMut<benilla_world::model_forms::ModelForms>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
@@ -47,7 +46,6 @@ pub(super) fn sync_test_portraits(
         &booth_light,
         &mut test_handle,
         &mut cams,
-        anim_data.as_deref().map(|a| &a.0),
     ) {
         *test_done = true;
     }
@@ -70,7 +68,6 @@ fn bake_test(
     booth_light: &BoothLight,
     test_handle: &mut Option<Handle<M2Model>>,
     cams: &mut Query<(&BoothCam, &mut Transform, &mut Projection)>,
-    catalog: Option<&benilla_formats::AnimDataCatalog>,
 ) -> bool {
     let handle = test_handle
         .get_or_insert_with(|| asset_server.load(m2_url(path)))
@@ -104,7 +101,7 @@ fn bake_test(
     let built = forms.slices(&handle);
     let (stat_forms, skin_forms) = (built.stat, built.skin.unwrap_or(&[]));
     let parts_against =
-        |light: &bevy::render::render_resource::Buffer,
+        |light: &benilla_assets::gpu_table::GpuTable,
          mats: &mut benilla_world::model_render::M2BatchMaterials| {
             model
                 .submeshes
@@ -157,11 +154,17 @@ fn bake_test(
     match anchors.camera {
         Some(c) => info!(
             "portrait test bake: {} submeshes, AUTHORED camera eye={:?} target={:?} fov={:.3} near={:.3} far={:.1}",
-            model.submeshes.len(), c.eye, c.target, c.fov, c.near, c.far
+            model.submeshes.len(),
+            c.eye,
+            c.target,
+            c.fov,
+            c.near,
+            c.far
         ),
         None => info!(
             "portrait test bake: {} submeshes, NO authored camera — heuristic head={:?} pivot={pivot_height:.2} foot={ground_radius:.2}",
-            model.submeshes.len(), anchors.head
+            model.submeshes.len(),
+            anchors.head
         ),
     }
     for token in SLOTS {
@@ -181,7 +184,6 @@ fn bake_test(
                 &model.inverse_bindposes,
                 model.animations.as_ref(),
             )),
-            catalog,
             BoothMotion::Frozen,
             [false, false], // the WOW_PORTRAIT_TEST bake dresses no weapons
             &[],            // …nor an eye-glow
@@ -208,7 +210,6 @@ fn bake_test(
                 &model.inverse_bindposes,
                 model.animations.as_ref(),
             )),
-            catalog,
             BoothMotion::Frozen,
             [false, false], // the paper-doll still sheaths its weapons — no in-hand grip
             &[],            // eye-glow in the paper doll is the same follow-up (see above)

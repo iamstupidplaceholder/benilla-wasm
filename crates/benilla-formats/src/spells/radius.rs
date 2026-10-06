@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -47,7 +47,7 @@ impl SpellRadiusCatalog {
 }
 
 /// Load `SpellRadius.dbc` off the patch chain.
-pub fn load_spell_radii(chain: &mut Chain) -> Result<SpellRadiusCatalog> {
+pub fn load_spell_radii(chain: &mut impl FileSource) -> Result<SpellRadiusCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\SpellRadius.dbc")
         .context("reading SpellRadius.dbc")?;

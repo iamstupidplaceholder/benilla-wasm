@@ -112,7 +112,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const SPELL_CHAIN_EFFECTS: &str = "DBFilesClient\\SpellChainEffects.dbc";
 const SPELL_CHAIN_EFFECTS_FIELDS: usize = 8;
@@ -189,7 +189,7 @@ fn chain_effects_schema() -> Schema {
 /// Read `SpellChainEffects.dbc` off the patch chain. A row with an empty texture string is kept —
 /// the constructor never reads the texture, so a textureless row is the renderer's problem, not
 /// the loader's, and dropping it here would hide a data fact.
-pub(super) fn load(chain: &mut Chain) -> Result<HashMap<u32, ChainEffect>> {
+pub(super) fn load(chain: &mut impl FileSource) -> Result<HashMap<u32, ChainEffect>> {
     let bytes = chain
         .read_file(SPELL_CHAIN_EFFECTS)
         .with_context(|| format!("reading {SPELL_CHAIN_EFFECTS}"))?;

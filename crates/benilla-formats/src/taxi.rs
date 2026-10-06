@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const TAXI_PATH_NODE: &str = "DBFilesClient\\TaxiPathNode.dbc";
 
@@ -91,7 +91,7 @@ fn schema() -> Schema {
 
 /// Read `TaxiPathNode.dbc` off the patch chain into a [`TaxiPathNodes`], each path's `Vec`
 /// sorted by `NodeIndex`.
-pub fn load_taxi_path_nodes(chain: &mut Chain) -> Result<TaxiPathNodes> {
+pub fn load_taxi_path_nodes(chain: &mut impl FileSource) -> Result<TaxiPathNodes> {
     let bytes = chain
         .read_file(TAXI_PATH_NODE)
         .context("reading TaxiPathNode.dbc")?;

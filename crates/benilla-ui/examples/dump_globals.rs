@@ -37,11 +37,11 @@ use benilla_ui::script::UiScript;
 /// table's members are the widget API, which is a different question with a different reference.
 const STDLIB: &[&str] = &["string", "table", "math", "coroutine", "os", "io", "debug"];
 
-fn main() -> mlua::Result<()> {
-    let script = UiScript::new()?;
-    // Joined Lua-side into one `name<TAB>type` string per entry: a `Vec<String>` crosses the mlua
-    // boundary directly, where a `Vec<(String, String)>` does not.
-    let mut rows: Vec<String> = script.eval(
+fn main() -> benilla_lua::Result<()> {
+    let mut script = UiScript::new()?;
+    // Joined Lua-side into one `name<TAB>type` string per entry: the host drains
+    // the answer table's sequence part, where a `Vec<(String, String)>` does not cross.
+    let mut rows: Vec<String> = script.eval_sequence(
         "local out = {} \
          for k, v in pairs(_G) do \
            if type(k) == 'string' then table.insert(out, k .. '\\t' .. type(v)) end \
@@ -51,7 +51,7 @@ fn main() -> mlua::Result<()> {
 
     if std::env::args().any(|a| a == "--members") {
         for lib in STDLIB {
-            let members: Vec<String> = script.eval(&format!(
+            let members: Vec<String> = script.eval_sequence(&format!(
                 "local t = {lib} \
                  local out = {{}} \
                  if type(t) == 'table' then \
@@ -78,7 +78,7 @@ fn main() -> mlua::Result<()> {
         // Written as a fixed list rather than a table because a `nil` value has no entry to
         // iterate — the one type whose metatable slot is easiest to forget is the one a
         // constructor silently drops.
-        let metatables: Vec<String> = script.eval(
+        let metatables: Vec<String> = script.eval_sequence(
             "local out = {} \
              local function probe(name, v) \
                table.insert(out, '<' .. name .. '>\\tmetatable ' .. type(getmetatable(v))) \

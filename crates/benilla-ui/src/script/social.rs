@@ -19,9 +19,9 @@
 //! (`FriendsList_Update` does exactly that), and the app's own state follows so the next push
 //! agrees.
 
-use mlua::{Lua, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
-use super::binding_abi::string_arg;
+use super::binding_abi::neutral_string_arg;
 use super::who_sort::WhoSortChain;
 use super::Model;
 
@@ -151,75 +151,61 @@ impl super::UiScript {
 }
 
 /// Register the social globals against the snapshot store.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // ── The friend list ──────────────────────────────────────────────────────────────────────
     // GetNumFriends() → how many friends are listed (`0x5ad000` over CountFriends `0x5ae490`).
-    g.set(
-        "GetNumFriends",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.social.friends.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumFriends", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.social.friends.len() as i64)
+    })?;
 
     // GetFriendInfo(index) → name, level, class, area, connected, status (`0x5ad060`). An index
     // past the end returns nothing at all — the FrameXML tests `if ( not name )`, so nil-per-
     // return is the shape it expects, not an error.
-    g.set(
-        "GetFriendInfo",
-        lua.create_function(|lua, index: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(friend) = friend_at(&model.social.friends, index) else {
-                return Ok((
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                ));
-            };
-            Ok((
-                Value::String(lua.create_string(&friend.name)?),
-                Value::Integer(i64::from(friend.level)),
-                Value::String(lua.create_string(&friend.class)?),
-                Value::String(lua.create_string(&friend.area)?),
-                // `connected` is the era 1/nil boolean the list frame branches on.
-                if friend.connected {
-                    Value::Integer(1)
-                } else {
-                    Value::Nil
-                },
-                Value::String(lua.create_string(&friend.status)?),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetFriendInfo", |lua, index: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(friend) = friend_at(&model.social.friends, index) else {
+            return Ok((
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ));
+        };
+        Ok((
+            Value::from(friend.name.as_str()),
+            Value::Integer(i64::from(friend.level)),
+            Value::from(friend.class.as_str()),
+            Value::from(friend.area.as_str()),
+            // `connected` is the era 1/nil boolean the list frame branches on.
+            if friend.connected {
+                Value::Integer(1)
+            } else {
+                Value::Nil
+            },
+            Value::from(friend.status.as_str()),
+        ))
+    })?;
 
     // GetSelectedFriend() → the 1-based selected row, 0 when nothing is selected.
-    g.set(
-        "GetSelectedFriend",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.social.selected_friend))
-        })?,
-    )?;
+    lua.register_function("GetSelectedFriend", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.social.selected_friend))
+    })?;
 
     // SetSelectedFriend(index) — mutate now (the caller reads it back this tick) and mirror the
     // intent to the app (module doc: selection is engine state in the reference too).
-    g.set(
-        "SetSelectedFriend",
-        lua.create_function(|lua, index: i64| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let index = clamp_index(index, model.social.friends.len());
-            model.social.selected_friend = index;
-            model
-                .social_requests
-                .push(SocialRequest::SelectFriend(index));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetSelectedFriend", |lua, index: i64| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let index = clamp_index(index, model.social.friends.len());
+        model.social.selected_friend = index;
+        model
+            .social_requests
+            .push(SocialRequest::SelectFriend(index));
+        Ok(())
+    })?;
 
     // The LFG pair, as the bytes define it (wow-re `lfg-set-get-law.md`, 1961 — which corrects
     // 1959's flag): the stock 1.12.1 FrameXML never calls either (FriendsFrame.xml's two call
@@ -229,18 +215,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // id maps to nothing, and the reference's own pack (below) leaves every slot word 0, so nil
     // is the only value a name can take here — then the comment, always a string. Never a
     // number, never `1|nil`.
-    g.set(
-        "GetLookingForGroup",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(mlua::MultiValue::from_vec(vec![
-                Value::Nil,
-                Value::Nil,
-                Value::Nil,
-                Value::String(lua.create_string(&model.lfg_comment)?),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetLookingForGroup", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(MultiValue::from(vec![
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::from(model.lfg_comment.as_str()),
+        ]))
+    })?;
     // `SetLookingForGroup(type1, entry1, type2, entry2, type3, entry3, comment)` → nothing. Up to
     // three pairs, read at arguments 1/3/5 and 2/4/6; the loop ENDS (it does not skip a pair) on
     // a non-number type, a type >= 6, or an entry at or past the per-type eligible count, and the
@@ -252,164 +235,140 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // read from argument 7 (`lua_tostring(L, 7)`, nil for an absent one); both immediates raw.
     // The commit stores what changed and sends `CMSG_SET_LOOKING_FOR_GROUP` only then — so only a
     // changed comment ever sends. `SStrCopy(…, 0x80)`: the comment keeps 127 bytes.
-    g.set(
-        "SetLookingForGroup",
-        lua.create_function(|lua, args: mlua::MultiValue| {
-            let args: Vec<Value> = args.into_iter().collect();
-            let arg = |i: usize| args.get(i - 1).cloned().unwrap_or(Value::Nil);
-            let number = |v: &Value| match v {
-                Value::Integer(i) => Some(*i as f64),
-                Value::Number(n) => Some(*n),
-                Value::String(s) => s.to_str().ok().and_then(|s| s.trim().parse::<f64>().ok()),
-                _ => None,
-            };
-            let mut slots = [0u32; 3];
-            for (slot, i) in slots.iter_mut().zip([1usize, 3, 5]) {
-                let Some(ty) = number(&arg(i)) else { break };
-                let ty = ty.trunc();
-                if !(0.0..6.0).contains(&ty) {
-                    break;
-                }
-                let entry = number(&arg(i + 1)).unwrap_or(0.0).trunc();
-                // `(type << 24) & entry`, the reference's own pack.
-                *slot = ((ty as u32) << 24) & (entry as i64 as u32);
+    lua.register_function("SetLookingForGroup", |lua, args: MultiValue| {
+        let args: Vec<Value> = args.into_iter().collect();
+        let arg = |i: usize| args.get(i - 1).cloned().unwrap_or(Value::Nil);
+        let number = |v: &Value| match v {
+            Value::Integer(i) => Some(*i as f64),
+            Value::Number(n) => Some(*n),
+            Value::String(s) => s.as_str().ok().and_then(|s| s.trim().parse::<f64>().ok()),
+            _ => None,
+        };
+        let mut slots = [0u32; 3];
+        for (slot, i) in slots.iter_mut().zip([1usize, 3, 5]) {
+            let Some(ty) = number(&arg(i)) else { break };
+            let ty = ty.trunc();
+            if !(0.0..6.0).contains(&ty) {
+                break;
             }
-            let comment = match arg(4) {
-                Value::Integer(_) | Value::Number(_) | Value::String(_) => match arg(7) {
-                    Value::String(s) => Some(s.to_string_lossy()),
-                    Value::Integer(i) => Some(i.to_string()),
-                    Value::Number(n) => Some(n.to_string()),
-                    _ => None,
-                },
+            let entry = number(&arg(i + 1)).unwrap_or(0.0).trunc();
+            // `(type << 24) & entry`, the reference's own pack.
+            *slot = ((ty as u32) << 24) & (entry as i64 as u32);
+        }
+        let comment = match arg(4) {
+            Value::Integer(_) | Value::Number(_) | Value::String(_) => match arg(7) {
+                Value::String(s) => Some(s.to_string_lossy().into_owned()),
+                Value::Integer(i) => Some(i.to_string()),
+                Value::Number(n) => Some(n.to_string()),
                 _ => None,
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let mut changed = false;
-            if model.lfg_slots != slots {
-                model.lfg_slots = slots;
+            },
+            _ => None,
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let mut changed = false;
+        if model.lfg_slots != slots {
+            model.lfg_slots = slots;
+            changed = true;
+        }
+        if let Some(comment) = comment {
+            let mut kept: String = comment
+                .chars()
+                .take_while({
+                    let mut n = 0usize;
+                    move |c| {
+                        n += c.len_utf8();
+                        n <= 127
+                    }
+                })
+                .collect();
+            kept.shrink_to_fit();
+            if model.lfg_comment != kept {
+                model.lfg_comment = kept;
                 changed = true;
             }
-            if let Some(comment) = comment {
-                let mut kept: String = comment
-                    .chars()
-                    .take_while({
-                        let mut n = 0usize;
-                        move |c| {
-                            n += c.len_utf8();
-                            n <= 127
-                        }
-                    })
-                    .collect();
-                kept.shrink_to_fit();
-                if model.lfg_comment != kept {
-                    model.lfg_comment = kept;
-                    changed = true;
-                }
-            }
-            if changed {
-                let slots = model.lfg_slots;
-                let comment = model.lfg_comment.clone();
-                model
-                    .social_requests
-                    .push(SocialRequest::SetLookingForGroup { slots, comment });
-            }
-            Ok(())
-        })?,
-    )?;
+        }
+        if changed {
+            let slots = model.lfg_slots;
+            let comment = model.lfg_comment.clone();
+            model
+                .social_requests
+                .push(SocialRequest::SetLookingForGroup { slots, comment });
+        }
+        Ok(())
+    })?;
 
     // ShowFriends() — ask the server for the list again.
-    g.set(
-        "ShowFriends",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.social_requests.push(SocialRequest::RefreshFriends);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ShowFriends", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.social_requests.push(SocialRequest::RefreshFriends);
+        Ok(())
+    })?;
 
     // AddFriend(name) — an empty name is dropped here rather than sent: the server answers a
     // blank lookup with nothing at all, so it would look like a hang.
-    g.set(
-        "AddFriend",
-        lua.create_function(|lua, name: String| {
-            if !name.trim().is_empty() {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.social_requests.push(SocialRequest::AddFriend(name));
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("AddFriend", |lua, name: String| {
+        if !name.trim().is_empty() {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.social_requests.push(SocialRequest::AddFriend(name));
+        }
+        Ok(())
+    })?;
 
     // RemoveFriend(indexOrName) — the one global with two callers of different shapes (the
     // frame's button passes a row index, /removefriend a name).
-    g.set(
-        "RemoveFriend",
-        lua.create_function(|lua, who: Value| {
-            let request = match who {
-                Value::Integer(i) if i >= 1 => Some(SocialRequest::RemoveFriendIndex(i as u32)),
-                Value::Number(n) if n >= 1.0 => Some(SocialRequest::RemoveFriendIndex(n as u32)),
-                Value::String(s) => {
-                    let name = s.to_str()?.to_string();
-                    (!name.trim().is_empty()).then_some(SocialRequest::RemoveFriendName(name))
-                }
-                _ => None,
-            };
-            if let Some(request) = request {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.social_requests.push(request);
+    lua.register_function("RemoveFriend", |lua, who: Value| {
+        let request = match who {
+            Value::Integer(i) if i >= 1 => Some(SocialRequest::RemoveFriendIndex(i as u32)),
+            Value::Number(n) if n >= 1.0 => Some(SocialRequest::RemoveFriendIndex(n as u32)),
+            Value::String(s) => {
+                let name = s.to_string_lossy().into_owned();
+                (!name.trim().is_empty()).then_some(SocialRequest::RemoveFriendName(name))
             }
-            Ok(())
-        })?,
-    )?;
+            _ => None,
+        };
+        if let Some(request) = request {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.social_requests.push(request);
+        }
+        Ok(())
+    })?;
 
     // ── The ignore list ──────────────────────────────────────────────────────────────────────
     // GetNumIgnores() → CountIgnores `0x5ae550` (the 25 slots at +0x650).
-    g.set(
-        "GetNumIgnores",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.social.ignores.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumIgnores", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.social.ignores.len() as i64)
+    })?;
 
     // GetIgnoreName(index) → the name, or nil past the end. The ignore list frame calls this for
     // all 20 of its rows every update, most of them empty — nil is the ordinary case, not an
     // error.
-    g.set(
-        "GetIgnoreName",
-        lua.create_function(|lua, index: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let name = usize::try_from(index - 1)
-                .ok()
-                .and_then(|i| model.social.ignores.get(i));
-            Ok(match name {
-                Some(name) => Value::String(lua.create_string(name)?),
-                None => Value::Nil,
-            })
-        })?,
-    )?;
+    lua.register_function("GetIgnoreName", |lua, index: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let name = usize::try_from(index - 1)
+            .ok()
+            .and_then(|i| model.social.ignores.get(i));
+        Ok(match name {
+            Some(name) => Value::from(name.as_str()),
+            None => Value::Nil,
+        })
+    })?;
 
     // GetSelectedIgnore() / SetSelectedIgnore(index) — the friend pair's twin (`0x5ae630` /
     // `0x5ae5f0`).
-    g.set(
-        "GetSelectedIgnore",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.social.selected_ignore))
-        })?,
-    )?;
-    g.set(
-        "SetSelectedIgnore",
-        lua.create_function(|lua, index: i64| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let index = clamp_index(index, model.social.ignores.len());
-            model.social.selected_ignore = index;
-            model
-                .social_requests
-                .push(SocialRequest::SelectIgnore(index));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("GetSelectedIgnore", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.social.selected_ignore))
+    })?;
+    lua.register_function("SetSelectedIgnore", |lua, index: i64| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let index = clamp_index(index, model.social.ignores.len());
+        model.social.selected_ignore = index;
+        model
+            .social_requests
+            .push(SocialRequest::SelectIgnore(index));
+        Ok(())
+    })?;
 
     // AddIgnore / DelIgnore / AddOrDelIgnore(name).
     for (global, make) in [
@@ -420,72 +379,60 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             SocialRequest::ToggleIgnore as fn(String) -> _,
         ),
     ] {
-        g.set(
-            global,
-            lua.create_function(move |lua, name: String| {
-                if !name.trim().is_empty() {
-                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                    model.social_requests.push(make(name));
-                }
-                Ok(())
-            })?,
-        )?;
+        lua.register_function(global, move |lua, name: String| {
+            if !name.trim().is_empty() {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                model.social_requests.push(make(name));
+            }
+            Ok(())
+        })?;
     }
 
     // ── /who ─────────────────────────────────────────────────────────────────────────────────
     // GetNumWhoResults() → displayed, total. The second return is the server's true match count,
     // which is why the frame can say "132 players total (50 displayed)".
-    g.set(
-        "GetNumWhoResults",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok((
-                model.social.who.len() as i64,
-                i64::from(model.social.who_total),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetNumWhoResults", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok((
+            model.social.who.len() as i64,
+            i64::from(model.social.who_total),
+        ))
+    })?;
 
     // GetWhoInfo(index) → name, guild, level, race, class, zone.
-    g.set(
-        "GetWhoInfo",
-        lua.create_function(|lua, index: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let row = usize::try_from(index - 1)
-                .ok()
-                .and_then(|i| model.social.who.get(i));
-            let Some(row) = row else {
-                return Ok((
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                ));
-            };
-            Ok((
-                Value::String(lua.create_string(&row.name)?),
-                Value::String(lua.create_string(&row.guild)?),
-                Value::Integer(i64::from(row.level)),
-                Value::String(lua.create_string(&row.race)?),
-                Value::String(lua.create_string(&row.class)?),
-                Value::String(lua.create_string(&row.zone)?),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetWhoInfo", |lua, index: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let row = usize::try_from(index - 1)
+            .ok()
+            .and_then(|i| model.social.who.get(i));
+        let Some(row) = row else {
+            return Ok((
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ));
+        };
+        Ok((
+            Value::from(row.name.as_str()),
+            Value::from(row.guild.as_str()),
+            Value::Integer(i64::from(row.level)),
+            Value::from(row.race.as_str()),
+            Value::from(row.class.as_str()),
+            Value::from(row.zone.as_str()),
+        ))
+    })?;
 
     // SendWho(filter) — the filter string as typed, parsed app-side.
-    g.set(
-        "SendWho",
-        lua.create_function(|lua, filter: Option<String>| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model
-                .social_requests
-                .push(SocialRequest::Who(filter.unwrap_or_default()));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SendWho", |lua, filter: Option<String>| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model
+            .social_requests
+            .push(SocialRequest::Who(filter.unwrap_or_default()));
+        Ok(())
+    })?;
 
     // `SortWho(sortType) 0x5ad890` — the column-header and dropdown sorts, and three things at
     // once (wow-re `who-list-sort-law.md`; decision 2030):
@@ -505,40 +452,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Zero return values, and a non-string/number argument RAISES with the client's own typo
     // (`.rdata 0x85db88`) rather than answering nil — `0x5ad898`'s `0x6f3510` guard into
     // `luaL_error`, [`super::binding_abi`]'s shape A.
-    g.set(
-        "SortWho",
-        lua.create_function(|lua, sort_type: Value| {
-            let sort_type = string_arg(lua, sort_type, "Usgae: SortWho(\"type\")")?;
-            {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let model = &mut *model;
-                model.social.who_sort.promote(&sort_type);
-                model.social.who_sort.sort(&mut model.social.who);
-                model
-                    .social_requests
-                    .push(SocialRequest::SortWho(sort_type));
-            }
-            super::tick::fire_event_into(lua, "WHO_LIST_UPDATE", Vec::new());
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SortWho", |lua, sort_type: Value| {
+        let sort_type = neutral_string_arg(sort_type, "Usgae: SortWho(\"type\")")?;
+        {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let model = &mut *model;
+            model.social.who_sort.promote(&sort_type);
+            model.social.who_sort.sort(&mut model.social.who);
+            model
+                .social_requests
+                .push(SocialRequest::SortWho(sort_type));
+        }
+        super::tick::fire_event_into_context(lua, "WHO_LIST_UPDATE", Vec::new());
+        Ok(())
+    })?;
 
     // SetWhoToUI(flag) — the WhoFrame's OnShow/OnHide. Era passes 0/1, so anything but a falsey
     // 0/nil is "the frame wants them".
-    g.set(
-        "SetWhoToUI",
-        lua.create_function(|lua, flag: Value| {
-            let on = match flag {
-                Value::Nil | Value::Boolean(false) => false,
-                Value::Integer(0) => false,
-                Value::Number(n) => n != 0.0,
-                _ => true,
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.social_requests.push(SocialRequest::SetWhoToUi(on));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetWhoToUI", |lua, flag: Value| {
+        let on = match flag {
+            Value::Nil | Value::Boolean(false) => false,
+            Value::Integer(0) => false,
+            Value::Number(n) => n != 0.0,
+            _ => true,
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.social_requests.push(SocialRequest::SetWhoToUi(on));
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -637,7 +578,7 @@ mod tests {
     /// flipped only when the key was already at the front of the chain.
     #[test]
     fn a_repeated_header_click_reverses_and_the_direction_is_remembered() {
-        let s = seated();
+        let mut s = seated();
         s.run(r#"SortWho("name")"#).unwrap();
         assert_eq!(s.eval::<String>("return order").unwrap(), "Erdrin,Galas,");
 

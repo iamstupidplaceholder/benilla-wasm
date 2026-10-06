@@ -48,7 +48,7 @@ fn schema() -> Schema {
 }
 
 /// Read `SoundWaterType.dbc` off the patch chain.
-pub fn load_water_sound_catalog(chain: &mut Chain) -> Result<WaterSoundCatalog> {
+pub fn load_water_sound_catalog(chain: &mut impl crate::FileSource) -> Result<WaterSoundCatalog> {
     let bytes = chain.read_file("DBFilesClient\\SoundWaterType.dbc")?;
     let rs = parse(&bytes, schema(), "SoundWaterType")?;
     let mut by_key = HashMap::with_capacity(rs.records().len());

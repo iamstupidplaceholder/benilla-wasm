@@ -22,9 +22,9 @@
 //! (decision 0438 §2); this module only *moves* it. Riding hangs off the same component set for
 //! both drives — the mover's platform frame keys on [`Transport`], not on the drive.
 
+use benilla_time::Instant;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 // avian's own public AABB/tree republish system, registered by name below. Aliased because the
 // chain's concern is *when* it runs, not whose it is — and because the upstream name says what it
@@ -285,7 +285,7 @@ impl Transport {
 /// `TransportAnimation.dbc` keyframe catalog for the type-11 lifts, shared the same way (the
 /// two Mesa cars of one entry share one `Arc`).
 #[derive(Resource, Default)]
-struct Timetables {
+pub(crate) struct Timetables {
     nodes: Option<TaxiPathNodes>,
     built: HashMap<u32, Option<Arc<TransportTimetable>>>,
     elevators: Option<ElevatorPaths>,
@@ -297,7 +297,14 @@ fn setup_taxi_nodes(mut timetables: ResMut<Timetables>, world_assets: Option<Res
         return;
     };
     let mut chain = world_assets.chain.lock_recover();
-    match load_taxi_path_nodes(&mut chain) {
+    publish_catalogs(&mut timetables, &mut *chain);
+}
+
+pub(crate) fn publish_catalogs(
+    timetables: &mut Timetables,
+    source: &mut impl benilla_formats::FileSource,
+) {
+    match load_taxi_path_nodes(source) {
         Ok(nodes) => {
             info!("taxi path nodes: {} paths", nodes.len());
             timetables.nodes = Some(nodes);
@@ -305,7 +312,7 @@ fn setup_taxi_nodes(mut timetables: ResMut<Timetables>, world_assets: Option<Res
         // No taxi data ⇒ boats render frozen at their create pose — degraded, not broken.
         Err(e) => warn!("taxi path nodes unavailable, transports stay put: {e:#}"),
     }
-    match load_elevator_paths(&mut chain) {
+    match load_elevator_paths(source) {
         Ok(paths) => {
             info!("transport animations: {} lift paths", paths.len());
             timetables.elevators = Some(paths);

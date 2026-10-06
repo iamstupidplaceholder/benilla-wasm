@@ -23,7 +23,7 @@
 //! wow-re `gossip-npctext-law.md` §1/§4; B292, benilla decisions 1508/1994), which is why
 //! [`GossipMenu::greeting`] is a plain `String`.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{LuaContext, MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -96,83 +96,66 @@ impl super::UiScript {
 }
 
 /// Register the gossip globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // → the greeting body, or nil while there is no menu (an open menu always has one — the
     // app-side hold, module doc).
-    g.set(
-        "GetGossipText",
-        lua.create_function(|lua, ()| {
-            let text = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.gossip.as_ref().map(|m| m.greeting.clone())
-            };
-            match text {
-                Some(t) => Ok(Value::String(lua.create_string(&t)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetGossipText", |lua, ()| {
+        let text = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.gossip.as_ref().map(|m| m.greeting.clone())
+        };
+        Ok(text.map_or(Value::Nil, Value::from))
+    })?;
 
     // → flat (label, type) pairs, the Era `GetGossipOptions()` vararg shape.
-    g.set(
-        "GetGossipOptions",
-        lua.create_function(|lua, ()| {
-            // Collect owned data under one short borrow, then build the Lua values with none held.
-            let pairs: Vec<(String, String)> = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.gossip.as_ref().map_or_else(Vec::new, |m| {
-                    m.options
-                        .iter()
-                        .map(|o| (o.label.clone(), o.icon_type.clone()))
-                        .collect()
-                })
-            };
-            let mut out: Vec<Value> = Vec::with_capacity(pairs.len() * 2);
-            for (label, icon) in pairs {
-                out.push(Value::String(lua.create_string(&label)?));
-                out.push(Value::String(lua.create_string(&icon)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetGossipOptions", |lua, ()| {
+        // Collect owned data under one short borrow, then build the Lua values with none held.
+        let pairs: Vec<(String, String)> = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.gossip.as_ref().map_or_else(Vec::new, |m| {
+                m.options
+                    .iter()
+                    .map(|o| (o.label.clone(), o.icon_type.clone()))
+                    .collect()
+            })
+        };
+        let mut out: Vec<Value> = Vec::with_capacity(pairs.len() * 2);
+        for (label, icon) in pairs {
+            out.push(Value::from(label));
+            out.push(Value::from(icon));
+        }
+        Ok(MultiValue::from(out))
+    })?;
 
     // IsGossipOptionCoded(i) — benilla-local: the XML greys a coded (password) option (decision
     // 0081). `i` is 1-based; an out-of-range index is `false`.
-    g.set(
-        "IsGossipOptionCoded",
-        lua.create_function(|lua, i: usize| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .gossip
-                .as_ref()
-                .and_then(|m| i.checked_sub(1).and_then(|n| m.options.get(n)))
-                .is_some_and(|o| o.coded))
-        })?,
-    )?;
+    lua.register_function("IsGossipOptionCoded", |lua, i: usize| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model
+            .gossip
+            .as_ref()
+            .and_then(|m| i.checked_sub(1).and_then(|n| m.options.get(n)))
+            .is_some_and(|o| o.coded))
+    })?;
 
     // SelectGossipOption(i [, ...]) — queue the 1-based option position; the app maps it to the
     // wire option index + guid. Extra Era args (the code / a confirm flag) are ignored: v1 never
     // sends a code (decision 0081).
-    g.set(
+    lua.register_function(
         "SelectGossipOption",
-        lua.create_function(|lua, (i, _rest): (u32, mlua::MultiValue)| {
+        |lua, (i, _rest): (u32, MultiValue)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.gossip_selects.push(i);
             Ok(())
-        })?,
+        },
     )?;
 
     // CloseGossip() — client-side close (no packet, vanilla): flag it so the app clears its menu.
-    g.set(
-        "CloseGossip",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.gossip_close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("CloseGossip", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.gossip_close = true;
+        Ok(())
+    })?;
 
     // ══ THE TWO QUEST LISTS, and why there are two ══════════════════════════════════════════
     //
@@ -190,7 +173,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // were benilla's own single-list shape and appear nowhere in `reference/1.12-globals.tsv`.
     // 1189's rule: a superset is not free — an addon that feature-detects on a name the client
     // does not have takes a branch we cannot honour.
-    fn quest_rows(lua: &Lua, active: bool) -> mlua::Result<MultiValue> {
+    fn quest_rows(lua: &impl LuaContext, active: bool) -> benilla_lua::Result<MultiValue> {
         let rows: Vec<(String, u32)> = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             model.gossip.as_ref().map_or_else(Vec::new, |m| {
@@ -203,20 +186,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         };
         let mut out = Vec::with_capacity(rows.len() * 2);
         for (title, level) in rows {
-            out.push(Value::String(lua.create_string(&title)?));
+            out.push(Value::from(title));
             out.push(Value::Integer(i64::from(level)));
         }
-        Ok(MultiValue::from_vec(out))
+        Ok(MultiValue::from(out))
     }
 
-    g.set(
-        "GetGossipAvailableQuests",
-        lua.create_function(|lua, ()| quest_rows(lua, false))?,
-    )?;
-    g.set(
-        "GetGossipActiveQuests",
-        lua.create_function(|lua, ()| quest_rows(lua, true))?,
-    )?;
+    lua.register_function("GetGossipAvailableQuests", |lua, ()| quest_rows(lua, false))?;
+    lua.register_function("GetGossipActiveQuests", |lua, ()| quest_rows(lua, true))?;
 
     // The two selects. Each index is 1-based **within its own list**, which is what
     // `GossipTitleButton_OnClick` passes: the reference re-numbers the rows per list as it lays
@@ -226,7 +203,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // The queue the app drains is one list, so the index is mapped back to the WHOLE row order
     // here — the app's own `take_gossip_quest_selects` contract is unchanged, and the two verbs
     // stay a pure re-expression of it rather than a second drain to wire up.
-    fn select_quest(lua: &Lua, active: bool, index: usize) {
+    fn select_quest(lua: &impl LuaContext, active: bool, index: usize) {
         let whole = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             model.gossip.as_ref().and_then(|m| {
@@ -246,20 +223,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         }
     }
 
-    g.set(
-        "SelectGossipAvailableQuest",
-        lua.create_function(|lua, i: usize| {
-            select_quest(lua, false, i);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "SelectGossipActiveQuest",
-        lua.create_function(|lua, i: usize| {
-            select_quest(lua, true, i);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SelectGossipAvailableQuest", |lua, i: usize| {
+        select_quest(lua, false, i);
+        Ok(())
+    })?;
+    lua.register_function("SelectGossipActiveQuest", |lua, i: usize| {
+        select_quest(lua, true, i);
+        Ok(())
+    })?;
 
     Ok(())
 }

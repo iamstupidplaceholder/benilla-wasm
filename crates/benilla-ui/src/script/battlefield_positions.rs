@@ -10,9 +10,8 @@
 //! frame ([`BattlefieldPositionView`], already filtered and projected) and the VM owns the getters'
 //! shapes: three values on every non-raising leg, `(0, 0, nil)` off the list.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{Error, FromLua, MultiValue, Value, Vm};
 
-use super::binding_abi::number_arg;
 use super::Model;
 
 /// One teammate as the app resolved it: the map-normalized pair (`(0, 0)` = off the displayed
@@ -53,89 +52,72 @@ impl super::UiScript {
     }
 }
 
-fn three(lua: &Lua, uv: (f32, f32), third: Option<&str>) -> mlua::Result<MultiValue> {
-    Ok(MultiValue::from_vec(vec![
+fn three(uv: (f32, f32), third: Option<&str>) -> MultiValue {
+    MultiValue::from(vec![
         Value::Number(f64::from(uv.0)),
         Value::Number(f64::from(uv.1)),
-        match third {
-            Some(s) => Value::String(lua.create_string(s)?),
-            None => Value::Nil,
-        },
-    ]))
+        third.map_or(Value::Nil, Value::from),
+    ])
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
+fn index_arg(value: Value, usage: &'static str) -> benilla_lua::Result<i32> {
+    f64::from_lua(value)
+        .map(|number| number as i64 as i32)
+        .map_err(|_| Error::runtime(usage))
+}
 
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `GetNumBattlefieldPositions()` — the survivors of the filter, one number.
-    g.set(
-        "GetNumBattlefieldPositions",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.battlefield_positions.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumBattlefieldPositions", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.battlefield_positions.len() as i64)
+    })?;
 
     // `GetBattlefieldPosition(index)` — the usage raise; 1-based over the survivors; three values
     // on every leg, `(0, 0, nil)` off the list and for 0 or a negative.
-    g.set(
-        "GetBattlefieldPosition",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: GetBattlefieldPosition(index)")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let row = usize::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_sub(1))
-                .and_then(|i| model.battlefield_positions.get(i));
-            match row {
-                Some(r) => three(lua, r.uv, r.name.as_deref()),
-                None => three(lua, (0.0, 0.0), None),
-            }
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldPosition", |lua, index: Value| {
+        let index = index_arg(index, "Usage: GetBattlefieldPosition(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let row = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| model.battlefield_positions.get(i));
+        match row {
+            Some(r) => Ok(three(r.uv, r.name.as_deref())),
+            None => Ok(three((0.0, 0.0), None)),
+        }
+    })?;
 
     // `GetNumBattlefieldFlagPositions()` — one carrier slot: 1 or 0.
-    g.set(
-        "GetNumBattlefieldFlagPositions",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.battlefield_flag.is_some()))
-        })?,
-    )?;
+    lua.register_function("GetNumBattlefieldFlagPositions", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.battlefield_flag.is_some()))
+    })?;
 
     // `GetBattlefieldFlagPosition(index)` — the usage raise; selected only for index 1 with a
     // carrier; three values always.
-    g.set(
-        "GetBattlefieldFlagPosition",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: GetBattlefieldFlagPosition(index)")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            match model.battlefield_flag.as_ref().filter(|_| index == 1) {
-                Some(f) => three(lua, f.uv, f.token.as_deref()),
-                None => three(lua, (0.0, 0.0), None),
-            }
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldFlagPosition", |lua, index: Value| {
+        let index = index_arg(index, "Usage: GetBattlefieldFlagPosition(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        match model.battlefield_flag.as_ref().filter(|_| index == 1) {
+            Some(f) => Ok(three(f.uv, f.token.as_deref())),
+            None => Ok(three((0.0, 0.0), None)),
+        }
+    })?;
 
     // `GetBattlefieldMapIconScale()` — the active map's `MinimapIconScale` (map 0's with no slot,
     // 1.0 on a missing row), pushed by the app.
-    g.set(
-        "GetBattlefieldMapIconScale",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(f64::from(model.battlefield_icon_scale))
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldMapIconScale", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(f64::from(model.battlefield_icon_scale))
+    })?;
 
     // `RequestBattlefieldPositions()` — counted; the app's 5000 ms throttle and slot gate decide.
-    g.set(
-        "RequestBattlefieldPositions",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.battlefield_position_requests += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RequestBattlefieldPositions", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.battlefield_position_requests += 1;
+        Ok(())
+    })?;
 
     Ok(())
 }

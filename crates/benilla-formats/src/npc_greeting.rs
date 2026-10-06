@@ -88,7 +88,7 @@ fn cdi_schema() -> Schema {
 }
 
 /// Read `NPCSounds.dbc` + `CreatureDisplayInfo.dbc` off the patch chain into the joined catalog.
-pub fn load_npc_greeting_catalog(chain: &mut Chain) -> Result<NpcGreetingCatalog> {
+pub fn load_npc_greeting_catalog(chain: &mut impl crate::FileSource) -> Result<NpcGreetingCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\NPCSounds.dbc")
         .context("reading NPCSounds.dbc")?;

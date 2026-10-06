@@ -34,7 +34,6 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -130,7 +129,9 @@ pub(crate) fn item_random_properties_schema() -> Schema {
 /// A row with no locale-0 suffix is dropped at load — it is the name formatter's plain-name exit
 /// and grants a suffix to nothing, so keeping it would only invite a caller to print an empty
 /// `"Name "`. (The shipped table has none, and the drop is the client's own `cmp`, not a guess.)
-pub fn load_random_property_catalog(chain: &mut Chain) -> Result<RandomPropertyCatalog> {
+pub fn load_random_property_catalog(
+    chain: &mut impl crate::FileSource,
+) -> Result<RandomPropertyCatalog> {
     let bytes = chain
         .read_file(ITEM_RANDOM_PROPERTIES)
         .with_context(|| format!("reading {ITEM_RANDOM_PROPERTIES}"))?;

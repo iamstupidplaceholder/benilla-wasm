@@ -20,15 +20,14 @@
 //! two lanes that build the same batch the same way get the same handle — which is the whole
 //! reason the cache exists, and was true of four separate caches only by luck.
 
+use benilla_assets::gpu_table::GpuTable;
 use benilla_assets::materials::WowModelMaterial;
 use benilla_assets::ModelSubmesh;
 use benilla_formats::ModelBlend;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use bevy::render::render_resource::Buffer;
 
-use super::{model_material, zfill_material, MaterialCache, ShadeSel};
-use crate::lighting::SharedLightBuffer;
+use super::{model_material, zfill_material, MaterialCache, ShadeSel, SharedModelLight};
 
 /// The engine's one `WowModelMaterial` dedup cache. Swept by distance like every other art cache
 /// (`art_scope`) and cleared whole on a map change; an evicted entry costs one rebuild, never a
@@ -94,7 +93,7 @@ pub struct SkyboxBatch {
 pub struct M2BatchMaterials<'w> {
     cache: ResMut<'w, ModelMaterials>,
     materials: ResMut<'w, Assets<WowModelMaterial>>,
-    light: Option<Res<'w, SharedLightBuffer>>,
+    light: Option<Res<'w, SharedModelLight>>,
 }
 
 impl M2BatchMaterials<'_> {
@@ -246,7 +245,7 @@ impl M2BatchMaterials<'_> {
         sub: &ModelSubmesh,
         texture: Option<Handle<Image>>,
         order: u16,
-        light: &Buffer,
+        light: &GpuTable,
         rig: bool,
     ) -> Handle<WowModelMaterial> {
         let shade = if rig { ShadeSel::Rig } else { ShadeSel::Lit };
@@ -456,7 +455,7 @@ impl M2BatchMaterials<'_> {
     /// this facade to a lane it does not serve.
     pub fn pieces(
         &mut self,
-    ) -> Option<(&mut MaterialCache, &mut Assets<WowModelMaterial>, Buffer)> {
+    ) -> Option<(&mut MaterialCache, &mut Assets<WowModelMaterial>, GpuTable)> {
         let light = self.light.as_ref()?.0.clone();
         Some((&mut self.cache.0, &mut self.materials, light))
     }
@@ -468,7 +467,7 @@ impl M2BatchMaterials<'_> {
         &mut self,
         sub: &ModelSubmesh,
         texture: Option<Handle<Image>>,
-        light: &Buffer,
+        light: &GpuTable,
     ) -> Option<Handle<WowModelMaterial>> {
         if sub.no_depth_write || sub.no_depth_test {
             return None;
@@ -497,7 +496,7 @@ impl M2BatchMaterials<'_> {
         probe: bool,
         fade: bool,
         play_uv: bool,
-        light: &Buffer,
+        light: &GpuTable,
     ) -> Handle<WowModelMaterial> {
         model_material(
             &mut self.cache.0,

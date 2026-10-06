@@ -19,33 +19,33 @@ use super::test_ui::load_ui as load_xml;
 fn harness() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml"); // TOOLTIP_DEFAULT_* (the dropdown kit's MenuBackdrop)
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml"); // the unit popups' kit (TargetFrameDropDown's template)
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml"); // BENILLA_FALLBACK_ICON
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml"); // TOOLTIP_DEFAULT_* (the dropdown kit's MenuBackdrop)
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml"); // the unit popups' kit (TargetFrameDropDown's template)
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml"); // BENILLA_FALLBACK_ICON
                                                                   // Before UnitPopup: that file reads ITEM_QUALITY_COLORS at FILE SCOPE, and its
                                                                   // declarer is UIParent (ref UIParent.lua:65) since 1888.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\BuffFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UnitFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\CombatFeedback.xml");
-    load_xml(&s, "Interface\\FrameXML\\PlayerFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PartyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\TargetFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\PetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BuffFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UnitFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\CombatFeedback.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PlayerFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PartyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TargetFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\PetFrame.xml");
 
     // **Settle the target-of-target frame before any of this measures a row.** Stock
     // `TargetofTargetFrame` carries no `hidden=` (ref TargetFrame.xml l.515), so it loads SHOWN,
@@ -113,13 +113,13 @@ fn buff(spell_id: u32, name: &str) -> AuraState {
     }
 }
 
-fn shown(s: &UiScript, name: &str) -> bool {
+fn shown(s: &mut UiScript, name: &str) -> bool {
     s.eval::<bool>(&format!("return {name}:IsVisible()"))
         .unwrap()
 }
 
 /// The first anchor of `name`: (point, relative frame's name, relativePoint, x, y).
-fn anchor(s: &UiScript, name: &str) -> (String, String, String, f64, f64) {
+fn anchor(s: &mut UiScript, name: &str) -> (String, String, String, f64, f64) {
     s.eval(&format!(
         r#"local p, rel, rp, x, y = {name}:GetPoint()
            return p, (rel and rel:GetName()) or "<screen>", rp, x, y"#
@@ -127,7 +127,7 @@ fn anchor(s: &UiScript, name: &str) -> (String, String, String, f64, f64) {
     .unwrap()
 }
 
-fn size(s: &UiScript, name: &str) -> (f64, f64) {
+fn size(s: &mut UiScript, name: &str) -> (f64, f64) {
     s.eval(&format!("return {name}:GetWidth(), {name}:GetHeight()"))
         .unwrap()
 }
@@ -145,30 +145,30 @@ fn a_hostile_target_draws_debuffs_first_with_tint_and_count() {
         ],
     );
 
-    assert!(shown(&s, "TargetFrameDebuff1"), "first debuff shows");
-    assert!(shown(&s, "TargetFrameDebuff2"), "second debuff shows");
+    assert!(shown(&mut s, "TargetFrameDebuff1"), "first debuff shows");
+    assert!(shown(&mut s, "TargetFrameDebuff2"), "second debuff shows");
     assert!(
-        !shown(&s, "TargetFrameDebuff3"),
+        !shown(&mut s, "TargetFrameDebuff3"),
         "no third debuff — button hides"
     );
-    assert!(shown(&s, "TargetFrameBuff1"), "the buff shows");
-    assert!(!shown(&s, "TargetFrameBuff2"), "no second buff");
+    assert!(shown(&mut s, "TargetFrameBuff1"), "the buff shows");
+    assert!(!shown(&mut s, "TargetFrameBuff2"), "no second buff");
 
     // Hostile: the debuff row opens at the frame's BOTTOMLEFT (5,32); buffs seat under Debuff7
     // (the not-shown target-of-target leg, ref l.329).
-    let (p, rel, rp, x, y) = anchor(&s, "TargetFrameDebuff1");
+    let (p, rel, rp, x, y) = anchor(&mut s, "TargetFrameDebuff1");
     assert_eq!(
         (p.as_str(), rel.as_str(), rp.as_str(), x, y),
         ("TOPLEFT", "TargetFrame", "BOTTOMLEFT", 5.0, 32.0),
         "hostile: debuffs first"
     );
-    let (_, rel, _, _, _) = anchor(&s, "TargetFrameBuff1");
+    let (_, rel, _, _, _) = anchor(&mut s, "TargetFrameBuff1");
     assert_eq!(rel, "TargetFrameDebuff7", "hostile: buffs below row 2");
 
     // Under the wrap (2 < 6): full 21px icons, 23px borders.
-    assert_eq!(size(&s, "TargetFrameDebuff1"), (21.0, 21.0));
-    assert_eq!(size(&s, "TargetFrameDebuff1Border"), (23.0, 23.0));
-    assert_eq!(size(&s, "TargetFrameBuff1"), (21.0, 21.0));
+    assert_eq!(size(&mut s, "TargetFrameDebuff1"), (21.0, 21.0));
+    assert_eq!(size(&mut s, "TargetFrameDebuff1Border"), (23.0, 23.0));
+    assert_eq!(size(&mut s, "TargetFrameBuff1"), (21.0, 21.0));
 
     // Stack count shows only above 1.
     assert_eq!(
@@ -224,13 +224,13 @@ fn a_friendly_target_puts_the_buff_row_first() {
         ],
     );
 
-    let (p, rel, rp, x, y) = anchor(&s, "TargetFrameBuff1");
+    let (p, rel, rp, x, y) = anchor(&mut s, "TargetFrameBuff1");
     assert_eq!(
         (p.as_str(), rel.as_str(), rp.as_str(), x, y),
         ("TOPLEFT", "TargetFrame", "BOTTOMLEFT", 5.0, 32.0),
         "friendly: buffs first"
     );
-    let (p, rel, rp, x, y) = anchor(&s, "TargetFrameDebuff1");
+    let (p, rel, rp, x, y) = anchor(&mut s, "TargetFrameDebuff1");
     assert_eq!(
         (p.as_str(), rel.as_str(), rp.as_str(), x, y),
         ("TOPLEFT", "TargetFrameBuff1", "BOTTOMLEFT", 0.0, -2.0),
@@ -248,15 +248,15 @@ fn reaching_the_wrap_shrinks_the_first_row_to_17px() {
     target(&mut s, 2, debuffs);
 
     // 6 debuffs ≥ wrap (6): 17px icons, 19px borders — the reference resizes only the FIRST row.
-    assert_eq!(size(&s, "TargetFrameDebuff1"), (17.0, 17.0));
-    assert_eq!(size(&s, "TargetFrameDebuff1Border"), (19.0, 19.0));
-    assert_eq!(size(&s, "TargetFrameBuff1"), (17.0, 17.0));
+    assert_eq!(size(&mut s, "TargetFrameDebuff1"), (17.0, 17.0));
+    assert_eq!(size(&mut s, "TargetFrameDebuff1Border"), (19.0, 19.0));
+    assert_eq!(size(&mut s, "TargetFrameBuff1"), (17.0, 17.0));
 
     // Dropping below the wrap grows them back — the feed re-fires UNIT_AURA on the change.
     s.set_auras("target", Some(vec![debuff(1000, "D0", 1, None)]));
     s.fire_event("UNIT_AURA", vec![ScriptValue::Str("target".into())]);
-    assert_eq!(size(&s, "TargetFrameDebuff1"), (21.0, 21.0));
-    assert_eq!(size(&s, "TargetFrameDebuff1Border"), (23.0, 23.0));
+    assert_eq!(size(&mut s, "TargetFrameDebuff1"), (21.0, 21.0));
+    assert_eq!(size(&mut s, "TargetFrameDebuff1Border"), (23.0, 23.0));
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -264,22 +264,22 @@ fn reaching_the_wrap_shrinks_the_first_row_to_17px() {
 fn clearing_the_list_or_the_target_hides_the_buttons() {
     let mut s = harness();
     target(&mut s, 2, vec![debuff(589, "Pain", 1, Some("Magic"))]);
-    assert!(shown(&s, "TargetFrameDebuff1"));
+    assert!(shown(&mut s, "TargetFrameDebuff1"));
 
     // The last debuff expires: the feed pushes the emptied list and re-fires.
     s.set_auras("target", Some(vec![]));
     s.fire_event("UNIT_AURA", vec![ScriptValue::Str("target".into())]);
     assert!(
-        !shown(&s, "TargetFrameDebuff1"),
+        !shown(&mut s, "TargetFrameDebuff1"),
         "an emptied list hides the button"
     );
 
     // Deselect: the frame (and every child button) hides; the token clears without a UNIT_AURA.
     target(&mut s, 2, vec![debuff(589, "Pain", 1, Some("Magic"))]);
-    assert!(shown(&s, "TargetFrameDebuff1"));
+    assert!(shown(&mut s, "TargetFrameDebuff1"));
     s.set_unit("target", None);
     s.set_auras("target", None);
     s.fire_event("PLAYER_TARGET_CHANGED", vec![]);
-    assert!(!shown(&s, "TargetFrameDebuff1"), "no target, no buttons");
+    assert!(!shown(&mut s, "TargetFrameDebuff1"), "no target, no buttons");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }

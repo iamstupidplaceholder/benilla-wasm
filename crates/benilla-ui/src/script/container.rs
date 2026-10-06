@@ -13,193 +13,15 @@
 //! numeric FileDataID — 5875 has no FileDataIDs, and every measured consumer feeds the value
 //! straight to `SetTexture`, which takes both shapes in the live client.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, MultiValue, Table, Value, Vm};
 
 use super::cursor::{self, CursorItem, CursorPayload};
 use super::Model;
 
-/// The charter/petition lines an item tooltip prints under its name — wow-re
-/// `system/ui/scratch/tooltip-content-law.md`'s **line 3**: *"(petition/guild-charter items) Title /
-/// Creator / Num-signatures (white; title wraps) — a resolved petition object; keys
-/// `PETITION_*`/`GUILD_CHARTER_*`"*.
-///
-/// The two key families are picked by [`Self::is_charter`], the same record bit that picks
-/// `GetPetitionInfo`'s first return — so a charter reads *"Guild Name:"* / *"Guild Master:"* and a
-/// plain petition reads *"Petition:"* / *"Created by"*.
-///
-/// **The third line, the signature count, is deliberately NOT here.** The law names it, but neither
-/// the carve nor the packet says where the number comes from: the petition record carries no count,
-/// and the only candidate — the item's `ITEM_FIELD_ENCHANTMENT` slot-0 *charges* dword, which
-/// vmangos's own source documents as "the on-item signature count" — has its write **commented
-/// out** server-side, so it is always zero and the guess could never be falsified here. Omitted
-/// rather than invented; the line is one field away the day someone pins the source.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct PetitionSlotView {
-    /// The record's charter bit: `true` picks the `GUILD_CHARTER_*` keys, `false` the `PETITION_*`
-    /// ones.
-    pub is_charter: bool,
-    /// The proposed guild's (or petition's) name.
-    pub title: String,
-    /// The owner's name, app-resolved through the name cache. `None` while that query is in
-    /// flight — the line is withheld, as the creator line is, rather than printed with a hole.
-    pub owner: Option<String>,
-}
-
-/// One occupied bag slot, resolved by the app (icon from ItemDisplayInfo, count/quality from the
-/// item object + template). Plain data.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ContainerSlot {
-    /// Icon texture path (`Interface\Icons\…`); `None` while the template answer is in flight.
-    pub texture: Option<String>,
-    pub count: u32,
-    /// Item quality 0..6; `None` while unresolved (the API reports `nil`).
-    pub quality: Option<u32>,
-    /// The item's template entry (`containerInfo.itemID`); 0 while unresolved.
-    pub item_id: u32,
-    /// An `|Hitem:…|h[Name]|h` link once the name is known; Bagnon's search reads it.
-    pub link: Option<String>,
-    pub locked: bool,
-    /// The 1-based live-API inventory slot ids this item could be EQUIPPED into (empty = not
-    /// equippable) — the app-resolved "fit rule" decision 0208 phase 1b's cursor arc needs
-    /// (`cursor::CursorItem::equip_slots` captures it at pickup). Derived from the item
-    /// template's `inventoryType` via `ui_items::find_equip_slot`; the engine holds no item
-    /// knowledge of its own.
-    pub equip_slots: Vec<u8>,
-    /// Whether this item may be placed on an ACTION-BAR slot — app-resolved from the template
-    /// exactly like [`Self::equip_slots`] (the engine holds no item knowledge of its own).
-    /// `PlaceAction`'s only item filter, byte-read: an on-use spell OR equippable
-    /// (`ItemInfo::placeable_on_action_bar`, wow-re `action-item-slot.md` §5 — decision 0666).
-    pub bar_placeable: bool,
-    /// The instance's live durability `(current, max)` — `ITEM_FIELD_DURABILITY`/`MAXDURABILITY`
-    /// off the streamed item object; `None` for indestructible items (max 0) or while the create
-    /// hasn't landed. The real-instance tooltip's "Durability X / Y" line reads it (a template
-    /// hover keeps the template's full max/max).
-    pub durability: Option<(u32, u32)>,
-    /// The item's running use-cooldown as `(start_ms on the GetTime clock, duration_ms,
-    /// enabled)` — the same app-computed triple [`super::ActionState::cooldown`] carries;
-    /// `None` = cold. Stored at push ([`super::UiScript::set_container`]) so
-    /// `GetContainerItemCooldown` answers the reference's `(start, duration, enable)`.
-    pub cooldown: Option<(i64, u32, bool)>,
-    /// Right-clicking reads this item (an instance carrying `ITEM_FIELD_ITEM_TEXT_ID` — a mail
-    /// permanent copy). `GetContainerItemInfo`'s `isReadable`; the bag hover shows the Inspect
-    /// magnifier off it (ref ContainerFrame.lua l.638 `this.readable → ShowInspectCursor()`),
-    /// and the tooltip's WRITTEN_BY/READABLE gates key on it.
-    pub readable: bool,
-    /// The RESOLVED `ITEM_FIELD_CREATOR` name (app: ask-once name cache) — the tooltip's
-    /// "Written by %s" (a letter) / "<Made by %s>" (anything crafted) line. `None` = authorless
-    /// or the name query is in flight (no line; the re-push repaints the hover when it lands).
-    pub creator: Option<String>,
-    /// The instance's `ITEM_FIELD_FLAGS` — the tooltip's openable lock sub-gate reads
-    /// UNLOCKED `0x4`, the wrapped-gift arm WRAPPED `0x8` (see
-    /// [`super::char_stats::InvSlotView::flags`], the doll twin).
-    pub flags: u32,
-    /// `0x5da2c0` — **the instance is runtime-bound**: `ITEM_FIELD_FLAGS & 1` (soulbound), or a
-    /// live enchant slot naming a `SpellItemEnchantment` row that binds. App-resolved off the raw
-    /// descriptor ([`crate::items::already_bound`] in benilla-app — the same predicate the enchant
-    /// cursor's bind question asks), because the binding half needs a DBC join and the engine
-    /// holds no item knowledge of its own. The tooltip's §6 bind line overrides to **Soulbound**
-    /// on it (B310); `false` on any source with no streamed item object.
-    pub already_bound: bool,
-    /// The instance's enchant slots, resolved by the app ([`super::EnchantView`]) and in
-    /// enchant-slot order: it joins the id through `SpellItemEnchantment.dbc`'s name column and
-    /// hands over the row's name plus the three facts the line law needs to place and paint it.
-    /// Empty = unenchanted, or the enchant DBC never loaded. Decisions 0915/0920.
-    pub enchants: Vec<super::EnchantView>,
-    /// **The instance's remaining LIFETIME in milliseconds** — a duration-limited item counting
-    /// down to its own destruction (a conjured stone, a holiday gift, a timed quest item). Its
-    /// only feed is `SMSG_ITEM_TIME_UPDATE`, parked as an absolute deadline and recomputed on
-    /// read ([`crate::items::Items::duration_remaining_display_ms`] in benilla-app), floored to
-    /// the whole second so the snapshot moves once a second rather than every frame.
-    /// `None` = no timer, which is nearly every item. Decision 1933.
-    pub duration_ms: Option<u64>,
-    /// The petition this item names, when it is a signable charter — **line 3 of the tooltip's
-    /// emission law**, between the NAME and the green `ITEM_SIGNABLE` line.
-    ///
-    /// `None` for every ordinary item, and also for a charter whose petition record has not
-    /// arrived: the hover is what ISSUES that query, so the first hover of an unopened charter
-    /// shows the name and the green line, and the two guild lines appear on the repaint. Exactly
-    /// [`Self::creator`]'s shape one field up, for exactly its reason.
-    pub petition: Option<PetitionSlotView>,
-}
-
-/// One enchant slot as the tooltip renders it (wow-re `ui/scratch/tooltip-content-law.md` §E3,
-/// byte-verified; decision 0920). The app resolves the DBC row; every rule below is the engine's.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct EnchantView {
-    /// `ITEM_FIELD_ENCHANTMENT` slot: **0** permanent · **1** temporary · **2..6** the
-    /// random-property suffix. It decides the colour band — only 0 and 1 are ever coloured.
-    pub slot: u8,
-    /// The enchant id was NEGATIVE. `abs(id)` names the row either way — the sign's only effect is
-    /// to paint slots 0/1 pure-red instead of green (`0x52ca29–0x52ca49`).
-    pub negative: bool,
-    /// The `SpellItemEnchantment` row's name, verbatim (`"Agility +15"`, `"Crusader"`) — the
-    /// reference copies the string with no format at all (`0x52ca8b–0x52caa1`).
-    pub name: String,
-    /// The slot's `ITEM_FIELD_ENCHANTMENT` charges dword — nonzero appends " (N Charges)".
-    pub charges: u32,
-    /// Milliseconds left on a TEMPORARY enchant, from `SMSG_ITEM_ENCHANT_TIME_UPDATE` (the item's
-    /// own duration field is never read for this). `Some` replaces the plain name with the
-    /// countdown phrasing; `None` = no timer, or expired.
-    pub remaining_ms: Option<u64>,
-}
-
-/// One `ItemRandomProperties` row as the engine renders it — the **random-suffix roll** a dropped,
-/// linked, auctioned or mailed item carries (decision 1547). The app resolves the DBC (both of
-/// them: the roll's table and the `SpellItemEnchantment` names its five ids land on) and pushes the
-/// whole table once at load; a tooltip source supplies only the id, exactly as in the reference.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct RandomPropertyView {
-    /// The roll's suffix — `"of the Monkey"`. The reference joins it onto the item name through
-    /// `ITEM_SUFFIX_TEMPLATE` (`"%s %s"`) in its one name formatter `0x5d8b00`; benilla does that
-    /// join app-side, where every display name is composed, so this is carried for reference and
-    /// for the surfaces that name an item the app never composed.
-    pub suffix: String,
-    /// The enchant lines the roll grants, already named and seated in enchant slots **2..6** —
-    /// the five dwords the builder copies out of the suffix row (`0x52b7e0–0x52b7fb`). Slots 2..6
-    /// are always white, whatever the sign.
-    pub enchants: Vec<EnchantView>,
-}
-
-/// One bag's snapshot: its name, capacity, and occupied slots (1-based).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ContainerState {
-    /// `GetBagName` (the bag item's own name; the backpack is the client-local "Backpack").
-    pub name: Option<String>,
-    pub num_slots: u32,
-    pub slots: std::collections::HashMap<u32, ContainerSlot>,
-}
-
-/// One queued backpack pick/place/swap/split: move the item from `(src_bag, src_slot)` to
-/// `(dst_bag, dst_slot)` (live-API space, 1-based slots). The app maps a backpack-internal move
-/// (both bags 0) onto `CMSG_SWAP_INV_ITEM` player-array slots. `count`: `None` = a whole-stack
-/// move/swap (including a same-item merge — the wire tops the stack up itself); `Some(n)` = a
-/// split placement (`SplitContainerItem`) the app maps onto `CMSG_SPLIT_ITEM` instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContainerMove {
-    pub src_bag: i64,
-    pub src_slot: u32,
-    pub dst_bag: i64,
-    pub dst_slot: u32,
-    pub count: Option<u32>,
-}
-
-/// One queued **auto-store into a bag** — `PutItemInBag`'s third leg and the whole of
-/// `PutItemInBackpack` (`crate::script::cursor::bag_verbs`): take the item at `(src_bag, src_slot)`
-/// and put it anywhere inside container `dst_bag`.
-///
-/// **There is no destination slot, and that is the finding, not an omission**: the reference's
-/// `CMSG_AUTOSTORE_BAG_ITEM 0x10B` carries `(srcbag, srcslot, dstbag)` and nothing else, and its
-/// split sibling `CMSG_SPLIT_ITEM 0x10E` carries the literal `0xFF` where a slot would go. The
-/// server picks. `count`: `None` = the whole stack (AUTOSTORE); `Some(n)` = a split carry, which
-/// the drain sends as SPLIT instead — the same fork the reference makes on `[0xb4b40c]`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BagAutoStore {
-    pub src_bag: i64,
-    pub src_slot: u32,
-    /// Live-API container id (0 = backpack, 1..=4 an equipped bag, 5..=10 a bank bag).
-    pub dst_bag: i64,
-    pub count: Option<u32>,
-}
+pub use crate::script_game_data::{
+    BagAutoStore, ContainerMove, ContainerSlot, ContainerState, EnchantView, PetitionSlotView,
+    RandomPropertyView,
+};
 
 impl super::UiScript {
     /// Drain the auto-stores `PutItemInBag`/`PutItemInBackpack` queued since the last call.
@@ -560,7 +382,7 @@ fn queue_move(
 /// bare global: `GetContainerNumSlots`, never `C_Container.GetContainerNumSlots`. The
 /// `C_Container` namespace 1187 reached for while chasing an Era addon is a *Dragonflight*
 /// reorganisation, and an addon that feature-detects it concludes it is on Dragonflight.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // ContainerIDToInventoryID(containerID) → the equipment slot the bag is worn in.
     //
     // **Two linear arms, one signed compare, and nothing else** (`0x4f94e0`, 124 bytes; wow-re
@@ -584,24 +406,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // type test, so an out-of-range id is not clamped, not rejected, and never nil — it returns
     // `id+19` or `id+59` as an ordinary number, and whatever the receiving binding does with an
     // invalid slot is that binding's business.
-    lua.globals().set(
-        "ContainerIDToInventoryID",
-        lua.create_function(|lua, id: Value| {
-            let id = super::binding_abi::number_arg(
-                lua,
-                id,
-                "Usage: ContainerIDToInventoryID(containerID)",
-            )?;
-            // `0x4f951b dec eax` · `0x4f951f cmp eax,4` · `0x4f9524 jl` — the compare is signed
-            // and lands on the `id <= 4` arm.
-            let t = id.wrapping_sub(1);
-            Ok(i64::from(if t < 4 {
-                t.wrapping_add(20)
-            } else {
-                t.wrapping_add(60)
-            }))
-        })?,
-    )?;
+    lua.register_function("ContainerIDToInventoryID", |_, id: Value| {
+        let id = super::binding_abi::number_arg_value(
+            id,
+            "Usage: ContainerIDToInventoryID(containerID)",
+        )?;
+        // `0x4f951b dec eax` · `0x4f951f cmp eax,4` · `0x4f9524 jl` — the compare is signed
+        // and lands on the `id <= 4` arm.
+        let t = id.wrapping_sub(1);
+        Ok(i64::from(if t < 4 {
+            t.wrapping_add(20)
+        } else {
+            t.wrapping_add(60)
+        }))
+    })?;
 
     // SetBagPortaitTexture(texture, containerID) — `0x4fa4f0` (374 B), the reference's own
     // spelling, typo included, and CARVED (wow-re `system/ui/scratch/bag-portrait-and-appendtext.md`,
@@ -629,12 +447,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // reads the item template's icon), so the DBC walk above is the reference's route to the value
     // this client already has resolved; the observable — which icon lands on the portrait — is the
     // same one.
-    lua.globals().set(
+    lua.register_function(
         "SetBagPortaitTexture",
-        lua.create_function(|lua, (region, container): (Table, i64)| {
+        |lua, (region, container): (Table, i64)| {
             // Arm 3, before anything is touched.
             if container >= 11 {
-                return Err(mlua::Error::runtime("Invalid slot in SetBagPortaitTexture"));
+                return Err(benilla_lua::Error::runtime(
+                    "Invalid slot in SetBagPortaitTexture",
+                ));
             }
             // Arm 1: the backpack is a silent return, not a clear.
             if container <= 0 {
@@ -656,7 +476,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     .and_then(|slot| model.inv_slot("player", slot))
                     .and_then(|v| v.icon.clone())
             };
-            let rh = crate::script::region::region_handle_of(lua, &region)?;
+            let rh = crate::script::region::region_handle_of_context(lua, &region)?;
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let data = model.region_data.entry(rh).or_default();
             // Arm 2. `path` is `None` for an empty slot, and that IS the answer: the reference
@@ -665,39 +485,33 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             data.circular = true;
             data.portrait_unit = None;
             Ok(())
-        })?,
+        },
     )?;
 
-    lua.globals().set(
-        "GetContainerNumSlots",
-        lua.create_function(|lua, bag: i64| {
+    lua.register_function("GetContainerNumSlots", |lua, bag: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.containers.get(&bag).map_or(0, |c| c.num_slots))
+    })?;
+
+    lua.register_function("GetBagName", |lua, bag: i64| {
+        let name = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.containers.get(&bag).map_or(0, |c| c.num_slots))
-        })?,
-    )?;
-
-    lua.globals().set(
-        "GetBagName",
-        lua.create_function(|lua, bag: i64| {
-            let name = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.containers.get(&bag).and_then(|c| c.name.clone())
-            };
-            match name {
-                Some(n) => Ok(Value::String(lua.create_string(&n)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+            model.containers.get(&bag).and_then(|c| c.name.clone())
+        };
+        match name {
+            Some(n) => Ok(Value::from(n)),
+            None => Ok(Value::Nil),
+        }
+    })?;
 
     // The reference's `GetContainerItemCooldown(bag, slot)` — the bag twin of
     // `GetActionCooldown`, identical conventions: `GetTime`-clock `(start, duration, enable)`,
     // enable 0 = an on-hold record (parked, full duration), and the cold-at-expiry guard so an
     // event-driven re-feed can never replay the finish flash.
-    lua.globals().set(
+    lua.register_function(
         "GetContainerItemCooldown",
-        lua.create_function(|lua, (bag, slot): (i64, u32)| {
-            let now: f64 = lua.globals().get("__benilla_now").unwrap_or(0.0);
+        |lua, (bag, slot): (i64, u32)| {
+            let now: f64 = lua.get_global("__benilla_now").unwrap_or(0.0);
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(match model.container_cooldowns.get(&(bag, slot)) {
                 Some(&(start, duration, enabled)) if start + duration > now || !enabled => {
@@ -705,26 +519,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 }
                 _ => (0.0, 0.0, 1),
             })
-        })?,
+        },
     )?;
 
-    lua.globals().set(
-        "GetContainerItemLink",
-        lua.create_function(|lua, (bag, slot): (i64, u32)| {
-            let link = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .containers
-                    .get(&bag)
-                    .and_then(|c| c.slots.get(&slot))
-                    .and_then(|s| s.link.clone())
-            };
-            match link {
-                Some(l) => Ok(Value::String(lua.create_string(&l)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    lua.register_function("GetContainerItemLink", |lua, (bag, slot): (i64, u32)| {
+        let link = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model
+                .containers
+                .get(&bag)
+                .and_then(|c| c.slots.get(&slot))
+                .and_then(|s| s.link.clone())
+        };
+        match link {
+            Some(l) => Ok(Value::from(l)),
+            None => Ok(Value::Nil),
+        }
+    })?;
 
     // `GetContainerItemInfo(bag, slot)` → **`texture, itemCount, locked, quality, readable`**
     // — the 1.12 shape, five values (decision 1199).
@@ -751,12 +562,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //
     // `nil` for an empty or unknown slot — the reference returns no values there, and a caller's
     // `if texture then` reads the same either way.
-    lua.globals().set(
-        "GetContainerItemInfo",
-        lua.create_function(|lua, (bag, slot): (i64, u32)| {
-            let (info, held_here) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let held = matches!(
+    lua.register_function("GetContainerItemInfo", |lua, (bag, slot): (i64, u32)| {
+        let (info, held_here) = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let held = matches!(
                     &model.cursor,
                     Some(CursorPayload::Item(c)) if c.bag == bag && c.slot == slot
                 ) ||
@@ -767,36 +576,35 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         &model.pending_wrap,
                         Some(w) if w.bag == bag && w.slot == slot
                     );
-                (
-                    model
-                        .containers
-                        .get(&bag)
-                        .and_then(|c| c.slots.get(&slot))
-                        .cloned(),
-                    held,
-                )
-            };
-            let Some(s) = info else {
-                return Ok(mlua::MultiValue::new());
-            };
-            Ok(mlua::MultiValue::from_vec(vec![
-                match &s.texture {
-                    Some(p) => Value::String(lua.create_string(p.as_str())?),
-                    None => Value::Nil,
-                },
-                Value::Integer(i64::from(s.count)),
-                // The picked-up source slot reads locked (the real client dims it while the cursor
-                // carries the item) — derived from the cursor, not a mutated snapshot, so the
-                // app's per-frame re-push cannot wipe it.
-                Value::Boolean(s.locked || held_here),
-                match s.quality {
-                    Some(q) => Value::Integer(i64::from(q)),
-                    None => Value::Nil,
-                },
-                Value::Boolean(s.readable),
-            ]))
-        })?,
-    )?;
+            (
+                model
+                    .containers
+                    .get(&bag)
+                    .and_then(|c| c.slots.get(&slot))
+                    .cloned(),
+                held,
+            )
+        };
+        let Some(s) = info else {
+            return Ok(MultiValue::new());
+        };
+        Ok(MultiValue::from(vec![
+            match &s.texture {
+                Some(p) => Value::from(p.as_str()),
+                None => Value::Nil,
+            },
+            Value::Integer(i64::from(s.count)),
+            // The picked-up source slot reads locked (the real client dims it while the cursor
+            // carries the item) — derived from the cursor, not a mutated snapshot, so the
+            // app's per-frame re-push cannot wipe it.
+            Value::Boolean(s.locked || held_here),
+            match s.quality {
+                Some(q) => Value::Integer(i64::from(q)),
+                None => Value::Nil,
+            },
+            Value::Boolean(s.readable),
+        ]))
+    })?;
 
     // `BenillaGetContainerItemID(bag, slot)` — the item id behind a slot, for OUR OWN FrameXML.
     //
@@ -805,9 +613,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `Benilla` host-bridge prefix — the sanctioned escape hatch for a verb only our own
     // transcription calls, and the one `reference_surface` covers by prefix rather than by
     // exception. An addon that wants it parses the link, exactly as it would on the real client.
-    lua.globals().set(
+    lua.register_function(
         "BenillaGetContainerItemID",
-        lua.create_function(|lua, (bag, slot): (i64, u32)| {
+        |lua, (bag, slot): (i64, u32)| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             // `nil` for an unresolved id, not `0` — a slot can carry an entry whose template has
             // not landed yet, and `0` is a number a caller will happily index a table with.
@@ -818,54 +626,51 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .map(|s| s.item_id)
                 .filter(|&id| id != 0)
                 .map(i64::from))
-        })?,
+        },
     )?;
 
-    lua.globals().set(
+    lua.register_function(
         "UseContainerItem",
-        lua.create_function(|lua, (bag, slot, _rest): (i64, u32, mlua::MultiValue)| {
+        |lua, (bag, slot, _rest): (i64, u32, MultiValue)| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             model.container_uses.push((bag, slot));
             Ok(())
-        })?,
+        },
     )?;
 
     // The left-click drag gesture: pick up from an occupied slot, or place/swap when holding.
     // Returns whether the caller should repaint (the source-slot lock changed) — the OnClick calls
     // the bag's `_Update` on true so the picked slot dims / un-dims immediately (no server round
     // trip for the local cursor state).
-    lua.globals().set(
-        "PickupContainerItem",
-        lua.create_function(|lua, (bag, slot): (i64, u32)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // Two intercepts live IN the pickup path, in the reference's own order (decision
-            // 0923 re-read `PickupContainerItem 0x4f9b30` whole; the targeting rung is at
-            // `4f9c54` and the repair test at `4f9c7b`, so targeting wins — a poisoning click at
-            // a repair vendor binds the poison, it does not repair):
-            //
-            //   4f9c54  call 0x6e48a0        ; IsTargeting
-            //   4f9c5d  call 0x6e6330        ; TargetingWantsItem (word & 0x4010)
-            //   4f9c6d  call 0x495d60        ; bind THIS item — then return, nothing picked up
-            //
-            // The held-payload check precedes BOTH (`4f9c38`: a non-empty cursor jumps to the
-            // place/swap arm long before either), so a click while carrying an item is a place —
-            // transcribed by the `cursor.is_none()` gate. The word is one-shot: the app clears it
-            // on completion, cancel, or close.
-            if model.item_pick_armed && model.cursor.is_none() {
-                model.item_picks.push((bag, slot));
-                return Ok(false);
-            }
-            // Repair mode (`0x4f9c7b`, wow-re repair-machinery.md): while the repair cursor is
-            // armed, the click means "repair this item" — queued for the app to send — and
-            // nothing is picked up. The mode STICKS across clicks (only HideRepairCursor /
-            // merchant-close clears it).
-            if model.repair_mode {
-                model.container_repairs.push((bag, slot));
-                return Ok(false);
-            }
-            Ok(pickup_container_item(&mut model, bag, slot))
-        })?,
-    )?;
+    lua.register_function("PickupContainerItem", |lua, (bag, slot): (i64, u32)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // Two intercepts live IN the pickup path, in the reference's own order (decision
+        // 0923 re-read `PickupContainerItem 0x4f9b30` whole; the targeting rung is at
+        // `4f9c54` and the repair test at `4f9c7b`, so targeting wins — a poisoning click at
+        // a repair vendor binds the poison, it does not repair):
+        //
+        //   4f9c54  call 0x6e48a0        ; IsTargeting
+        //   4f9c5d  call 0x6e6330        ; TargetingWantsItem (word & 0x4010)
+        //   4f9c6d  call 0x495d60        ; bind THIS item — then return, nothing picked up
+        //
+        // The held-payload check precedes BOTH (`4f9c38`: a non-empty cursor jumps to the
+        // place/swap arm long before either), so a click while carrying an item is a place —
+        // transcribed by the `cursor.is_none()` gate. The word is one-shot: the app clears it
+        // on completion, cancel, or close.
+        if model.item_pick_armed && model.cursor.is_none() {
+            model.item_picks.push((bag, slot));
+            return Ok(false);
+        }
+        // Repair mode (`0x4f9c7b`, wow-re repair-machinery.md): while the repair cursor is
+        // armed, the click means "repair this item" — queued for the app to send — and
+        // nothing is picked up. The mode STICKS across clicks (only HideRepairCursor /
+        // merchant-close clears it).
+        if model.repair_mode && model.cursor.is_none() {
+            model.container_repairs.push((bag, slot));
+            return Ok(false);
+        }
+        Ok(pickup_container_item(&mut model, bag, slot))
+    })?;
 
     // The cursor globals (`GetCursorInfo`/`CursorHasItem`/`CursorHasSpell`/`ClearCursor`/
     // `SplitContainerItem`/`DeleteCursorItem`) live in [`super::cursor`], the one payload seam
@@ -875,56 +680,48 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `0x4fa460`, wow-re cursor-system.md §7: Buy(3) only when the slot actually holds an item —
     // an empty slot leaves the cursor unchanged; no Unable twin, no SellPrice check — selling
     // never grays), and the reference's own `IsTargeting` bail at its first instruction.
-    lua.globals().set(
-        "ShowContainerSellCursor",
-        lua.create_function(|lua, (bag, slot): (i64, u32)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let occupied = model
-                .containers
-                .get(&bag)
-                .and_then(|c| c.slots.get(&slot))
-                .is_some();
-            // `IsTargeting` bails at the function's FIRST instruction — an armed spell suppresses
-            // the sell cursor outright (wow-re `item-target-cursor-and-dropitemonunit.md`). Now
-            // that the mode is sticky, this gate has to be here rather than app-side: a write of
-            // Buy would otherwise stamp over the cast cursor and there would be no per-frame world
-            // write to put it back.
-            if occupied && !model.spell_targeting {
-                model.ui_cursor = Some(UiCursorMode::Buy);
-                model.ui_cursor_dirty = true;
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ShowContainerSellCursor", |lua, (bag, slot): (i64, u32)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let occupied = model
+            .containers
+            .get(&bag)
+            .and_then(|c| c.slots.get(&slot))
+            .is_some();
+        // `IsTargeting` bails at the function's FIRST instruction — an armed spell suppresses
+        // the sell cursor outright (wow-re `item-target-cursor-and-dropitemonunit.md`). Now
+        // that the mode is sticky, this gate has to be here rather than app-side: a write of
+        // Buy would otherwise stamp over the cast cursor and there would be no per-frame world
+        // write to put it back. The repair base also suppresses selling: original
+        // FrameXML can call this for an undamaged item even while InRepairMode.
+        if occupied && !model.spell_targeting && !model.repair_mode {
+            model.ui_cursor = Some(UiCursorMode::Buy);
+            model.ui_cursor_dirty = true;
+        }
+        Ok(())
+    })?;
     // ShowInspectCursor() — the Ctrl-hover magnifier (5875 `0x48ac60`: an unconditional
     // `CursorSetMode(Inspect=7)`). Shared across surfaces (the merchant window's Ctrl-hover, a bag
     // item's Ctrl-hover, the generic UIParent item hover), so it lives here beside `ResetCursor`
     // rather than in any one seam. It takes no arguments and reads no state.
-    lua.globals().set(
-        "ShowInspectCursor",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.ui_cursor = Some(UiCursorMode::Inspect);
-            model.ui_cursor_dirty = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ShowInspectCursor", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.ui_cursor = Some(UiCursorMode::Inspect);
+        model.ui_cursor_dirty = true;
+        Ok(())
+    })?;
     // HasKey() — "does this player own a key at all?" (5875 `0x48ae90`), the gate the main bar
     // reads to decide whether the keyring exists in the UI. The reference pushes the NUMBER 1 on a
     // hit and nil otherwise, not a boolean, and FrameXML only ever tests it for truth — so the
     // shape is reproduced exactly rather than normalized to a bool. The search itself (BagFamily
     // == 9 across equipment/bags/backpack/bank/keyring) is the app's, like every other item fact.
-    lua.globals().set(
-        "HasKey",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(if model.has_key {
-                Value::Integer(1)
-            } else {
-                Value::Nil
-            })
-        })?,
-    )?;
+    lua.register_function("HasKey", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(if model.has_key {
+            Value::Integer(1)
+        } else {
+            Value::Nil
+        })
+    })?;
     // SetCursor(name) — the reference's `0x489490`: a name->mode table (POINT/CAST/BUY/ATTACK =
     // 1..4, each with an `*_ERROR` twin at +20) into `CursorSetMode`, falling back to a custom
     // bitmap for an unknown name. Only the modes FrameXML actually names are mapped here; anything
@@ -934,38 +731,32 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Its one shipped caller is the unit-frame hover pair (`UnitFrame_OnEnter`/`OnLeave`), which is
     // the ONLY lit/grey cursor split over a UI element in 1.12 — and it is authored in Lua, not in
     // C++ (wow-re `item-target-cursor-and-dropitemonunit.md` §4.3).
-    lua.globals().set(
-        "SetCursor",
-        lua.create_function(|lua, name: Option<String>| {
-            let mode = match name.as_deref() {
-                None => None, // no-arg == ResetCursor
-                Some("POINT_CURSOR") => Some(UiCursorMode::Point),
-                Some("CAST_CURSOR") => Some(UiCursorMode::Cast),
-                Some("CAST_ERROR_CURSOR") => Some(UiCursorMode::CastError),
-                Some("BUY_CURSOR") => Some(UiCursorMode::Buy),
-                Some("BUY_ERROR_CURSOR") => Some(UiCursorMode::UnableBuy),
-                // An unmapped name: the reference would load a custom bitmap. We have no such art,
-                // and silently painting the wrong stock cursor would be worse than leaving the
-                // sticky mode alone, so this is a no-op rather than a guess.
-                Some(_) => return Ok(()),
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.ui_cursor = mode;
-            model.ui_cursor_dirty = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetCursor", |lua, name: Option<String>| {
+        let mode = match name.as_deref() {
+            None => None, // no-arg == ResetCursor
+            Some("POINT_CURSOR") => Some(UiCursorMode::Point),
+            Some("CAST_CURSOR") => Some(UiCursorMode::Cast),
+            Some("CAST_ERROR_CURSOR") => Some(UiCursorMode::CastError),
+            Some("BUY_CURSOR") => Some(UiCursorMode::Buy),
+            Some("BUY_ERROR_CURSOR") => Some(UiCursorMode::UnableBuy),
+            // An unmapped name: the reference would load a custom bitmap. We have no such art,
+            // and silently painting the wrong stock cursor would be worse than leaving the
+            // sticky mode alone, so this is a no-op rather than a guess.
+            Some(_) => return Ok(()),
+        };
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.ui_cursor = mode;
+        model.ui_cursor_dirty = true;
+        Ok(())
+    })?;
     // ResetCursor — displayed mode back to the base (the world classifier's) mode (5875
     // `0x48ac70` → `0x523d30`): clear the whole override, whichever `Show*Cursor` armed it.
-    lua.globals().set(
-        "ResetCursor",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.ui_cursor = None;
-            model.ui_cursor_dirty = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ResetCursor", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.ui_cursor = None;
+        model.ui_cursor_dirty = true;
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -1492,8 +1283,13 @@ mod tests {
     /// than as exceptions.
     #[test]
     fn container_id_to_inventory_id_is_two_lines_with_no_clamp() {
-        let s = UiScript::new().unwrap();
-        let slot = |id: &str| {
+        let mut s = UiScript::new().unwrap();
+        assert_eq!(
+            s.arity("ContainerIDToInventoryID(99)").unwrap(),
+            1,
+            "one value on every non-raising path"
+        );
+        let mut slot = |id: &str| {
             s.eval::<i64>(&format!("return ContainerIDToInventoryID({id})"))
                 .unwrap()
         };
@@ -1515,11 +1311,6 @@ mod tests {
             "the value `SetInventoryItem` would receive"
         );
         assert_eq!(slot("-100"), -81, "negatives run off the line too");
-        assert_eq!(
-            s.arity("ContainerIDToInventoryID(99)").unwrap(),
-            1,
-            "one value on every non-raising path"
-        );
         // `0x40a2b0` truncates toward zero — a C cast, not `floor`.
         assert_eq!(slot("2.9"), 21, "2.9 -> 2");
         assert_eq!(slot("-2.9"), 17, "-2.9 -> -2, NOT -3");
@@ -1529,10 +1320,10 @@ mod tests {
     /// test, and `0x6f4940` does not return.
     #[test]
     fn container_id_to_inventory_id_raises_on_a_bad_argument() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         for call in ["ContainerIDToInventoryID()", "ContainerIDToInventoryID({})"] {
             let err = s
-                .eval::<mlua::Value>(&format!("return {call}"))
+                .eval::<Option<String>>(&format!("return {call}"))
                 .unwrap_err();
             assert!(
                 format!("{err}").contains("Usage: ContainerIDToInventoryID(containerID)"),

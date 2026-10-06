@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -75,7 +75,7 @@ const SPELL_CAST_TIMES: &str = "DBFilesClient\\SpellCastTimes.dbc";
 const SPELL_CAST_TIMES_FIELDS: usize = 4;
 
 /// Load `SpellCastTimes.dbc` off the patch chain ([`SpellCastTime`]'s row law).
-pub fn load_spell_cast_times(chain: &mut Chain) -> Result<SpellCastTimeCatalog> {
+pub fn load_spell_cast_times(chain: &mut impl FileSource) -> Result<SpellCastTimeCatalog> {
     let bytes = chain
         .read_file(SPELL_CAST_TIMES)
         .context("reading SpellCastTimes.dbc")?;

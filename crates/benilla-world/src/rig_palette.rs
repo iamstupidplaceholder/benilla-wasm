@@ -46,6 +46,7 @@
 
 use std::sync::Arc;
 
+use benilla_assets::gpu_table::{write_gpu_table, GpuTable};
 use bevy::ecs::lifecycle::HookContext;
 use bevy::ecs::world::DeferredWorld;
 use bevy::math::Affine3A;
@@ -212,7 +213,7 @@ fn rows_make_mut<'a>(
     copy_us: &mut f32,
 ) -> &'a mut Vec<[f32; 4]> {
     if Arc::strong_count(rows) > 1 || Arc::weak_count(rows) > 0 {
-        let t = std::time::Instant::now();
+        let t = benilla_time::Instant::now();
         let live = 3 * watermark_bones as usize;
         // The retired buffer from two publishes ago, once the render world has let go of it:
         // copy the live prefix in and take it back. Its tail is stale — and never read: the GPU
@@ -882,9 +883,7 @@ fn publish_rig_palettes(mut palettes: ResMut<RigPalettes>, mut out: ResMut<RigPa
 /// studio buffers — their skinned rigs bind those, not the shared buffer). Registered by key at
 /// booth creation; re-registration replaces (a rebuilt booth's old buffer drops).
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct RigPaletteMirrors(
-    pub std::collections::HashMap<&'static str, bevy::render::render_resource::Buffer>,
-);
+pub struct RigPaletteMirrors(pub std::collections::HashMap<&'static str, GpuTable>);
 
 /// What the last upload actually put on the GPU — the four independent change gates
 /// ([`upload_rig_palettes`]). `dirty` is an `Arc` pointer, not a counter: a new publish makes a
@@ -928,7 +927,7 @@ fn upload_rig_palettes(
         origin: Some(data.origin_generation),
         origin_mirror: Some(data.origin_mirror_generation),
     };
-    let cost_t0 = rig_cost_enabled().then(std::time::Instant::now);
+    let cost_t0 = rig_cost_enabled().then(benilla_time::Instant::now);
     let mut cost_calls = 0u32;
     let mut cost_bytes = 0u64;
     // Coalesce the per-rig dirty ranges before touching the queue: rigs allocate contiguously,
@@ -946,13 +945,10 @@ fn upload_rig_palettes(
     );
     // Every target sees the slot table; the shared buffer takes all dirty rows, the booth
     // mirrors only the ranges flagged mirrored (their rigs) — world traffic never multiplies.
-    let targets = shared
-        .iter()
-        .map(|s| (&s.0, false))
-        .chain(mirrors.iter().flat_map(|m| m.0.values().map(|b| (b, true))));
-    for (buffer, mirror_only) in targets {
+    let mut upload = |buffer: &GpuTable, mirror_only: bool| {
         if table_new && !data.table.is_empty() {
-            queue.write_buffer(
+            write_gpu_table(
+                &queue,
                 buffer,
                 rig_table_region_offset(),
                 bytemuck::cast_slice(&data.table),
@@ -963,7 +959,8 @@ fn upload_rig_palettes(
         } else {
             origin_new
         } {
-            queue.write_buffer(
+            write_gpu_table(
+                &queue,
                 buffer,
                 rig_origin_region_offset(),
                 bytemuck::cast_slice(&data.origins),
@@ -975,7 +972,8 @@ fn upload_rig_palettes(
             let ranges = if mirror_only { &mirrored_only } else { &all };
             for &(base, len) in ranges {
                 let rows = &data.rows[3 * base as usize..3 * (base + len) as usize];
-                queue.write_buffer(
+                write_gpu_table(
+                    &queue,
                     buffer,
                     palette_region_offset() + base as u64 * BONE_BYTES,
                     bytemuck::cast_slice(rows),
@@ -984,6 +982,12 @@ fn upload_rig_palettes(
                 cost_bytes += len as u64 * BONE_BYTES;
             }
         }
+    };
+    for buffer in shared.iter().map(|s| &s.0) {
+        upload(buffer, false);
+    }
+    for buffer in mirrors.iter().flat_map(|m| m.0.values()) {
+        upload(buffer, true);
     }
     if let Some(t0) = cost_t0 {
         eprintln!(
@@ -1051,7 +1055,9 @@ fn census_rig_palettes(
         Option<&crate::doodad_anim::DoodadAnimHost>,
         Has<crate::world_unit::WorldUnit>,
     )>,
-    probes: Res<crate::lighting::PropProbes>,
+    // Absent in an off-world renderer: a glue/model stage allocates rig slots but owns no world
+    // lighting probe table. The census is diagnostic-only and reports zero probe occupancy there.
+    probes: Option<Res<crate::lighting::PropProbes>>,
     mut palettes: ResMut<RigPalettes>,
     mut next: Local<f32>,
 ) {
@@ -1089,7 +1095,7 @@ fn census_rig_palettes(
     }
     let denied = std::mem::take(&mut palettes.denied);
     let (s, b, ps, pb) = palettes.occupancy();
-    let (p_live, p_peak) = probes.occupancy();
+    let (p_live, p_peak) = probes.as_deref().map_or((0, 0), |p| p.occupancy());
     eprintln!(
         "[rig-census] slots={s}/{} bones={b}/{MAX_PALETTE_BONES} peak={ps}/{pb} | \
          doodad={}({}) parked={}({}) unit={}({}) other={}({}) | \

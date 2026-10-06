@@ -69,6 +69,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
+#[cfg(test)]
 use crate::chain::Chain;
 use crate::dbc::{f32_at, parse, str_at, u32_at};
 
@@ -276,7 +277,7 @@ fn food_schema() -> Schema {
 }
 
 /// Load `CreatureFamily.dbc` from the patch chain.
-pub fn load_creature_families(chain: &mut Chain) -> Result<CreatureFamilies> {
+pub fn load_creature_families(chain: &mut impl crate::FileSource) -> Result<CreatureFamilies> {
     let bytes = chain
         .read_file(CREATURE_FAMILY)
         .with_context(|| format!("reading {CREATURE_FAMILY}"))?;
@@ -306,7 +307,7 @@ pub fn load_creature_families(chain: &mut Chain) -> Result<CreatureFamilies> {
 }
 
 /// Load `ItemPetFood.dbc` from the patch chain.
-pub fn load_pet_food_names(chain: &mut Chain) -> Result<PetFoodNames> {
+pub fn load_pet_food_names(chain: &mut impl crate::FileSource) -> Result<PetFoodNames> {
     let bytes = chain
         .read_file(ITEM_PET_FOOD)
         .with_context(|| format!("reading {ITEM_PET_FOOD}"))?;

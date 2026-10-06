@@ -18,11 +18,13 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, parse, str_at, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 const EXHAUSTION: &str = "DBFilesClient\\Exhaustion.dbc";
 
 /// One Exhaustion.dbc row as the rest bindings consume it.
+#[derive(Clone)]
 pub struct ExhaustionRow {
     /// The row ID — also exactly the wire's rest-state byte (the client indexes by it).
     pub id: u32,
@@ -49,7 +51,7 @@ fn exhaustion_schema() -> Schema {
 }
 
 /// Load Exhaustion.dbc from the patch chain — the rows for `UiScript::set_exhaustion_rows`.
-pub fn load_exhaustion(chain: &mut Chain) -> Result<Vec<ExhaustionRow>> {
+pub fn load_exhaustion(chain: &mut impl crate::FileSource) -> Result<Vec<ExhaustionRow>> {
     let bytes = chain
         .read_file(EXHAUSTION)
         .with_context(|| format!("reading {EXHAUSTION}"))?;

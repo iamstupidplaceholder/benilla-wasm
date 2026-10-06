@@ -45,7 +45,7 @@
 //! with the `AreaPOI.dbc` rows the displayed level admits, then the guard-directions marker
 //! (decisions 1586, 1514).
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -667,23 +667,18 @@ fn select_resolved(model: &mut Model, continent: u32, zone: u32, direct_area: Op
 }
 
 /// Register the world-map globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetMapContinents() → name1, name2, … (the dropdown list; index = continent number).
-    g.set(
-        "GetMapContinents",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let names: Vec<Value> = model
-                .worldmap
-                .continents
-                .iter()
-                .map(|c| Ok(Value::String(lua.create_string(&c.name)?)))
-                .collect::<mlua::Result<_>>()?;
-            Ok(MultiValue::from_vec(names))
-        })?,
-    )?;
+    lua.register_function("GetMapContinents", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let names = model
+            .worldmap
+            .continents
+            .iter()
+            .map(|c| Value::from(c.name.clone()))
+            .collect::<Vec<_>>();
+        Ok(MultiValue::from(names))
+    })?;
 
     // GetMapZones(continent) → name1, name2, … (that continent's zone list; index = zone number).
     // A NEGATIVE continent answers empty — `0x4a7d10`'s `dec edi; cmp edi,[0xb6e664]; jae` is an
@@ -691,23 +686,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // exit. That emptiness is load-bearing: it is what leaves `WorldMapZoneButton_OnClick` with
     // no button to fire, and so what stops a `SetMapZoom(-1, id)` from writing a bogus row id
     // into the direct cell (wow-re §5.4).
-    g.set(
-        "GetMapZones",
-        lua.create_function(|lua, c: i64| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let zones = usize::try_from(c)
-                .ok()
-                .and_then(|c| c.checked_sub(1))
-                .and_then(|c| model.worldmap.continents.get(c))
-                .map(|cont| cont.zones.as_slice())
-                .unwrap_or(&[]);
-            let names: Vec<Value> = zones
-                .iter()
-                .map(|z| Ok(Value::String(lua.create_string(&z.name)?)))
-                .collect::<mlua::Result<_>>()?;
-            Ok(MultiValue::from_vec(names))
-        })?,
-    )?;
+    lua.register_function("GetMapZones", |lua, c: i64| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let zones = usize::try_from(c)
+            .ok()
+            .and_then(|c| c.checked_sub(1))
+            .and_then(|c| model.worldmap.continents.get(c))
+            .map(|cont| cont.zones.as_slice())
+            .unwrap_or(&[]);
+        let names = zones
+            .iter()
+            .map(|z| Value::from(z.name.clone()))
+            .collect::<Vec<_>>();
+        Ok(MultiValue::from(names))
+    })?;
 
     // GetCurrentMapContinent() / GetCurrentMapZone() — the selection halves (0 = world / whole
     // continent). The reference reads them right after SetMapZoom in the same click. Each is its
@@ -716,48 +708,36 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // forces to `-1`). The `-1` is a value no stock path tests for, and benignly: it leaves
     // `WorldMapFrame.lua:59`'s zoom-out button enabled, and the zone dropdown it would feed is
     // empty because `GetMapZones(-1)` takes the unsigned-bound exit below.
-    g.set(
-        "GetCurrentMapContinent",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match model.worldmap.direct_area {
-                Some(_) => -1i64,
-                None => i64::from(model.worldmap.selection.0),
-            })
-        })?,
-    )?;
-    g.set(
-        "GetCurrentMapZone",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.worldmap.selection.1))
-        })?,
-    )?;
+    lua.register_function("GetCurrentMapContinent", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match model.worldmap.direct_area {
+            Some(_) => -1i64,
+            None => i64::from(model.worldmap.selection.0),
+        })
+    })?;
+    lua.register_function("GetCurrentMapZone", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.worldmap.selection.1))
+    })?;
 
     // SetMapZoom(continent[, zone]) — the dropdowns' and zoom-out button's navigation verb.
-    g.set(
-        "SetMapZoom",
-        lua.create_function(|lua, (c, z): (i64, Option<i64>)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            select(&mut model, c, z.unwrap_or(0));
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetMapZoom", |lua, (c, z): (i64, Option<i64>)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        select(&mut model, c, z.unwrap_or(0));
+        Ok(())
+    })?;
 
     // SetMapToCurrentZone() — the OnShow verb: jump to the player's own map (app-resolved feed).
     // `0x4a7e20` is `call 0x4a6650; xor eax,eax; ret`, so this is the resolver's whole answer,
     // orphan leg included — which is what puts a player standing in Warsong Gulch on the Warsong
     // Gulch map. The stock battlefield minimap calls it itself on PLAYER_ENTERING_WORLD.
-    g.set(
-        "SetMapToCurrentZone",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let (c, z) = model.worldmap.player_zone.unwrap_or((0, 0));
-            let direct = model.worldmap.player_direct_area;
-            select_resolved(&mut model, c, z, direct);
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("SetMapToCurrentZone", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let (c, z) = model.worldmap.player_zone.unwrap_or((0, 0));
+        let direct = model.worldmap.player_direct_area;
+        select_resolved(&mut model, c, z, direct);
+        Ok(())
+    })?;
 
     // GetMapInfo() → mapFileName (the Interface\WorldMap\<name>\ folder). World level → nil —
     // the reference Lua's own `"World"` fallback exists because the client returned nil there
@@ -767,91 +747,76 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // the localized "Warsong Gulch": `0x4a6cf0` reads `[row+0xc]` with no locale multiplier, in
     // deliberate contrast to `0x4a8740`'s `[rec + 4*[0xc0e080] + 0x2c]` AreaTable read. That is
     // why FrameXML interpolates it straight into `Interface\WorldMap\<name>\<name>1..12`.
-    g.set(
-        "GetMapInfo",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let wm = &model.worldmap;
-            let file = match (wm.direct_area, wm.selection) {
-                // The direct-area state — an instance map, resolved by id through the orphan
-                // list. `0x4a6cf0`'s `jl 0x4a6d24` sends BOTH negative continents here and the
-                // `-1` world level answers nil only because its third cell is `-1` too.
-                (Some(_), _) => direct_row(wm).map(|row| row.map_file.clone()),
-                (None, (0, _)) => None,
-                (None, (c, z)) => wm.continents.get(c as usize - 1).map(|cont| match z {
-                    0 => cont.map_file.clone(),
-                    z => cont
-                        .zones
-                        .get(z as usize - 1)
-                        .map(|zone| zone.map_file.clone())
-                        .unwrap_or_else(|| cont.map_file.clone()),
-                }),
-            };
-            // THREE values, always: `0x4a7e30` pushes all three unconditionally and returns
-            // `mov eax,3` from its single `ret`, so the world-level answer is `nil, 0, 0` rather
-            // than one nil. (Its four conditional jumps all sit inside slot 3's power-of-two
-            // round and none gates a push — wow-re §10 corrects the "no conditional jump at all"
-            // absolute this comment used to carry, without touching the conclusion.
-            // `arity_conf = exact`; decision 1845.)
-            //
-            // The two zeros are the map art's texture dimensions, which no caller reads: both
-            // consumers bind slot 2 to a `textureHeight` local they never read again. They are
-            // **0 on every instance map** in the reference too — `0x4a6d50` scans
-            // `WorldMapContinent.dbc` for the row's mapID and that table ships only mapIDs
-            // {0, 1}, so the scan exhausts (§5.2).
-            let file = match file {
-                Some(f) => Value::String(lua.create_string(&f)?),
-                None => Value::Nil,
-            };
-            Ok((file, 0i64, 0i64))
-        })?,
-    )?;
+    lua.register_function("GetMapInfo", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let wm = &model.worldmap;
+        let file = match (wm.direct_area, wm.selection) {
+            // The direct-area state — an instance map, resolved by id through the orphan
+            // list. `0x4a6cf0`'s `jl 0x4a6d24` sends BOTH negative continents here and the
+            // `-1` world level answers nil only because its third cell is `-1` too.
+            (Some(_), _) => direct_row(wm).map(|row| row.map_file.clone()),
+            (None, (0, _)) => None,
+            (None, (c, z)) => wm.continents.get(c as usize - 1).map(|cont| match z {
+                0 => cont.map_file.clone(),
+                z => cont
+                    .zones
+                    .get(z as usize - 1)
+                    .map(|zone| zone.map_file.clone())
+                    .unwrap_or_else(|| cont.map_file.clone()),
+            }),
+        };
+        // THREE values, always: `0x4a7e30` pushes all three unconditionally and returns
+        // `mov eax,3` from its single `ret`, so the world-level answer is `nil, 0, 0` rather
+        // than one nil. (Its four conditional jumps all sit inside slot 3's power-of-two
+        // round and none gates a push — wow-re §10 corrects the "no conditional jump at all"
+        // absolute this comment used to carry, without touching the conclusion.
+        // `arity_conf = exact`; decision 1845.)
+        //
+        // The two zeros are the map art's texture dimensions, which no caller reads: both
+        // consumers bind slot 2 to a `textureHeight` local they never read again. They are
+        // **0 on every instance map** in the reference too — `0x4a6d50` scans
+        // `WorldMapContinent.dbc` for the row's mapID and that table ships only mapIDs
+        // {0, 1}, so the scan exhausts (§5.2).
+        let file = file.map_or(Value::Nil, Value::from);
+        Ok((file, 0i64, 0i64))
+    })?;
 
     // GetCorpseMapPosition() → x, y in [0,1] map UV; (0,0) = no corpse / not on this map — the
     // reference's hide sentinel (WorldMapFrame.lua:445), same shape as the player position below.
-    g.set(
-        "GetCorpseMapPosition",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let (x, y) = model.worldmap.corpse_uv.unwrap_or((0.0, 0.0));
-            Ok((f64::from(x), f64::from(y)))
-        })?,
-    )?;
+    lua.register_function("GetCorpseMapPosition", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let (x, y) = model.worldmap.corpse_uv.unwrap_or((0.0, 0.0));
+        Ok((f64::from(x), f64::from(y)))
+    })?;
 
     // GetPlayerMapPosition(unit) → x, y in [0,1] map UV; (0,0) = not on this map (hide the
     // blip). `"player"`, `"party1".."party4"` (report B320) and `"raid1".."raid40"` (1980, the
     // stock map's raid arm over its `WorldMapRaid1..40` pool) resolve; anything else is (0,0).
-    g.set(
-        "GetPlayerMapPosition",
-        lua.create_function(|lua, unit: String| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let slot = |prefix: &str, list: &[Option<(f32, f32)>]| {
-                unit.strip_prefix(prefix)
-                    .and_then(|n| n.parse::<usize>().ok())
-                    .filter(|n| *n >= 1)
-                    .and_then(|n| list.get(n - 1).copied().flatten())
-            };
-            let (x, y) = match unit.as_str() {
-                "player" => model.worldmap.player_uv,
-                u if u.starts_with("party") => slot("party", &model.worldmap.party_uv),
-                u if u.starts_with("raid") => slot("raid", &model.worldmap.raid_uv),
-                _ => None,
-            }
-            .unwrap_or((0.0, 0.0));
-            Ok((f64::from(x), f64::from(y)))
-        })?,
-    )?;
+    lua.register_function("GetPlayerMapPosition", |lua, unit: String| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let slot = |prefix: &str, list: &[Option<(f32, f32)>]| {
+            unit.strip_prefix(prefix)
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| *n >= 1)
+                .and_then(|n| list.get(n - 1).copied().flatten())
+        };
+        let (x, y) = match unit.as_str() {
+            "player" => model.worldmap.player_uv,
+            u if u.starts_with("party") => slot("party", &model.worldmap.party_uv),
+            u if u.starts_with("raid") => slot("raid", &model.worldmap.raid_uv),
+            _ => None,
+        }
+        .unwrap_or((0.0, 0.0));
+        Ok((f64::from(x), f64::from(y)))
+    })?;
 
     // GetPlayerFacing() → wow orientation radians (counterclockwise-positive, 0 = north). Feeds
     // the transcribed frame's arrow SetRotation (the reference's engine arrow reads facing
     // natively; a Lua-visible getter is our seam for the texture stand-in).
-    g.set(
-        "GetPlayerFacing",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(f64::from(model.worldmap.player_facing))
-        })?,
-    )?;
+    lua.register_function("GetPlayerFacing", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(f64::from(model.worldmap.player_facing))
+    })?;
 
     // ProcessMapClick(x, y) — normalized click within WorldMapButton (wow-re 15b2a8ea, Part 2).
     // World level: pick the first continent whose sheet-rect contains the click (the 0x4a7100
@@ -860,77 +825,67 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // zone's) → a continent child index → drill. Because a city is just another child, a click on
     // its footprint — from the continent map, or from a neighbouring zone map when the footprint
     // falls in that zone's window — drills into the city's own map.
-    g.set(
-        "ProcessMapClick",
-        lua.create_function(|lua, (x, y): (f32, f32)| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // An instance map swallows the click: the drill INSIDE `ProcessMapClick`
-            // (`0x4a7540`) opens `cmp esi,-2; je 0x4a760d`, a bare epilogue. Ahead of the world
-            // arm below, because the direct state shares its `continent == 0` cell and must not
-            // fall into the world sheet's continent walk.
-            if model.worldmap.direct_area.is_some() {
-                return Ok(());
+    lua.register_function("ProcessMapClick", |lua, (x, y): (f32, f32)| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // An instance map swallows the click: the drill INSIDE `ProcessMapClick`
+        // (`0x4a7540`) opens `cmp esi,-2; je 0x4a760d`, a bare epilogue. Ahead of the world
+        // arm below, because the direct state shares its `continent == 0` cell and must not
+        // fall into the world sheet's continent walk.
+        if model.worldmap.direct_area.is_some() {
+            return Ok(());
+        }
+        if model.worldmap.selection.0 == 0 {
+            let hit = model.worldmap.continents.iter().position(|cont| {
+                let (u0, v0, u1, v1) = cont.world_rect;
+                (u0..=u1).contains(&x) && (v0..=v1).contains(&y)
+            });
+            if let Some(i) = hit {
+                select(&mut model, i as i64 + 1, 0);
             }
-            if model.worldmap.selection.0 == 0 {
-                let hit = model.worldmap.continents.iter().position(|cont| {
-                    let (u0, v0, u1, v1) = cont.world_rect;
-                    (u0..=u1).contains(&x) && (v0..=v1).contains(&y)
-                });
-                if let Some(i) = hit {
-                    select(&mut model, i as i64 + 1, 0);
-                }
-            } else if let Some(zi) = grid_area(&model.worldmap, x, y) {
-                let c = i64::from(model.worldmap.selection.0);
-                select(&mut model, c, i64::from(zi));
-            }
-            Ok(())
-        })?,
-    )?;
+        } else if let Some(zi) = grid_area(&model.worldmap, x, y) {
+            let c = i64::from(model.worldmap.selection.0);
+            select(&mut model, c, i64::from(zi));
+        }
+        Ok(())
+    })?;
 
     // UpdateMapHighlight(x, y) → name, fileName, texPctX, texPctY, textureX, textureY,
     // scrollChildX, scrollChildY (wow-re 15b2a8ea, 0x4a7fa0) — the per-level law is [`hover`].
     // Eight values always: the frame reads `fileName` to decide whether a quad is drawn at all,
     // so a name-only answer carries a nil there and six zeros behind it.
-    g.set(
-        "UpdateMapHighlight",
-        lua.create_function(|lua, (x, y): (f32, f32)| {
-            let hit = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                hover(&model.worldmap, x, y)
-            };
-            let string = |s: &str| Ok::<_, mlua::Error>(Value::String(lua.create_string(s)?));
-            Ok(match hit {
-                Hover::Highlight {
-                    name,
-                    file,
-                    tex_pct_y,
-                    texture,
-                    scroll,
-                } => (
-                    string(&name)?,
-                    string(&file)?,
-                    1.0f64,
-                    tex_pct_y,
-                    texture.0,
-                    texture.1,
-                    scroll.0,
-                    scroll.1,
-                ),
-                Hover::Name(name) => (string(&name)?, Value::Nil, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                Hover::Miss => (Value::Nil, Value::Nil, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            })
-        })?,
-    )?;
+    lua.register_function("UpdateMapHighlight", |lua, (x, y): (f32, f32)| {
+        let hit = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            hover(&model.worldmap, x, y)
+        };
+        Ok(match hit {
+            Hover::Highlight {
+                name,
+                file,
+                tex_pct_y,
+                texture,
+                scroll,
+            } => (
+                Value::from(name),
+                Value::from(file),
+                1.0f64,
+                tex_pct_y,
+                texture.0,
+                texture.1,
+                scroll.0,
+                scroll.1,
+            ),
+            Hover::Name(name) => (Value::from(name), Value::Nil, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            Hover::Miss => (Value::Nil, Value::Nil, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        })
+    })?;
 
     // GetNumMapLandmarks() — how many POI icons the displayed map carries: the `AreaPOI.dbc` rows
     // that pass the builder's gates, then the guard-directions marker.
-    g.set(
-        "GetNumMapLandmarks",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.worldmap.landmarks.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumMapLandmarks", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.worldmap.landmarks.len() as i64)
+    })?;
 
     // GetMapLandmarkInfo(i) → name, description, textureIndex, x, y — the i-th (1-based) landmark
     // (return shape VERIFIED at `0x4a8740`, wow-re `system/ui/scratch/gossip-poi-marker.md`).
@@ -941,73 +896,64 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // landmark with no description answers **nil** there, as the reference does (`0x6f3890` pushes
     // nil on a NULL string) — the guard's marker never carries one, and neither do the ~2/3 of
     // AreaPOI rows with no live status text.
-    g.set(
-        "GetMapLandmarkInfo",
-        lua.create_function(|lua, i: i64| {
-            let landmark = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                usize::try_from(i)
-                    .ok()
-                    .and_then(|i| i.checked_sub(1))
-                    .and_then(|i| model.worldmap.landmarks.get(i).cloned())
-            };
-            let Some(l) = landmark else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let description = match l.description.is_empty() {
-                true => Value::Nil,
-                false => Value::String(lua.create_string(&l.description)?),
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&l.name)?),
-                description,
-                Value::Integer(i64::from(l.texture_index)),
-                Value::Number(f64::from(l.uv.0)),
-                Value::Number(f64::from(l.uv.1)),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetMapLandmarkInfo", |lua, i: i64| {
+        let landmark = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            usize::try_from(i)
+                .ok()
+                .and_then(|i| i.checked_sub(1))
+                .and_then(|i| model.worldmap.landmarks.get(i).cloned())
+        };
+        let Some(l) = landmark else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let description = match l.description.is_empty() {
+            true => Value::Nil,
+            false => Value::from(l.description),
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(l.name),
+            description,
+            Value::Integer(i64::from(l.texture_index)),
+            Value::Number(f64::from(l.uv.0)),
+            Value::Number(f64::from(l.uv.1)),
+        ]))
+    })?;
 
     // GetNumMapOverlays() — how many of the displayed map's overlays are REVEALED by the
     // explored bitset (the client's C side filters the same way; the reference Lua draws every
     // returned overlay). 0 at world/continent level; an instance map is admitted under the same
     // gate as a zone (see [`current_zone`]) — which on 5875 data means Alterac Valley's three
     // rows and nothing for the other two battlegrounds.
-    g.set(
-        "GetNumMapOverlays",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(revealed_overlays(&model.worldmap).len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumMapOverlays", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(revealed_overlays(&model.worldmap).len() as i64)
+    })?;
 
     // GetMapOverlayInfo(i) → textureName, textureWidth, textureHeight, offsetX, offsetY,
     // mapPointX, mapPointY — the i-th (1-based) revealed overlay. The texture is the full path
     // prefix (the Lua appends the piece number); mapPointX/Y are 0 on every 5875 row.
-    g.set(
-        "GetMapOverlayInfo",
-        lua.create_function(|lua, i: i64| {
-            let overlay = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                usize::try_from(i)
-                    .ok()
-                    .and_then(|i| i.checked_sub(1))
-                    .and_then(|i| revealed_overlays(&model.worldmap).get(i).cloned().cloned())
-            };
-            let Some(o) = overlay else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&o.texture)?),
-                Value::Integer(i64::from(o.width)),
-                Value::Integer(i64::from(o.height)),
-                Value::Integer(i64::from(o.offset_x)),
-                Value::Integer(i64::from(o.offset_y)),
-                Value::Integer(0),
-                Value::Integer(0),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetMapOverlayInfo", |lua, i: i64| {
+        let overlay = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            usize::try_from(i)
+                .ok()
+                .and_then(|i| i.checked_sub(1))
+                .and_then(|i| revealed_overlays(&model.worldmap).get(i).cloned().cloned())
+        };
+        let Some(o) = overlay else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from(vec![
+            Value::from(o.texture),
+            Value::Integer(i64::from(o.width)),
+            Value::Integer(i64::from(o.height)),
+            Value::Integer(i64::from(o.offset_x)),
+            Value::Integer(i64::from(o.offset_y)),
+            Value::Integer(0),
+            Value::Integer(0),
+        ]))
+    })?;
 
     Ok(())
 }

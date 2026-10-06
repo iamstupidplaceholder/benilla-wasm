@@ -3,7 +3,7 @@
 //! resolve pipeline). Each `pub(super)` fn here is exactly one arm's body; the match at the call
 //! site stays the dispatcher, one call per arm.
 
-use std::time::{Duration, Instant};
+use benilla_time::{Duration, Instant};
 
 use benilla_formats::LearnAnnouncement;
 use benilla_protocol::messages::{ActionButton, SpellCooldown};
@@ -257,7 +257,9 @@ pub(super) fn cast_result(
         let fails_our_cast =
             self_e.is_some_and(|e| casting.get(e).is_ok_and(|c| c.spell_id == spell_id));
         if *crate::net::CAST_TRACE {
-            info!("cast-trace: RECV CAST_RESULT failure — spell {spell_id} reason={reason:?}; fails_bar={fails_our_cast}");
+            info!(
+                "cast-trace: RECV CAST_RESULT failure — spell {spell_id} reason={reason:?}; fails_bar={fails_our_cast}"
+            );
         }
         // Open the in-flight guard regardless (the send-guard means the spurious "duplicate
         // rejected" failure no longer arrives here at all). A queued on-next-swing strike dies
@@ -283,7 +285,7 @@ pub(super) fn cast_result(
         if fails_our_cast {
             cast_bar.0.push(CastBarEdge::Failed);
         }
-        // Our own cast died (`SMSG_SPELL_FAILURE` is never sent — decision 0099): end the self
+        // Our own cast died: end the self
         // avatar's cast state + precast hold, spell-id-keyed like every reap.
         if let Some(e) = self_e {
             if fails_our_cast {
@@ -574,7 +576,9 @@ pub(super) fn spell_go(
             .get(&caster)
             .is_some_and(|&e| casting.get(e).is_ok_and(|c| c.spell_id == spell_id));
         if *crate::net::CAST_TRACE {
-            info!("cast-trace: RECV SPELL_GO — spell {spell_id} (self); completes_bar={completes_our_cast}");
+            info!(
+                "cast-trace: RECV SPELL_GO — spell {spell_id} (self); completes_bar={completes_our_cast}"
+            );
         }
         if completes_our_cast {
             cast_bar.0.push(CastBarEdge::Stop);
@@ -822,7 +826,9 @@ pub(super) fn spell_failed_other(
             .get(&caster)
             .is_some_and(|&e| casting.get(e).is_ok_and(|c| c.spell_id == spell_id));
         if *crate::net::CAST_TRACE {
-            info!("cast-trace: RECV SPELL_FAILED_OTHER — spell {spell_id} (self); interrupts_bar={interrupts_our_cast}");
+            info!(
+                "cast-trace: RECV SPELL_FAILED_OTHER — spell {spell_id} (self); interrupts_bar={interrupts_our_cast}"
+            );
         }
         if interrupts_our_cast {
             cast_bar.0.push(CastBarEdge::Interrupted);
@@ -861,7 +867,9 @@ pub(super) fn spell_delayed(
     debug!("net: spell delayed by {caster:#x} (+{delay_ms}ms pushback)");
     if self_guid.0 == Some(caster) {
         if *crate::net::CAST_TRACE {
-            info!("cast-trace: RECV SPELL_DELAYED — +{delay_ms}ms pushback (bar extends, does NOT vanish)");
+            info!(
+                "cast-trace: RECV SPELL_DELAYED — +{delay_ms}ms pushback (bar extends, does NOT vanish)"
+            );
         }
         cast_bar.0.push(CastBarEdge::Delayed { delay_ms });
         // Keep the in-flight guard (decision 0256 / the spam fix) holding past the stretched end.

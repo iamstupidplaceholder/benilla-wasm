@@ -10,8 +10,9 @@
 //! that fails the build can never disagree about what our surface is.
 use benilla_ui::script::{widget_method_census, UiScript};
 
-fn main() -> mlua::Result<()> {
-    for (class, method) in widget_method_census(&UiScript::new()?)? {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut script = UiScript::new()?;
+    for (class, method) in widget_method_census(&mut script)? {
         println!("{class}\t{method}");
     }
     Ok(())

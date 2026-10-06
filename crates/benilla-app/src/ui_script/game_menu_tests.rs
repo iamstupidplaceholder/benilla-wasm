@@ -57,7 +57,7 @@ fn harness_with(extra: &[&str]) -> UiScript {
     let mut loaded = std::collections::HashSet::new();
     for file in files {
         if loaded.insert(file) {
-            load_xml(&s, file);
+            load_xml(&mut s, file);
         }
     }
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
@@ -155,7 +155,7 @@ fn the_menu_has_the_era_frame_and_button_ladder() {
 #[test]
 fn the_unbacked_entries_are_disabled_and_the_rest_are_live() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness();
+    let mut s = harness();
     s.run("ShowUIPanel(GameMenuFrame)").unwrap();
 
     for name in ["GameMenuButtonEditMode", "GameMenuButtonSupport"] {
@@ -178,15 +178,14 @@ fn the_unbacked_entries_are_disabled_and_the_rest_are_live() {
             "{name} is live"
         );
     }
-    // The labels read the era strings (Edit Mode through the HUD_EDIT_MODE_MENU global — the
-    // label has to come from the string rather than a literal).
+    // Project-owned era labels use the options text catalog when it is loaded.
+    // This partial harness without OptionsFrame keeps the English label.
     assert_eq!(
         s.eval::<String>("return GameMenuButtonEditMode:GetText()")
             .unwrap(),
         "Edit Mode"
     );
-    // Continue's label is the reference GlobalString, read back through the global; Options is
-    // the one literal (1.12 GlobalStrings has no GAMEOPTIONS_MENU — the XML says so).
+    // Continue's label is the reference GlobalString; Options is project-owned.
     assert_eq!(
         s.eval::<String>("return GameMenuButtonContinue:GetText()")
             .unwrap(),
@@ -577,7 +576,7 @@ fn escape_during_a_countdown_cancels_it_and_does_not_open_the_menu() {
 #[test]
 fn the_world_map_cannot_open_behind_the_menu_and_gives_its_slot_back() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness_with(&[
+    let mut s = harness_with(&[
         "Interface\\FrameXML\\GameTooltip.xml",
         "Interface\\FrameXML\\UIDropDownMenu.xml", // the map's continent/zone pickers initialize into it at OnLoad
         "ScrollTemplates.xml",
@@ -638,7 +637,7 @@ fn the_world_map_cannot_open_behind_the_menu_and_gives_its_slot_back() {
 #[test]
 fn nothing_opens_behind_the_world_map_and_escape_closes_it_first() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = harness_with(&[
+    let mut s = harness_with(&[
         "Interface\\FrameXML\\GameTooltip.xml",
         "Interface\\FrameXML\\UIDropDownMenu.xml",
         "ScrollTemplates.xml",

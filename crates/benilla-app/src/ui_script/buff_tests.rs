@@ -25,30 +25,30 @@ fn harness() -> UiScript {
     // The one-letter duration strings (DAY/HOUR/MINUTE/SECOND_ONELETTER_ABBR) the bar prints
     // under a timed aura. Our copy carried them as `X = X or "%d s"` fallbacks; the reference's
     // file formats them straight and `format(nil, …)` raises.
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml"); // NORMAL/HIGHLIGHT_FONT_COLOR + the FontStrings' faces
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml"); // NORMAL/HIGHLIGHT_FONT_COLOR + the FontStrings' faces
                                                     // `GameTooltip`, which the reference's BuffButton_Update indexes on EVERY repaint to ask
                                                     // `IsOwned(this)` (BuffFrame.lua l.104) — not just on hover. Ours guarded it; the reference
                                                     // does not, so a session without the tooltip loses the whole repaint.
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
     // `SecondsToTimeAbbrev`, which 1.12 keeps in UIParent.lua and so do we since window 18.
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\Cooldown.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.lua");
-    load_xml(&s, "Interface\\FrameXML\\TextStatusBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\MainMenuBar.xml");
-    load_xml(&s, "Interface\\FrameXML\\ActionBarFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\BonusActionBarFrame.xml"); // BENILLA_FALLBACK_ICON (the unknown-icon fallback)
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Cooldown.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\TextStatusBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MainMenuBar.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ActionBarFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BonusActionBarFrame.xml"); // BENILLA_FALLBACK_ICON (the unknown-icon fallback)
                                                                   // The timer switch, PLANTED ON — not the shipped value. 1.12 declares it in
                                                                   // UIOptionsFrame.lua (default "0"); we have no counterpart to that file, so it lives with the
                                                                   // row that drives it (OptionsFrame.xml), where it shipped "1" from 0255/1139 until 1804 put
@@ -58,12 +58,12 @@ fn harness() -> UiScript {
                                                                   // row 20px differently depending on this value, so setting it afterwards leaves the bar laid
                                                                   // out for the wrong one.
     s.run("SHOW_BUFF_DURATIONS = \"1\"").unwrap();
-    load_xml(&s, "Interface\\FrameXML\\BuffFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BuffFrame.xml");
     // …and APPLIED, the way the app applies it (`manifest::apply_buff_durations`).
     // `BuffFrame_OnLoad` does not call `BuffButtons_UpdatePositions`: in 1.12 that is
     // `UIOptionsFrame.lua`'s job and we have no counterpart to that file. A session that skips it
     // is laid out for durations-OFF while the setting says on.
-    super::manifest::apply_buff_durations(&s).unwrap();
+    super::manifest::apply_buff_durations(&mut s).unwrap();
     s
 }
 
@@ -115,16 +115,16 @@ fn frame(s: &mut UiScript, dt: f32) -> Vec<ExtractedQuad> {
     s.extract()
 }
 
-fn shown(s: &UiScript, name: &str) -> bool {
+fn shown(s: &mut UiScript, name: &str) -> bool {
     s.eval::<bool>(&format!("return {name}:IsShown()")).unwrap()
 }
 
-fn text(s: &UiScript, name: &str) -> String {
+fn text(s: &mut UiScript, name: &str) -> String {
     s.eval::<String>(&format!("return tostring(({name}:GetText()) or \"\")"))
         .unwrap()
 }
 
-fn alpha(s: &UiScript, name: &str) -> f64 {
+fn alpha(s: &mut UiScript, name: &str) -> f64 {
     s.eval::<f64>(&format!("return {name}:GetAlpha()")).unwrap()
 }
 
@@ -168,10 +168,10 @@ fn buffs_and_debuffs_fill_their_own_rows_with_counts_and_the_dispel_tint() {
     let quads = frame(&mut s, 0.1);
 
     // The buff takes the first helpful button, the debuff the first harmful one; the rest hide.
-    assert!(shown(&s, "BuffButton0"), "first buff -> BuffButton0");
-    assert!(!shown(&s, "BuffButton1"), "no second buff");
-    assert!(shown(&s, "BuffButton16"), "first debuff -> BuffButton16");
-    assert!(!shown(&s, "BuffButton17"), "no second debuff");
+    assert!(shown(&mut s, "BuffButton0"), "first buff -> BuffButton0");
+    assert!(!shown(&mut s, "BuffButton1"), "no second buff");
+    assert!(shown(&mut s, "BuffButton16"), "first debuff -> BuffButton16");
+    assert!(!shown(&mut s, "BuffButton17"), "no second debuff");
 
     // Both icons drew.
     assert!(
@@ -208,8 +208,8 @@ fn buffs_and_debuffs_fill_their_own_rows_with_counts_and_the_dispel_tint() {
     }
 
     // Stack count shows only above 1: the 3-stack debuff shows "3", the single buff shows nothing.
-    assert_eq!(text(&s, "BuffButton16Count"), "3");
-    assert_eq!(text(&s, "BuffButton0Count"), "");
+    assert_eq!(text(&mut s, "BuffButton16Count"), "3");
+    assert_eq!(text(&mut s, "BuffButton0Count"), "");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -247,12 +247,12 @@ fn a_timed_aura_counts_down_and_a_permanent_one_shows_no_timer() {
     frame(&mut s, 0.1);
 
     assert!(
-        !shown(&s, "BuffButton0Duration"),
+        !shown(&mut s, "BuffButton0Duration"),
         "a permanent aura shows no timer (our 'until cancelled')"
     );
-    assert!(shown(&s, "BuffButton1Duration"));
+    assert!(shown(&mut s, "BuffButton1Duration"));
     assert_eq!(
-        text(&s, "BuffButton1Duration"),
+        text(&mut s, "BuffButton1Duration"),
         "2 m",
         "120s remaining abbreviates to minutes"
     );
@@ -294,8 +294,8 @@ fn the_warning_flash_pulses_a_low_aura_but_leaves_a_long_one_solid() {
     let (mut short_min, mut long_min) = (2.0_f64, 2.0_f64);
     for _ in 0..20 {
         s.tick(0.1);
-        short_min = short_min.min(alpha(&s, "BuffButton1"));
-        long_min = long_min.min(alpha(&s, "BuffButton0"));
+        short_min = short_min.min(alpha(&mut s, "BuffButton1"));
+        long_min = long_min.min(alpha(&mut s, "BuffButton0"));
     }
     assert!(
         short_min < 0.9,
@@ -357,15 +357,15 @@ fn an_emptied_bar_hides_every_button() {
         )],
     );
     frame(&mut s, 0.1);
-    assert!(shown(&s, "BuffButton0"), "shown while the aura is up");
+    assert!(shown(&mut s, "BuffButton0"), "shown while the aura is up");
 
     // The aura drops: the feed pushes an empty list and re-fires. The button hides, and so does its
     // timer — a HIDDEN region since 1139, where it used to be blanked, so the text it last drew is
     // stale and beside the point; what the bar promises is that nothing paints.
     push(&mut s, vec![]);
     frame(&mut s, 0.1);
-    assert!(!shown(&s, "BuffButton0"), "hidden once the aura is gone");
-    assert!(!shown(&s, "BuffButton0Duration"));
+    assert!(!shown(&mut s, "BuffButton0"), "hidden once the aura is gone");
+    assert!(!shown(&mut s, "BuffButton0Duration"));
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -400,20 +400,20 @@ fn a_refreshed_duration_reaches_the_bar_with_no_aura_event() {
     // 20s out. After the tick GetTime()=0.1 -> 19.9s -> "19 s" (SecondsToTimeAbbrev floors via %d).
     push(&mut s, vec![mark(20.0)]);
     frame(&mut s, 0.1);
-    assert_eq!(text(&s, "BuffButton0Duration"), "19 s");
+    assert_eq!(text(&mut s, "BuffButton0Duration"), "19 s");
 
     // The refresh: a new expiry, everything discrete unchanged — so the feed pushes the list and
     // fires NOTHING. The button must still pick the new expiry up on its next frame.
     s.set_auras("player", Some(vec![mark(300.0)]));
     frame(&mut s, 0.1);
     assert_eq!(
-        text(&s, "BuffButton0Duration"),
+        text(&mut s, "BuffButton0Duration"),
         "5 m",
         "the countdown re-reads the aura every frame; it does not wait for an event"
     );
     // ...and the flash follows it back out of the warning window (20s pulsed, 300s is solid).
     assert!(
-        (alpha(&s, "BuffButton0") - 1.0).abs() < 1e-6,
+        (alpha(&mut s, "BuffButton0") - 1.0).abs() < 1e-6,
         "no longer inside the 31s warning window, so full alpha"
     );
 
@@ -433,14 +433,14 @@ fn a_refreshed_duration_reaches_the_bar_with_no_aura_event() {
     s.set_auras("player", Some(vec![pending]));
     frame(&mut s, 0.1);
     assert_eq!(
-        text(&s, "BuffButton0Duration"),
+        text(&mut s, "BuffButton0Duration"),
         "0 s",
         "the reference draws the floor of a timed aura it has no stamp for, not a blank"
     );
     s.set_auras("player", Some(vec![mark(60.0)])); // the stamp joins, still no event
     frame(&mut s, 0.1);
     assert_eq!(
-        text(&s, "BuffButton0Duration"),
+        text(&mut s, "BuffButton0Duration"),
         "59 s",
         "a duration that lands after the icon still reaches the bar"
     );
@@ -473,10 +473,10 @@ fn the_duration_switch_hides_the_timers_and_closes_their_gutter() {
     );
     frame(&mut s, 0.1);
     assert!(
-        shown(&s, "BuffButton0Duration"),
+        shown(&mut s, "BuffButton0Duration"),
         "timers on — the harness planted the switch"
     );
-    assert_eq!(text(&s, "BuffButton0Duration"), "19 s");
+    assert_eq!(text(&mut s, "BuffButton0Duration"), "19 s");
     s.resolve();
     let shown_gap = s
         .eval::<f64>("return BuffButton0:GetBottom() - BuffButton8:GetTop()")
@@ -487,15 +487,15 @@ fn the_duration_switch_hides_the_timers_and_closes_their_gutter() {
     s.run("SHOW_BUFF_DURATIONS = \"0\"; BuffButtons_UpdatePositions()")
         .unwrap();
     frame(&mut s, 0.1);
-    assert!(!shown(&s, "BuffButton0Duration"), "no timer drawn");
-    assert!(shown(&s, "BuffButton0"), "the icon stays");
+    assert!(!shown(&mut s, "BuffButton0Duration"), "no timer drawn");
+    assert!(shown(&mut s, "BuffButton0"), "the icon stays");
     s.resolve();
     let hidden_gap = s
         .eval::<f64>("return BuffButton0:GetBottom() - BuffButton8:GetTop()")
         .unwrap();
     assert!((hidden_gap - 5.0).abs() < 1e-3, "gutter: {hidden_gap}");
     assert!(
-        alpha(&s, "BuffButton0") < 1.0,
+        alpha(&mut s, "BuffButton0") < 1.0,
         "the last-31s pulse is not gated on the timers"
     );
 
@@ -503,8 +503,8 @@ fn the_duration_switch_hides_the_timers_and_closes_their_gutter() {
     s.run("SHOW_BUFF_DURATIONS = \"1\"; BuffButtons_UpdatePositions()")
         .unwrap();
     frame(&mut s, 0.1);
-    assert!(shown(&s, "BuffButton0Duration"));
-    assert_eq!(text(&s, "BuffButton0Duration"), "19 s");
+    assert!(shown(&mut s, "BuffButton0Duration"));
+    assert_eq!(text(&mut s, "BuffButton0Duration"), "19 s");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
@@ -609,7 +609,7 @@ fn the_buttons_and_the_corpus_walk_agree_on_the_cache_positions() {
         ("BuffButton16", 1), // harmful ordinal 0 -> position 1
         ("BuffButton17", 3), // harmful ordinal 1 -> position 3
     ] {
-        assert!(shown(&s, button), "{button} draws its aura");
+        assert!(shown(&mut s, button), "{button} draws its aura");
         assert_eq!(
             s.eval::<i64>(&format!("return {button}.buffIndex"))
                 .unwrap(),
@@ -618,8 +618,8 @@ fn the_buttons_and_the_corpus_walk_agree_on_the_cache_positions() {
         );
     }
     // The rows stop where the filter runs out; nothing bleeds across.
-    assert!(!shown(&s, "BuffButton3"), "only three buffs");
-    assert!(!shown(&s, "BuffButton18"), "only two debuffs");
+    assert!(!shown(&mut s, "BuffButton3"), "only three buffs");
+    assert!(!shown(&mut s, "BuffButton18"), "only two debuffs");
     assert_eq!(
         s.eval::<i64>("return BuffButton3.buffIndex").unwrap(),
         -1,
@@ -628,10 +628,10 @@ fn the_buttons_and_the_corpus_walk_agree_on_the_cache_positions() {
 
     // The reads that hang off the position land on the right aura: the 3-stack Magic debuff and
     // the 5-stack Poison one are in the right buttons, tinted from their own dispel classes.
-    assert_eq!(text(&s, "BuffButton16Count"), "3");
-    assert_eq!(text(&s, "BuffButton17Count"), "5");
+    assert_eq!(text(&mut s, "BuffButton16Count"), "3");
+    assert_eq!(text(&mut s, "BuffButton17Count"), "5");
     assert_eq!(
-        text(&s, "BuffButton0Count"),
+        text(&mut s, "BuffButton0Count"),
         "",
         "a single stack shows nothing"
     );
@@ -716,10 +716,10 @@ fn the_temporary_enchant_row_shows_a_weapon_enchant_and_moves_the_top_row_aside(
 
     // Nothing enchanted: both slots hidden, and the bar sits where it has always sat.
     assert!(
-        !shown(&s, "TempEnchant1"),
+        !shown(&mut s, "TempEnchant1"),
         "the enchant slots are not buff buttons: no aura may reach them"
     );
-    assert!(!shown(&s, "TempEnchant2"));
+    assert!(!shown(&mut s, "TempEnchant2"));
     // The direct probe, and its exact shape is the point. `BuffButtonTempEnchant` inherits
     // `BuffButtonTemplate` and blanks its three aura handlers with `<OnLoad>`↵`</OnLoad>` — a
     // WHITESPACE body, which 1.12 compiles into a valid empty function rather than storing nil
@@ -766,17 +766,17 @@ fn the_temporary_enchant_row_shows_a_weapon_enchant_and_moves_the_top_row_aside(
     );
     frame(&mut s, 0.1);
     assert!(
-        shown(&s, "TempEnchant1"),
+        shown(&mut s, "TempEnchant1"),
         "the enchanted weapon takes slot 1"
     );
-    assert!(!shown(&s, "TempEnchant2"));
+    assert!(!shown(&mut s, "TempEnchant2"));
     assert_eq!(
         s.eval::<i64>("return TempEnchant1:GetID()").unwrap(),
         16,
         "the live-API MainHandSlot id, which is what its item tooltip hover needs"
     );
     assert_eq!(
-        text(&s, "TempEnchant1Duration"),
+        text(&mut s, "TempEnchant1Duration"),
         "8 m",
         "480000 ms / 1000 -> 480 s -> SecondsToTimeAbbrev"
     );
@@ -805,7 +805,7 @@ fn the_temporary_enchant_row_shows_a_weapon_enchant_and_moves_the_top_row_aside(
     // And back: the enchant drops, the row hides and the bar returns to its resting point.
     s.set_weapon_enchants(None, None);
     frame(&mut s, 0.1);
-    assert!(!shown(&s, "TempEnchant1"));
+    assert!(!shown(&mut s, "TempEnchant1"));
     s.resolve();
     assert!((s.eval::<f64>("return BuffFrame:GetRight()").unwrap() - resting).abs() < 1e-3);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
@@ -850,7 +850,7 @@ fn an_idle_enchant_row_rewrites_the_bar_as_the_reference_does() {
     }
     assert!(s.errors().is_empty(), "{:?}", s.errors());
     assert!(
-        !shown(&s, "TempEnchant1"),
+        !shown(&mut s, "TempEnchant1"),
         "the reference's idle branch re-hides the slot on every tick"
     );
     let displaced = s.eval::<f64>("return BuffFrame:GetRight()").unwrap();
@@ -872,15 +872,15 @@ fn an_idle_enchant_row_rewrites_the_bar_as_the_reference_does() {
         }),
     );
     frame(&mut s, 0.1);
-    assert!(shown(&s, "TempEnchant1") && shown(&s, "TempEnchant2"));
+    assert!(shown(&mut s, "TempEnchant1") && shown(&mut s, "TempEnchant2"));
     assert_eq!(
         s.eval::<i64>("return TempEnchant1:GetID()").unwrap(),
         17,
         "off hand first: slot 1 is the OffHandSlot id"
     );
     assert_eq!(s.eval::<i64>("return TempEnchant2:GetID()").unwrap(), 16);
-    assert_eq!(text(&s, "TempEnchant1Duration"), "2 m");
-    assert_eq!(text(&s, "TempEnchant2Duration"), "8 m");
+    assert_eq!(text(&mut s, "TempEnchant1Duration"), "2 m");
+    assert_eq!(text(&mut s, "TempEnchant2Duration"), "8 m");
     s.resolve();
     assert_eq!(
         s.eval::<f64>("return TemporaryEnchantFrame:GetWidth()")
@@ -897,7 +897,7 @@ fn an_idle_enchant_row_rewrites_the_bar_as_the_reference_does() {
     // And back to empty: the transition still writes (the latch re-arms, not re-fires).
     s.set_weapon_enchants(None, None);
     frame(&mut s, 0.1);
-    assert!(!shown(&s, "TempEnchant1") && !shown(&s, "TempEnchant2"));
+    assert!(!shown(&mut s, "TempEnchant1") && !shown(&mut s, "TempEnchant2"));
     s.resolve();
     let parked = s.eval::<f64>("return BuffFrame:GetRight()").unwrap();
     assert!(
@@ -940,7 +940,7 @@ fn a_settled_buff_button_rewrites_alpha_and_duration_as_the_reference_does() {
     );
     frame(&mut s, 0.1); // the event repaint + the poll's first write ("5 m", alpha 1.0)
     frame(&mut s, 0.1);
-    assert_eq!(text(&s, "BuffButton0Duration"), "5 m");
+    assert_eq!(text(&mut s, "BuffButton0Duration"), "5 m");
 
     s.run(r#"BuffButton0:SetAlpha(0.42); BuffButton0Duration:SetText("X")"#)
         .unwrap();
@@ -949,12 +949,12 @@ fn a_settled_buff_button_rewrites_alpha_and_duration_as_the_reference_does() {
     }
     assert!(s.errors().is_empty(), "{:?}", s.errors());
     assert!(
-        (alpha(&s, "BuffButton0") - 1.0).abs() < 1e-6,
+        (alpha(&mut s, "BuffButton0") - 1.0).abs() < 1e-6,
         "the reference's OnUpdate writes a fresh alpha every tick — got {}",
-        alpha(&s, "BuffButton0")
+        alpha(&mut s, "BuffButton0")
     );
     assert_eq!(
-        text(&s, "BuffButton0Duration"),
+        text(&mut s, "BuffButton0Duration"),
         "5 m",
         "…and re-writes the duration with it, unchanged or not"
     );
@@ -962,7 +962,7 @@ fn a_settled_buff_button_rewrites_alpha_and_duration_as_the_reference_does() {
     // Control 1: a REAL text change flows — the abbreviation drops to "4 m" past the boundary.
     s.tick(60.0);
     assert_eq!(
-        text(&s, "BuffButton0Duration"),
+        text(&mut s, "BuffButton0Duration"),
         "4 m",
         "the minute rollover overwrites the sentinel: the gate passes real changes"
     );
@@ -971,17 +971,17 @@ fn a_settled_buff_button_rewrites_alpha_and_duration_as_the_reference_does() {
     // number wears the sub-minute HIGHLIGHT white (the band is part of the write tuple).
     s.tick(210.0); // ~29.5s left
     s.resolve();
-    let a1 = alpha(&s, "BuffButton0");
+    let a1 = alpha(&mut s, "BuffButton0");
     s.tick(0.2);
-    let a2 = alpha(&s, "BuffButton0");
+    let a2 = alpha(&mut s, "BuffButton0");
     s.tick(0.3);
-    let a3 = alpha(&s, "BuffButton0");
+    let a3 = alpha(&mut s, "BuffButton0");
     assert!(
         a1 != a2 && a2 != a3,
         "the warning pulse flows through the gate per tick: {a1} {a2} {a3}"
     );
     s.resolve();
-    let seconds_text = text(&s, "BuffButton0Duration");
+    let seconds_text = text(&mut s, "BuffButton0Duration");
     assert!(
         seconds_text.ends_with(" s"),
         "inside the last minute the timer counts seconds: {seconds_text}"

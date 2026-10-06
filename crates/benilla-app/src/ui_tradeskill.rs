@@ -25,7 +25,7 @@
 //! client holds neither a focus id nor a radius to test proximity with. The server refusing the
 //! cast is the whole of the feedback, there as here.
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use bevy::prelude::*;
 
@@ -107,7 +107,7 @@ fn load_spell_focus(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_spell_focus_catalog(&mut chain)
+        benilla_formats::load_spell_focus_catalog(&mut *chain)
     };
     match loaded {
         Ok(catalog) => {
@@ -390,11 +390,8 @@ fn feed_trade_skill(
         let skill_lines = skill_lines.as_deref()?;
         let store = self_store.single().ok()?;
         let (rank, max_rank) = skill_rank(store, line);
-        let line_name = skill_lines
-            .catalog
-            .line(line)
-            .map(|l| l.name.clone())
-            .unwrap_or_else(|| format!("Skill {line}"));
+        // A missing original row is not an English placeholder profession.
+        let line_name = skill_lines.catalog.line(line)?.name.clone();
         let now = Instant::now();
         let recipes: Vec<TradeSkillRecipe> = actions
             .spells

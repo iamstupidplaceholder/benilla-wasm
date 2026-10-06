@@ -23,7 +23,7 @@
 
 pub mod bindings_xml;
 pub mod civil;
-pub mod framexml;
+pub use benilla_framexml as framexml;
 pub mod justify;
 pub mod layout;
 pub mod loader;
@@ -31,7 +31,16 @@ pub mod markup;
 pub mod messages;
 pub mod order;
 pub mod script;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub mod script_cvar_types;
+mod script_data;
+mod script_game_data;
+mod script_runtime;
+#[path = "script/types.rs"]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub mod script_types;
 pub mod source;
 pub mod strings;
 pub mod toc;
+pub mod web_script;
 pub mod widget;

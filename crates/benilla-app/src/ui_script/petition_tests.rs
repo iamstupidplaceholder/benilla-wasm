@@ -123,17 +123,17 @@ fn setup() -> UiScript {
     s
 }
 
-fn text(s: &UiScript, expr: &str) -> String {
+fn text(s: &mut UiScript, expr: &str) -> String {
     s.eval::<String>(&format!("return {expr}:GetText() or \"\""))
         .unwrap_or_else(|e| panic!("{expr}:GetText() — {e}"))
 }
 
-fn visible(s: &UiScript, frame: &str) -> bool {
+fn visible(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsVisible()"))
         .unwrap_or_else(|e| panic!("{frame}:IsVisible() — {e}"))
 }
 
-fn calls(s: &UiScript) -> String {
+fn calls(s: &mut UiScript) -> String {
     s.eval::<String>("return BenillaPetitionCalls()").unwrap()
 }
 
@@ -164,24 +164,24 @@ fn a_signers_charter_shows_the_sign_face_and_nine_rows() {
     let mut s = setup();
     show_petition(&mut s);
 
-    assert!(visible(&s, "PetitionFrame"));
+    assert!(visible(&mut s, "PetitionFrame"));
     assert_eq!(
-        text(&s, "PetitionFrameNpcNameText"),
+        text(&mut s, "PetitionFrameNpcNameText"),
         "Legacy of Steel Guild Charter",
         "GUILD_CHARTER_TEMPLATE filled with the title"
     );
-    assert_eq!(text(&s, "PetitionFrameCharterName"), "Legacy of Steel");
-    assert_eq!(text(&s, "PetitionFrameMasterName"), "Tigole");
+    assert_eq!(text(&mut s, "PetitionFrameCharterName"), "Legacy of Steel");
+    assert_eq!(text(&mut s, "PetitionFrameMasterName"), "Tigole");
     // The three static labels come from GlobalStrings via `text=` and are never painted.
-    assert_eq!(text(&s, "PetitionFrameCharterTitle"), "Guild Name");
-    assert_eq!(text(&s, "PetitionFrameMasterTitle"), "Guild Master");
-    assert_eq!(text(&s, "PetitionFrameMemberTitle"), "Members");
+    assert_eq!(text(&mut s, "PetitionFrameCharterTitle"), "Guild Name");
+    assert_eq!(text(&mut s, "PetitionFrameMasterTitle"), "Guild Master");
+    assert_eq!(text(&mut s, "PetitionFrameMemberTitle"), "Members");
 
-    assert_eq!(text(&s, "PetitionFrameMemberName1"), "Furor");
-    assert_eq!(text(&s, "PetitionFrameMemberName2"), "Kaplan");
+    assert_eq!(text(&mut s, "PetitionFrameMemberName1"), "Furor");
+    assert_eq!(text(&mut s, "PetitionFrameMemberName2"), "Kaplan");
     for i in 3..=9 {
         assert_eq!(
-            text(&s, &format!("PetitionFrameMemberName{i}")),
+            text(&mut s, &format!("PetitionFrameMemberName{i}")),
             "<not yet signed>",
             "row {i} is an empty seat"
         );
@@ -201,16 +201,16 @@ fn a_signers_charter_shows_the_sign_face_and_nine_rows() {
         "PetitionFrameCancelButton",
         "PetitionFrameCloseButton",
     ] {
-        assert!(visible(&s, part), "{part} is on screen");
+        assert!(visible(&mut s, part), "{part} is on screen");
     }
-    assert!(visible(&s, "PetitionFrameSignButton"));
-    assert!(!visible(&s, "PetitionFrameRequestButton"));
+    assert!(visible(&mut s, "PetitionFrameSignButton"));
+    assert!(!visible(&mut s, "PetitionFrameRequestButton"));
     assert!(
-        !visible(&s, "PetitionFrameRenameButton"),
+        !visible(&mut s, "PetitionFrameRenameButton"),
         "only the charter's owner may rename it"
     );
     assert_eq!(
-        text(&s, "PetitionFrameInstructions"),
+        text(&mut s, "PetitionFrameInstructions"),
         "Click the <Sign Charter> button to become a charter member of this guild."
     );
 }
@@ -228,11 +228,11 @@ fn the_owners_charter_swaps_sign_for_request_and_rename() {
     s.run("BenillaPetitionFixture.isOriginator = 1").unwrap();
     show_petition(&mut s);
 
-    assert!(visible(&s, "PetitionFrameRequestButton"));
-    assert!(visible(&s, "PetitionFrameRenameButton"));
-    assert!(!visible(&s, "PetitionFrameSignButton"));
+    assert!(visible(&mut s, "PetitionFrameRequestButton"));
+    assert!(visible(&mut s, "PetitionFrameRenameButton"));
+    assert!(!visible(&mut s, "PetitionFrameSignButton"));
     assert_eq!(
-        text(&s, "PetitionFrameInstructions"),
+        text(&mut s, "PetitionFrameInstructions"),
         "Select a player you wish to invite and click <request signature>.   To create this \
          guild, turn it in to the guild registrar when you have filled the charter."
     );
@@ -271,7 +271,7 @@ fn request_signature_disables_at_the_wires_requirement_not_at_nine() {
         "four of four — the charter is full, though only four of nine rows are used"
     );
     assert_eq!(
-        text(&s, "PetitionFrameMemberName5"),
+        text(&mut s, "PetitionFrameMemberName5"),
         "<not yet signed>",
         "the nine rows are unaffected by the requirement"
     );
@@ -296,7 +296,7 @@ fn the_sign_button_follows_can_sign_petition() {
         "nil, the era false, disables it"
     );
     assert!(
-        visible(&s, "PetitionFrameSignButton"),
+        visible(&mut s, "PetitionFrameSignButton"),
         "disabled, not hidden — hiding would expose the Request button beneath it"
     );
 }
@@ -310,20 +310,20 @@ fn the_charter_buttons_reach_their_verbs_and_the_close_clears_the_session() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
     show_petition(&mut s);
-    let _ = calls(&s);
+    let _ = calls(&mut s);
 
     s.run("PetitionFrameSignButton:Click()").unwrap();
-    assert_eq!(calls(&s), "SignPetition");
+    assert_eq!(calls(&mut s), "SignPetition");
 
     s.run("BenillaPetitionFixture.isOriginator = 1").unwrap();
     show_petition(&mut s);
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("PetitionFrameRequestButton:Click()").unwrap();
-    assert_eq!(calls(&s), "OfferPetition");
+    assert_eq!(calls(&mut s), "OfferPetition");
 
     s.run("HideUIPanel(PetitionFrame)").unwrap();
-    assert!(!visible(&s, "PetitionFrame"));
-    assert_eq!(calls(&s), "ClosePetition", "OnHide clears the session");
+    assert!(!visible(&mut s, "PetitionFrame"));
+    assert_eq!(calls(&mut s), "ClosePetition", "OnHide clears the session");
 }
 
 /// The rename dialog is registered, takes the box's text, and is capped at the server's own
@@ -334,7 +334,7 @@ fn rename_guild_sends_the_box_text_and_caps_at_twenty_four() {
     let mut s = setup();
     s.run("BenillaPetitionFixture.isOriginator = 1").unwrap();
     show_petition(&mut s);
-    let _ = calls(&s);
+    let _ = calls(&mut s);
 
     s.run("PetitionFrameRenameButton:Click()").unwrap();
     assert!(s.errors().is_empty(), "{:?}", s.errors());
@@ -345,7 +345,7 @@ fn rename_guild_sends_the_box_text_and_caps_at_twenty_four() {
         "the server's MAX_CHARTER_NAME"
     );
     assert!(
-        visible(&s, "StaticPopup1"),
+        visible(&mut s, "StaticPopup1"),
         "the popup engine raised the dialog"
     );
     s.run(
@@ -355,7 +355,7 @@ fn rename_guild_sends_the_box_text_and_caps_at_twenty_four() {
     "#,
     )
     .unwrap();
-    assert_eq!(calls(&s), "RenamePetition:Second Legacy");
+    assert_eq!(calls(&mut s), "RenamePetition:Second Legacy");
 }
 
 /// The registrar opens on its services list, and Purchase swaps panels **locally** — no verb, no
@@ -367,9 +367,9 @@ fn the_registrar_opens_on_services_and_purchase_is_a_local_panel_swap() {
     let mut s = setup();
     show_registrar(&mut s);
 
-    assert!(visible(&s, "GuildRegistrarFrame"));
-    assert!(visible(&s, "GuildRegistrarGreetingFrame"));
-    assert!(!visible(&s, "GuildRegistrarPurchaseFrame"));
+    assert!(visible(&mut s, "GuildRegistrarFrame"));
+    assert!(visible(&mut s, "GuildRegistrarGreetingFrame"));
+    assert!(!visible(&mut s, "GuildRegistrarPurchaseFrame"));
     // **The two service rows must be VISIBLE, not merely labelled.** This assertion is here
     // because its absence shipped the bug: the rows inherited `hidden="true"` from a template
     // modelled on the quest list's POOLED rows, which are shown one at a time by code. These are
@@ -378,21 +378,21 @@ fn the_registrar_opens_on_services_and_purchase_is_a_local_panel_swap() {
     // `GetText()` assertion below passed, because a hidden button still knows its own label.
     // Decision 0672's lesson in another key: a frame that loads is not a frame that draws.
     for row in ["GuildRegistrarButton1", "GuildRegistrarButton2"] {
-        assert!(visible(&s, row), "{row} is on screen, not just loaded");
+        assert!(visible(&mut s, row), "{row} is on screen, not just loaded");
     }
     assert_eq!(
-        text(&s, "GuildRegistrarButton1"),
+        text(&mut s, "GuildRegistrarButton1"),
         "Purchase a Guild Charter"
     );
     assert_eq!(
-        text(&s, "GuildRegistrarButton2"),
+        text(&mut s, "GuildRegistrarButton2"),
         "Register a Guild Charter"
     );
-    let _ = calls(&s);
+    let _ = calls(&mut s);
 
     s.run("GuildRegistrarButton1:Click()").unwrap();
-    assert!(visible(&s, "GuildRegistrarPurchaseFrame"));
-    assert!(!visible(&s, "GuildRegistrarGreetingFrame"));
+    assert!(visible(&mut s, "GuildRegistrarPurchaseFrame"));
+    assert!(!visible(&mut s, "GuildRegistrarGreetingFrame"));
     // The purchase panel's own furniture, for the reason the services rows above are checked: a
     // window whose parts load but do not draw passes every text assertion.
     for part in [
@@ -403,9 +403,9 @@ fn the_registrar_opens_on_services_and_purchase_is_a_local_panel_swap() {
         "GuildRegistrarFramePurchaseButton",
         "GuildRegistrarFrameCancelButton",
     ] {
-        assert!(visible(&s, part), "{part} is on screen");
+        assert!(visible(&mut s, part), "{part} is on screen");
     }
-    assert_eq!(calls(&s), "", "the swap sends nothing");
+    assert_eq!(calls(&mut s), "", "the swap sends nothing");
 }
 
 /// Buying sends the box's text and closes the window; registering sends the no-argument turn-in.
@@ -419,7 +419,7 @@ fn purchase_sends_the_typed_name_and_register_turns_the_charter_in() {
     let mut s = setup();
     show_registrar(&mut s);
     s.run("GuildRegistrarButton1:Click()").unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
 
     s.run(
         r#"
@@ -429,17 +429,17 @@ fn purchase_sends_the_typed_name_and_register_turns_the_charter_in() {
     )
     .unwrap();
     assert_eq!(
-        calls(&s),
+        calls(&mut s),
         "BuyGuildCharter:Legacy of Steel|CloseGuildRegistrar",
         "the buy, then the window's own OnHide close"
     );
-    assert!(!visible(&s, "GuildRegistrarFrame"));
+    assert!(!visible(&mut s, "GuildRegistrarFrame"));
 
     show_registrar(&mut s);
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildRegistrarButton2:Click()").unwrap();
     assert_eq!(
-        calls(&s),
+        calls(&mut s),
         "TurnInGuildCharter",
         "no argument — the engine finds the charter in the bags"
     );
@@ -456,8 +456,8 @@ fn the_charter_price_is_read_when_the_purchase_panel_opens() {
     show_registrar(&mut s);
     s.run("GuildRegistrarButton1:Click()").unwrap();
     // 1000 copper = 10 silver: the gold slot is empty, the silver slot reads 10.
-    assert_eq!(text(&s, "GuildRegistrarMoneyFrameSilverButtonText"), "10");
-    assert_eq!(text(&s, "GuildRegistrarCostLabel"), "Cost:");
+    assert_eq!(text(&mut s, "GuildRegistrarMoneyFrameSilverButtonText"), "10");
+    assert_eq!(text(&mut s, "GuildRegistrarCostLabel"), "Cost:");
 }
 
 /// Re-opening the registrar always lands on the services list, never on a half-filled purchase
@@ -468,13 +468,13 @@ fn reopening_the_registrar_returns_to_the_services_list() {
     let mut s = setup();
     show_registrar(&mut s);
     s.run("GuildRegistrarButton1:Click()").unwrap();
-    assert!(visible(&s, "GuildRegistrarPurchaseFrame"));
+    assert!(visible(&mut s, "GuildRegistrarPurchaseFrame"));
 
     s.fire_event("GUILD_REGISTRAR_CLOSED", vec![]);
-    assert!(!visible(&s, "GuildRegistrarFrame"));
+    assert!(!visible(&mut s, "GuildRegistrarFrame"));
     show_registrar(&mut s);
-    assert!(visible(&s, "GuildRegistrarGreetingFrame"));
-    assert!(!visible(&s, "GuildRegistrarPurchaseFrame"));
+    assert!(visible(&mut s, "GuildRegistrarGreetingFrame"));
+    assert!(!visible(&mut s, "GuildRegistrarPurchaseFrame"));
 }
 
 /// Both windows are registered UIPanels — without a row, `ShowUIPanel` degrades to a bare `Show()`
@@ -494,9 +494,9 @@ fn both_charter_windows_are_registered_left_slot_panels() {
     // And they are rivals, not neighbours: opening one seats it where the other was.
     show_registrar(&mut s);
     show_petition(&mut s);
-    assert!(visible(&s, "PetitionFrame"));
+    assert!(visible(&mut s, "PetitionFrame"));
     assert!(
-        !visible(&s, "GuildRegistrarFrame"),
+        !visible(&mut s, "GuildRegistrarFrame"),
         "one left slot, both pushable 0"
     );
 }

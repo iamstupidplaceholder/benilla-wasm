@@ -32,7 +32,7 @@ fn picker() -> UiScript {
         "Interface\\FrameXML\\StaticPopup.xml",
         "Interface\\FrameXML\\ColorPickerFrame.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     s.set_screen_size(1024.0, 768.0);
     s.resolve();
@@ -64,7 +64,7 @@ fn after_round_trip(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
 #[test]
 fn the_named_pieces_exist_and_their_scripts_are_fetchable() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
+    let mut s = picker();
     assert!(s
         .eval::<bool>("return ColorPickerFrame ~= nil and ColorPickerFrame.SetColorRGB ~= nil")
         .unwrap());
@@ -173,7 +173,7 @@ fn has_opacity_shows_the_slider_and_widens_the_window() {
 #[test]
 fn the_opacity_slider_drives_opacity_func_on_every_change() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
+    let mut s = picker();
     s.run(
         r#"
         seen = {}
@@ -204,7 +204,7 @@ fn the_opacity_slider_drives_opacity_func_on_every_change() {
 /// window is even shown (the reference's own behaviour — `func` is a live preview, and it is why
 /// `hasOpacity`/`opacity` are assigned before the colour), and clicking **Okay** commits with the
 /// slider's final value.
-fn dewdrop_open(s: &UiScript, r: f64, g: f64, b: f64, opacity: f64) {
+fn dewdrop_open(s: &mut UiScript, r: f64, g: f64, b: f64, opacity: f64) {
     s.run(&format!(
         r#"
         applied = {{}}
@@ -242,8 +242,8 @@ fn dewdrop_open(s: &UiScript, r: f64, g: f64, b: f64, opacity: f64) {
 #[test]
 fn the_dewdrop_sequence_commits_on_okay() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
-    dewdrop_open(&s, 0.1, 0.5, 0.9, 0.25);
+    let mut s = picker();
+    dewdrop_open(&mut s, 0.1, 0.5, 0.9, 0.25);
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 
     // The live preview has already run TWICE before the window is even on screen, and both are the
@@ -292,8 +292,8 @@ fn the_dewdrop_sequence_commits_on_okay() {
 #[test]
 fn cancel_restores_the_previous_colour_through_cancel_func() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
-    dewdrop_open(&s, 0.1, 0.5, 0.9, 0.25);
+    let mut s = picker();
+    dewdrop_open(&mut s, 0.1, 0.5, 0.9, 0.25);
 
     // The player fiddles: a new colour previewed live, and the opacity moved.
     s.run("ColorPickerFrame:SetColorRGB(1, 0, 0)").unwrap();
@@ -334,8 +334,8 @@ fn cancel_restores_the_previous_colour_through_cancel_func() {
 #[test]
 fn escape_hides_the_picker_and_cancel_is_what_reverts() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
-    dewdrop_open(&s, 0.1, 0.5, 0.9, 0.25);
+    let mut s = picker();
+    dewdrop_open(&mut s, 0.1, 0.5, 0.9, 0.25);
     s.run("ColorPickerFrame:SetColorRGB(1, 0, 0)").unwrap();
 
     s.run("ToggleGameMenu()").unwrap();
@@ -372,7 +372,7 @@ fn escape_hides_the_picker_and_cancel_is_what_reverts() {
 #[test]
 fn ace_console_can_chain_the_okay_buttons_onclick() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
+    let mut s = picker();
     s.run(
         r#"
         chained = {}
@@ -409,7 +409,7 @@ fn ace_console_can_chain_the_okay_buttons_onclick() {
 #[test]
 fn the_picker_is_a_uispecialframe_and_close_windows_puts_it_away() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
+    let mut s = picker();
     let listed: bool = s
         .eval(
             r#"
@@ -444,7 +444,7 @@ fn the_picker_is_a_uispecialframe_and_close_windows_puts_it_away() {
 #[test]
 fn a_dropdown_row_with_has_color_swatch_opens_the_picker_and_cancel_restores() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
+    let mut s = picker();
     s.run(
         r#"
         restored = {}
@@ -531,7 +531,7 @@ fn a_dropdown_row_with_has_color_swatch_opens_the_picker_and_cancel_restores() {
 #[test]
 fn a_row_without_the_flag_has_no_swatch() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = picker();
+    let mut s = picker();
     s.run(
         r#"
         local dd = CreateFrame("Frame", "TestPlainDropDown", nil, "UIDropDownMenuTemplate")

@@ -40,7 +40,7 @@ pub(super) fn load_emote_texts(mut commands: Commands, assets: Option<Res<WorldA
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_emote_text_catalog(&mut chain)
+        benilla_formats::load_emote_text_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -463,14 +463,14 @@ impl ChatLog {
 /// The VM's own string table as a lookup — `getglobal(key)`, which is where every sentence this
 /// feed shows comes from (decision 2045). Taken for exactly as long as one composition needs it,
 /// so the `route` that follows can take the VM mutably.
-fn globals(script: &benilla_ui::script::UiScript) -> impl Fn(&str) -> Option<String> + '_ {
-    |key: &str| script.lua().globals().get::<String>(key).ok()
+fn globals(script: &mut benilla_ui::script::UiScript) -> impl FnMut(&str) -> Option<String> + '_ {
+    |key: &str| script.global_string(key)
 }
 
 /// Fill a key's template, or nothing at all if the chain has no string for it — the reference's
 /// data-suppression face, and the reason nothing here carries a fallback sentence.
 fn keyed(
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
     key: &str,
     args: &[benilla_ui::strings::Arg<'_>],
 ) -> Option<String> {
@@ -492,12 +492,12 @@ pub(super) fn xp_gain_line(
     victim: Option<&str>,
     total: u32,
     bonus: u32,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     use benilla_ui::strings::Arg;
     match victim {
         Some(name) if bonus > 0 => keyed(
-            get,
+            &mut *get,
             "COMBATLOG_XPGAIN_EXHAUSTION1",
             &[
                 Arg::S(name),
@@ -507,12 +507,12 @@ pub(super) fn xp_gain_line(
             ],
         ),
         Some(name) => keyed(
-            get,
+            &mut *get,
             "COMBATLOG_XPGAIN_FIRSTPERSON",
             &[Arg::S(name), Arg::D(i64::from(total))],
         ),
         None => keyed(
-            get,
+            &mut *get,
             "COMBATLOG_XPGAIN_FIRSTPERSON_UNNAMED",
             &[Arg::D(i64::from(total))],
         ),
@@ -539,14 +539,18 @@ pub(super) fn honor_gain_line(
     victim: Option<&str>,
     rank_title: Option<&str>,
     honor: i32,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     use benilla_ui::strings::Arg;
     match victim {
-        None => keyed(get, "COMBATLOG_HONORAWARD", &[Arg::D(i64::from(honor))]),
-        Some(name) if honor <= 0 => keyed(get, "COMBATLOG_DISHONORGAIN", &[Arg::S(name)]),
+        None => keyed(
+            &mut *get,
+            "COMBATLOG_HONORAWARD",
+            &[Arg::D(i64::from(honor))],
+        ),
+        Some(name) if honor <= 0 => keyed(&mut *get, "COMBATLOG_DISHONORGAIN", &[Arg::S(name)]),
         Some(name) => keyed(
-            get,
+            &mut *get,
             "COMBATLOG_HONORGAIN",
             &[
                 Arg::S(name),
@@ -562,10 +566,10 @@ pub(super) fn honor_gain_line(
 /// UI_INFO_MESSAGE; decisions 0828/0829).
 pub(super) fn exploration_toast(
     area_name: &str,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     keyed(
-        get,
+        &mut *get,
         "ERR_ZONE_EXPLORED",
         &[benilla_ui::strings::Arg::S(area_name)],
     )
@@ -577,11 +581,11 @@ pub(super) fn exploration_toast(
 pub(super) fn exploration_line(
     area_name: &str,
     xp: u32,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<String> {
     use benilla_ui::strings::Arg;
     keyed(
-        get,
+        &mut *get,
         "ERR_ZONE_EXPLORED_XP",
         &[Arg::S(area_name), Arg::D(i64::from(xp))],
     )
@@ -770,7 +774,7 @@ pub(super) fn feed_chat(
     mut log: ResMut<ChatLog>,
     mut windows: ResMut<ChatWindows>,
     mut channels: ResMut<ChannelState>,
-    names: Res<NameCache>,
+    names: (Res<NameCache>, crate::npc_text::MacroNames),
     mut speaker: SpeakerEffects,
     commands: Res<NetCommands>,
     // The text-emote sentence seam (decision 1274): the tables, plus the guid the composer's
@@ -793,6 +797,7 @@ pub(super) fn feed_chat(
     // arms belong here and nowhere else.
     mut text_filter: crate::text_filter::ChatTextFilter,
 ) {
+    let (names, labels) = names;
     let Some(mut script) = script else {
         return;
     };
@@ -864,6 +869,7 @@ pub(super) fn feed_chat(
                         &stores,
                         &names,
                         &commands,
+                        &labels,
                     );
                     let (text, clean) = crate::npc_text::substitute_checked(
                         &msg.text,
@@ -987,11 +993,7 @@ pub(super) fn feed_chat(
                 // the *caller's* frame.
                 if let Some(gesture) =
                     crate::creature_anim::select_gesture(msg.chat_type, &plain, |n| {
-                        script
-                            .lua()
-                            .globals()
-                            .get::<String>(format!("LAUGH_WORD{n}"))
-                            .ok()
+                        script.global_string(&format!("LAUGH_WORD{n}"))
                     })
                 {
                     speaker.gestures.push(msg.sender_guid, gesture);
@@ -1089,7 +1091,7 @@ pub(super) fn feed_chat(
                 let line = {
                     use benilla_ui::strings::Arg;
                     keyed(
-                        &globals(&script),
+                        &mut globals(&mut script),
                         "RANDOM_ROLL_RESULT",
                         &[
                             Arg::S(&name),
@@ -1129,7 +1131,7 @@ pub(super) fn feed_chat(
                     }
                     Some(resolved.unwrap_or_else(|| "Unknown".into()))
                 };
-                let line = xp_gain_line(name.as_deref(), total, bonus, &globals(&script));
+                let line = xp_gain_line(name.as_deref(), total, bonus, &mut globals(&mut script));
                 if let Some(text) = line {
                     route(
                         &mut script,
@@ -1184,7 +1186,7 @@ pub(super) fn feed_chat(
                     name.as_deref(),
                     title.flatten().as_deref(),
                     honor,
-                    &globals(&script),
+                    &mut globals(&mut script),
                 );
                 if let Some(text) = line {
                     route(
@@ -1291,8 +1293,12 @@ pub(super) fn feed_chat(
                     }
                     continue;
                 }
-                let composed =
-                    super::combat::compose_line(&script, line.family, line.variant, &line.fills);
+                let composed = super::combat::compose_line(
+                    &mut script,
+                    line.family,
+                    line.variant,
+                    &line.fills,
+                );
                 if let Some(text) = composed {
                     route(
                         &mut script,
@@ -1304,11 +1310,11 @@ pub(super) fn feed_chat(
             Pending::Discovery { area, xp } => {
                 // The toast fires every time; the chat line only rides XP (decisions 0828/0829).
                 let (toast, line) = {
-                    let get = globals(&script);
+                    let mut get = globals(&mut script);
                     (
-                        exploration_toast(&area, &get),
+                        exploration_toast(&area, &mut get),
                         (xp > 0)
-                            .then(|| exploration_line(&area, xp, &get))
+                            .then(|| exploration_line(&area, xp, &mut get))
                             .flatten(),
                     )
                 };

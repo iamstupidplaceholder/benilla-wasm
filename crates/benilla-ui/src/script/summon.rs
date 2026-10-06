@@ -23,7 +23,7 @@
 //! `ConfirmSummon()` takes no arguments and queues only a count, [`super::binder`]'s shape and for
 //! its reason: the app holds the guid that goes on the wire.
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use super::Model;
 
@@ -64,50 +64,36 @@ impl super::UiScript {
 }
 
 /// Register the four summon globals (the style [`super::binder`] registers its two).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetSummonConfirmSummoner() — who is summoning you (`0x48b6a0`). A string on every path.
-    g.set(
-        "GetSummonConfirmSummoner",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            lua.create_string(&model.summon_confirm.summoner)
-        })?,
-    )?;
+    lua.register_function("GetSummonConfirmSummoner", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.summon_confirm.summoner.clone())
+    })?;
 
     // GetSummonConfirmAreaName() — where to (`0x48b720`). The **summoner's** zone, straight out of
     // `AreaTable.dbc` with no parent walk and no GlobalString tail: unlike the innkeeper question's
     // three-step chain (`0x5dfe5e`), an id this table cannot name renders as `""`.
-    g.set(
-        "GetSummonConfirmAreaName",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            lua.create_string(&model.summon_confirm.area)
-        })?,
-    )?;
+    lua.register_function("GetSummonConfirmAreaName", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.summon_confirm.area.clone())
+    })?;
 
     // GetSummonConfirmTimeLeft() — whole SECONDS left, truncated (`0x48b660`: the `0x10624dd3`
     // magic multiply is an integer `/1000` over the millisecond remainder, then `lua_pushnumber`).
     // The dialog seeds `this.timeleft` from it in OnShow and the popup engine counts down locally
     // from there, so the floor lands once, at open.
-    g.set(
-        "GetSummonConfirmTimeLeft",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(f64::from(model.summon_confirm.time_left_ms / 1000))
-        })?,
-    )?;
+    lua.register_function("GetSummonConfirmTimeLeft", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(f64::from(model.summon_confirm.time_left_ms / 1000))
+    })?;
 
     // ConfirmSummon() — the CONFIRM_SUMMON dialog's Accept, and the only packet in the whole flow.
-    g.set(
-        "ConfirmSummon",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.summon_confirms += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConfirmSummon", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.summon_confirms += 1;
+        Ok(())
+    })?;
 
     Ok(())
 }

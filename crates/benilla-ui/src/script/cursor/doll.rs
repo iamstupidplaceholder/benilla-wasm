@@ -5,9 +5,9 @@
 //! world drop, `SplitContainerItem`) already generalizes from [`super`] because it only ever
 //! matches on the `CursorPayload` enum, never on `bag`.
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
-use crate::script::binding_abi::flag;
+use crate::script::binding_abi::neutral_flag;
 use crate::script::container::ContainerMove;
 use crate::script::Model;
 
@@ -21,7 +21,7 @@ use super::{queue_cursor_update, queue_lock_changed, CursorItem, CursorPayload, 
 /// The bag icons ride the SAME transition (a bag's `equip_slots` is `[20,21,22,23]` from
 /// `find_equip_slot(INVTYPE_BAG)`, so the fit rule already routes a bag onto any bag slot, and
 /// `wire_pos`'s `EQUIPMENT_BAG` arm maps live id 20..23 → the wire's equipped-bag inventory slots
-/// 19..22); ammo (0) stays a named deferral — refused outright, cursor untouched.
+/// 19..22); ammo (0) routes through the existing entry-selected ammo sender.
 ///
 /// **The bank-bag band (64..=69) rides this too**, and only through one door: `PutItemInBag`'s
 /// empty-slot leg IS this function in the reference (`0x4c7c00` calls `0x4c7300` there), which is
@@ -40,8 +40,24 @@ use super::{queue_cursor_update, queue_lock_changed, CursorItem, CursorPayload, 
 ///
 /// Returns whether the caller should repaint (the source lock, or the held payload, changed).
 pub(super) fn pickup_inventory_item(model: &mut Model, id: u32) -> bool {
+    // Ammo is an entry selection, not an equipped item instance. Reuse the
+    // existing auto-equip sender's SET_AMMO fork for a whole carried stack.
+    if id == 0 {
+        return match &model.cursor {
+            Some(CursorPayload::Item(item))
+                if item.bag >= 0 && item.count.is_none() && item.equip_slots.contains(&0) =>
+            {
+                auto_equip_cursor_item(model)
+            }
+            None if model.inv_slot("player", 0).is_some_and(|s| s.item_id != 0) => {
+                model.inventory_uses.push(0);
+                true
+            }
+            _ => false,
+        };
+    }
     // Equipment slots (1..=19) + the four equipped-bag icons (20..=23) + the six BANK bag slots
-    // (64..=69, reached only through `PutItemInBag`); ammo (0) is out of scope.
+    // (64..=69, reached only through `PutItemInBag`); ammo was handled above.
     if !(1..=23).contains(&id) && !super::bag_verbs::BANK_BAG_INV_SLOTS.contains(&id) {
         return false;
     }
@@ -54,6 +70,12 @@ pub(super) fn pickup_inventory_item(model: &mut Model, id: u32) -> bool {
     // A held payload wins, exactly as in the bag path (the ref's own `4c73af` pair precedes it).
     if model.item_pick_armed && model.cursor.is_none() {
         model.item_picks.push((EQUIPMENT_BAG, id));
+        return false;
+    }
+    // Same repair intent as the bag pickup, after item targeting and before
+    // picking up the equipped instance. The app resolves the actual GUID.
+    if model.repair_mode && model.cursor.is_none() {
+        model.container_repairs.push((EQUIPMENT_BAG, id));
         return false;
     }
     match model.cursor.take() {
@@ -229,52 +251,32 @@ pub(super) fn is_inventory_item_locked(model: &Model, id: u32) -> bool {
 /// Register the paper-doll's cursor globals — all top-level, matching the reference
 /// (`PickupInventoryItem` &c. are not namespaced any more than `PickupContainerItem`'s cursor
 /// siblings are).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    g.set(
-        "PickupInventoryItem",
-        lua.create_function(|lua, id: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(pickup_inventory_item(&mut model, id))
-        })?,
-    )?;
-    g.set(
-        "EquipCursorItem",
-        lua.create_function(|lua, id: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(equip_cursor_item(&mut model, id))
-        })?,
-    )?;
-    g.set(
-        "CursorCanGoInSlot",
-        lua.create_function(|lua, id: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(cursor_can_go_in_slot(&model, id))
-        })?,
-    )?;
-    g.set(
-        "AutoEquipCursorItem",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(auto_equip_cursor_item(&mut model))
-        })?,
-    )?;
-    g.set(
-        "UseInventoryItem",
-        lua.create_function(|lua, id: u32| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            use_inventory_item(&mut model, id);
-            Ok(())
-        })?,
-    )?;
-    g.set(
-        "IsInventoryItemLocked",
-        lua.create_function(|lua, id: u32| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(is_inventory_item_locked(&model, id)))
-        })?,
-    )?;
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
+    lua.register_function("PickupInventoryItem", |lua, id: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(pickup_inventory_item(&mut model, id))
+    })?;
+    lua.register_function("EquipCursorItem", |lua, id: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(equip_cursor_item(&mut model, id))
+    })?;
+    lua.register_function("CursorCanGoInSlot", |lua, id: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(cursor_can_go_in_slot(&model, id))
+    })?;
+    lua.register_function("AutoEquipCursorItem", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(auto_equip_cursor_item(&mut model))
+    })?;
+    lua.register_function("UseInventoryItem", |lua, id: u32| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        use_inventory_item(&mut model, id);
+        Ok(())
+    })?;
+    lua.register_function("IsInventoryItemLocked", |lua, id: u32| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(is_inventory_item_locked(&model, id)))
+    })?;
 
     Ok(())
 }
@@ -381,27 +383,27 @@ mod tests {
         let mut s = UiScript::new().unwrap();
         s.set_inventory_slots(doll_slots());
 
-        assert!(!s.eval::<bool>("return IsInventoryItemLocked(1)").unwrap());
-        assert!(s.eval::<bool>("return PickupInventoryItem(1)").unwrap());
+        assert!(!s.eval_truthy("return IsInventoryItemLocked(1)").unwrap());
+        assert!(s.eval_truthy("return PickupInventoryItem(1)").unwrap());
         let held = s.cursor_item().expect("picked up");
         assert_eq!(
             (held.bag, held.slot, held.item_id),
             (EQUIPMENT_BAG, 1, 1234)
         );
         assert_eq!(held.equip_slots, vec![1]);
-        assert!(s.eval::<bool>("return IsInventoryItemLocked(1)").unwrap());
-        assert!(s.eval::<bool>("return CursorHasItem()").unwrap());
+        assert!(s.eval_truthy("return IsInventoryItemLocked(1)").unwrap());
+        assert!(s.eval_truthy("return CursorHasItem()").unwrap());
     }
 
     #[test]
     fn pickup_same_doll_slot_cancels_no_move() {
         let mut s = UiScript::new().unwrap();
         s.set_inventory_slots(doll_slots());
-        assert!(s.eval::<bool>("return PickupInventoryItem(1)").unwrap());
-        assert!(s.eval::<bool>("return PickupInventoryItem(1)").unwrap());
+        assert!(s.eval_truthy("return PickupInventoryItem(1)").unwrap());
+        assert!(s.eval_truthy("return PickupInventoryItem(1)").unwrap());
         assert!(s.cursor_item().is_none());
         assert!(s.take_container_moves().is_empty());
-        assert!(!s.eval::<bool>("return IsInventoryItemLocked(1)").unwrap());
+        assert!(!s.eval_truthy("return IsInventoryItemLocked(1)").unwrap());
     }
 
     #[test]
@@ -661,14 +663,14 @@ mod tests {
         s.set_inventory_slots(slots);
 
         assert!(
-            s.eval::<bool>("return IsInventoryItemLocked(19)").unwrap(),
+            s.eval_truthy("return IsInventoryItemLocked(19)").unwrap(),
             "fed lock"
         );
-        assert!(!s.eval::<bool>("return IsInventoryItemLocked(1)").unwrap());
+        assert!(!s.eval_truthy("return IsInventoryItemLocked(1)").unwrap());
 
         s.run("PickupInventoryItem(1)").unwrap();
         assert!(
-            s.eval::<bool>("return IsInventoryItemLocked(1)").unwrap(),
+            s.eval_truthy("return IsInventoryItemLocked(1)").unwrap(),
             "held-here lock"
         );
     }

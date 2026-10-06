@@ -43,9 +43,11 @@ mod logging;
 /// The `AUTO_JOIN_GUILD_CHANNEL` cascade (decision 2144) — the one place the client joins or
 /// leaves `GuildRecruitment - City` on its own.
 mod recruitment;
+mod schools;
 /// The chat windows' saved look (B246, decision 1589) — where the tab menu's tint/alpha/font-size
 /// picks are read from at login and written back at logout.
 pub(crate) mod settings;
+pub(crate) use schools::DamageSchools;
 #[cfg(test)]
 mod tests;
 
@@ -73,8 +75,54 @@ pub(crate) use settings::restore_chat_looks;
 
 pub(crate) struct UiChatPlugin;
 
+/// Publish real delivered catalog bytes into the same stores as the native load.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn publish_catalogs(
+    commands: &mut Commands,
+    source: &mut impl benilla_formats::FileSource,
+    channels: &mut ChannelState,
+    languages: &mut language::ChatLanguages,
+) {
+    match benilla_formats::load_chat_channels_catalog(source) {
+        Ok(catalog) => channels.channels = catalog,
+        Err(error) => warn!("chat: ChatChannels.dbc failed to load: {error:#}"),
+    }
+    match benilla_formats::load_emote_text_catalog(source) {
+        Ok(catalog) => {
+            commands.insert_resource(feed::EmoteTexts(catalog));
+        }
+        Err(error) => warn!("chat: emote text catalog failed to load: {error:#}"),
+    }
+    // This catalog also owns gameplay token/animation/posture mappings. It must
+    // be published even when the host has no audio output backend.
+    match benilla_formats::load_emote_sound_catalog(source) {
+        Ok(catalog) => {
+            commands.insert_resource(crate::sound::EmoteSounds(catalog));
+        }
+        Err(error) => warn!("chat: emote gameplay catalog failed to load: {error:#}"),
+    }
+    match benilla_formats::load_server_messages_catalog(source) {
+        Ok(catalog) => {
+            commands.insert_resource(broadcast::ServerMessages(catalog));
+        }
+        Err(error) => warn!("chat: ServerMessages.dbc failed to load: {error:#}"),
+    }
+    languages.publish_words(source);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use language::ChatLanguages;
+
 impl Plugin for UiChatPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Startup, schools::load.after(benilla_assets::AssetSet::Open));
+        app.add_systems(
+            Update,
+            schools::feed
+                .in_set(crate::ui_script::UiFeed)
+                .before(feed::feed_chat),
+        );
         app.add_observer(combat::on_cvar);
         app.init_resource::<ChatLog>()
             .init_resource::<away::AfkMirror>()

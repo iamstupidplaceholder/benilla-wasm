@@ -35,7 +35,7 @@ fn sizer() -> UiScript {
 /// The getters answer **two numbers**, `0, 0` on a frame nobody bounded — never `nil`.
 #[test]
 fn a_virgin_frames_bounds_read_back_as_zero_not_nil() {
-    let s = sizer();
+    let mut s = sizer();
     for verb in ["GetMinResize", "GetMaxResize"] {
         let (w, h): (f64, f64) = s.eval(&format!("return Sizer:{verb}()")).unwrap();
         assert_eq!((w, h), (0.0, 0.0), "{verb} on an unbounded frame");
@@ -71,7 +71,7 @@ fn a_virgin_frames_bounds_read_back_as_zero_not_nil() {
 /// reference's own `Usage:` text, naming the frame.
 #[test]
 fn the_setters_gate_is_lua_isnumber_and_the_usage_text_is_the_references() {
-    let s = sizer();
+    let mut s = sizer();
     s.run("Sizer:SetMinResize(\"120\", \"60\")").unwrap();
     assert_eq!(
         s.eval::<(f64, f64)>("return Sizer:GetMinResize()").unwrap(),
@@ -270,7 +270,7 @@ fn the_xml_element_writes_both_pairs() {
         </Frame>
         "#,
     );
-    load(&s, &doc);
+    load(&mut s, &doc);
     assert_eq!(
         s.eval::<(f64, f64)>("return Chatty:GetMinResize()")
             .unwrap(),
@@ -292,7 +292,7 @@ fn the_xml_element_writes_both_pairs() {
         </Frame>
         "#,
     );
-    load(&s, &partial);
+    load(&mut s, &partial);
     assert_eq!(
         s.eval::<(f64, f64)>("return Half:GetMinResize()").unwrap(),
         (10.0, 20.0)
@@ -309,7 +309,7 @@ fn benilla_ui_doc(body: &str) -> String {
     format!("<Ui>{body}</Ui>")
 }
 
-fn load(s: &UiScript, src: &str) {
+fn load(s: &mut UiScript, src: &str) {
     let doc = crate::framexml::parse(src).expect("parse");
     let report = crate::loader::load_in(s, &doc, "test.xml", &|_| None);
     assert!(report.errors.is_empty(), "{:#?}", report.errors);

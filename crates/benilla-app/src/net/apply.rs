@@ -3,15 +3,10 @@
 //! teleports, clock), and [`tag_self_player`] marks our own streamed entity. The parent module
 //! owns the channel/type surface; this module owns the event application.
 
-use std::collections::HashMap;
-
-use benilla_protocol::{ObjectFields, SessionEvent};
+use benilla_protocol::SessionEvent;
 use bevy::prelude::*;
 
-use super::{
-    Guid, GuidIndex, NetCommands, NetEvents, NetStatus, ObjectStore, Reputations, SelfGuid,
-    SelfPlayer,
-};
+use super::{GuidIndex, NetCommands, NetEvents, NetStatus, ObjectStore, Reputations, SelfGuid};
 
 mod anim;
 mod chat;
@@ -21,8 +16,7 @@ mod combat_log;
 mod death;
 mod group;
 mod mount;
-mod names;
-mod objects;
+use super::object_stream as objects;
 mod params;
 mod pet;
 #[cfg(test)]
@@ -32,6 +26,58 @@ mod spells;
 mod world;
 
 use params::{ActionStores, AnimWriters, Catalogs, Clocks, ObjectQueries, Session, WindowStores};
+
+/// Native consumers retain their original pre-operation death/party hooks.
+/// Shared scene lifecycle is registered after these in packet order.
+pub(super) fn register_object_hooks(app: &mut App) {
+    use super::NetHandlerApp;
+    use benilla_protocol::SessionEventKind;
+    for kind in [
+        SessionEventKind::ObjectCreate,
+        SessionEventKind::ObjectValues,
+        SessionEventKind::ObjectDestroyed,
+        SessionEventKind::ObjectsRemoved,
+    ] {
+        app.net_handler(kind, on_object_hook);
+    }
+}
+
+fn on_object_hook(
+    In(event): In<SessionEvent>,
+    self_guid: Res<SelfGuid>,
+    mut death_net: ResMut<crate::death::DeathNet>,
+    mut group_state: ResMut<crate::ui_party::GroupState>,
+    index: Res<GuidIndex>,
+    stores: Query<&ObjectStore>,
+    net: Res<NetCommands>,
+) {
+    match event {
+        SessionEvent::ObjectCreate {
+            guid, kind, fields, ..
+        } => death::note_corpse(guid, kind, &fields, &self_guid, &mut death_net),
+        SessionEvent::ObjectValues { guid, fields } => {
+            death::recheck_corpse(guid, &fields, &self_guid, &mut death_net)
+        }
+        SessionEvent::ObjectDestroyed(guid) => {
+            death::forget_corpse(guid, &mut death_net);
+            let store = index
+                .0
+                .get(&guid)
+                .and_then(|entity| stores.get(*entity).ok());
+            group::member_deactivated(guid, &mut group_state, store, &net);
+        }
+        SessionEvent::ObjectsRemoved(guids) => {
+            for guid in guids {
+                let store = index
+                    .0
+                    .get(&guid)
+                    .and_then(|entity| stores.get(*entity).ok());
+                group::member_deactivated(guid, &mut group_state, store, &net);
+            }
+        }
+        _ => {}
+    }
+}
 
 // The arm families, split out of the dispatch match below (each `pub(super)` fn is one arm's
 // body; the match stays the dispatcher, one call per arm — see the child modules).
@@ -108,22 +154,13 @@ fn apply_unpeeled(
     anim: AnimWriters,
     catalogs: Catalogs,
 ) {
-    let Clocks {
-        mut server_time,
-        mut wall_clock,
-        real: real_clock,
-    } = clocks;
+    let Clocks { real: real_clock } = clocks;
     let ObjectQueries {
-        mut transforms,
-        mut stores,
-        remote: mut remote_motion,
-        modes: mut unit_modes,
-        mut riders,
-        speeds: unit_speeds,
+        transforms,
+        stores,
         transports,
         casting: casting_units,
         engaged_self,
-        mut field_changes,
     } = objects;
     let ActionStores {
         mut player_actions,
@@ -155,7 +192,6 @@ fn apply_unpeeled(
         go_lid_open: mut go_lid_opens,
         mut ai_reactions,
         mut kit_pushes,
-        mut hard_landings,
         mut mount_flourishes,
         unit_combat: mut unit_combat_feedback,
         mut combat_text_events,
@@ -183,7 +219,6 @@ fn apply_unpeeled(
         mut loot_latch,
         mut chat_log,
         mut quest,
-        mut go_templates,
         mut home_bind,
         mut proficiencies,
         mut dropped,
@@ -191,23 +226,18 @@ fn apply_unpeeled(
         mut group,
         mut world_states,
         social,
-        mut logout,
         mut pet_bar,
         mut ui_error_keys,
         mut played_time_answer,
         mut tutorials,
     } = windows;
     let Session {
-        mut teleports,
         mut worldports,
         mut char_lists,
         mut realm_lists,
         mut char_actions,
         mut char_login_failures,
-        mut entered_world,
-        mut addon_reply,
         mut logged_out,
-        mut speed_changes,
         mut move_modes,
         mut knockbacks,
         mut login_stages,
@@ -215,23 +245,10 @@ fn apply_unpeeled(
         mut login_failures,
         mut disconnects,
         mut server_said,
-        mut self_moves,
         mut client_control,
         mut cinematics,
         transfer: mut pending_transfer,
     } = session;
-    // Descriptor seeds/deltas for objects created *earlier in this same drain* can't land on their
-    // entities yet (the spawn `Command` hasn't run), so they accumulate here and flush once at the end.
-    // This also removes a latent clobber: a plain per-delta `insert` on a not-yet-spawned entity would
-    // overwrite an earlier partial rather than merge it (decision 0061).
-    let mut pending: HashMap<u64, ObjectFields> = HashMap::new();
-    // The drain's staged [`UnitMoveModes`] grants — see [`objects::StagedModes`]. A grant and the
-    // `SMSG_MONSTER_MOVE` it refuses can land in the same drain, and the refusal has to see it.
-    let mut staged_modes = objects::StagedModes::new();
-    // The same deferral trap for movers' speeds, and the one B213 fell into: a create's
-    // `UnitSpeeds` insert is a Command, so a `SMSG_FORCE_*_SPEED_CHANGE` arriving later in this
-    // same drain could not land on top of it. Both stage here in packet order (decision 1478).
-    let mut speed_stage = objects::SpeedStage::default();
     // The combat log's classification inputs (B297). Built per use rather than once: the arms
     // around these ones take `&mut` to `index`, `group` and `reputations`, so a borrow held across
     // the whole drain would not compile. `macro_rules!` here is hygienic against the locals it
@@ -278,33 +295,20 @@ fn apply_unpeeled(
             SessionEvent::CinematicTriggered { cinematic_id } => {
                 session::cinematic_triggered(cinematic_id, &mut cinematics)
             }
-            SessionEvent::Connected {
-                self_guid: guid,
-                name,
-                billing_time_rested,
-                tutorial_flags,
-                addon_info,
-            } => session::connected(
-                guid,
-                name,
-                billing_time_rested,
-                tutorial_flags,
-                addon_info,
-                &mut addon_reply,
+            SessionEvent::LoggedOut => session::logged_out(
+                &mut commands,
+                &mut index,
                 &mut self_guid,
                 &mut status,
                 &mut names,
-                &mut entered_world,
+                &mut items,
+                &mut chat_log,
+                &mut death_net,
+                &mut group,
+                &mut cooldown_store,
+                &mut pending_transfer,
+                &mut logged_out,
             ),
-            SessionEvent::LoggedOut => {
-                session::logged_out(&mut commands, &mut index, &mut self_guid, &mut logged_out)
-            }
-            // The logout arc's two narration packets (decision 0674) — `crate::ui_logout` owns the
-            // decision table; this is only the hand-off.
-            SessionEvent::LogoutResponse { reason, instant } => {
-                logout.apply_response(reason, instant)
-            }
-            SessionEvent::LogoutCancelled => logout.apply_cancelled(),
             SessionEvent::Disconnected { reason, end } => {
                 session::disconnected(
                     reason,
@@ -323,190 +327,6 @@ fn apply_unpeeled(
                     &mut disconnects,
                 );
             }
-            SessionEvent::ObjectCreate {
-                guid,
-                kind,
-                display_id,
-                position,
-                orientation,
-                scale,
-                speeds,
-                mover,
-                transport_progress,
-                transport,
-                spline,
-                fields,
-            } => {
-                death::note_corpse(guid, kind, &fields, &self_guid, &mut death_net);
-                objects::object_create(
-                    guid,
-                    kind,
-                    display_id,
-                    position,
-                    orientation,
-                    scale,
-                    speeds,
-                    mover,
-                    transport_progress,
-                    transport,
-                    spline,
-                    fields,
-                    &mut commands,
-                    &mut index,
-                    &mut transforms,
-                    &mut stores,
-                    &mut pending,
-                    &mut field_changes,
-                    &mut speed_stage,
-                    &names,
-                    &go_templates,
-                    &net_commands,
-                )
-            }
-            SessionEvent::ItemCreate {
-                guid,
-                container,
-                fields,
-            } => objects::item_create(guid, container, fields, &mut items),
-            SessionEvent::ObjectMove {
-                guid,
-                position,
-                orientation,
-            } => objects::object_move(
-                guid,
-                position,
-                orientation,
-                &mut commands,
-                &index,
-                &mut transforms,
-            ),
-            // **An observed mover skipped time** (decision 1935). No pose moved — only that
-            // unit's clock ran on — so this touches its relay chain and nothing else, which is
-            // the whole of what the reference's handler does (`0x603b40` → `0x61ab90`:
-            // `[CMovement+0xac] += lag`). A guid we do not hold is dropped, faithfully: the
-            // reference resolves under `TYPEMASK_UNIT` and returns on a miss.
-            SessionEvent::MoveTimeSkipped { guid, lag_ms } => {
-                if let Some(mut m) = index
-                    .0
-                    .get(&guid)
-                    .and_then(|&e| remote_motion.get_mut(e).ok())
-                {
-                    m.relay.skip_time(lag_ms);
-                }
-            }
-            SessionEvent::UnitMove {
-                guid,
-                position,
-                orientation,
-                flags,
-                pitch,
-                time,
-                verb,
-                fall_time,
-                jump,
-                transport,
-            } => {
-                // The scheduled-replay law (decisions 0601/0615): `unit_move` runs the mover's own
-                // replay chain over this packet's wire stamp to get its client fire-time, then
-                // applies it now if due, else queues it on the unit for `drain_pending_moves`.
-                let now_ms = real_clock.elapsed_secs_f64() * 1000.0;
-                objects::unit_move(
-                    guid,
-                    crate::net::motion::RelayMove {
-                        wire_ms: time,
-                        position,
-                        orientation,
-                        flags,
-                        pitch,
-                        fall_time,
-                        jump,
-                        transport,
-                        verb,
-                    },
-                    now_ms,
-                    &mut commands,
-                    &index,
-                    &self_guid,
-                    &mut remote_motion,
-                    &mut transforms,
-                    &mut hard_landings,
-                    &mut self_moves,
-                );
-            }
-            SessionEvent::ObjectValues { guid, fields } => {
-                // Our corpse's own `CORPSE_FIELD_FLAGS` can flip to BONES under a live guid; the
-                // reclaim latch is re-asked on that edge, as the reference's `FLAGS` mirror
-                // handler `0x5d6d60` does (1729).
-                death::recheck_corpse(guid, &fields, &self_guid, &mut death_net);
-                objects::object_values(
-                    guid,
-                    fields,
-                    &index,
-                    &mut stores,
-                    &mut pending,
-                    &mut field_changes,
-                    &mut items,
-                )
-            }
-            SessionEvent::ObjectDestroyed(guid) => {
-                death::forget_corpse(guid, &mut death_net);
-                // The party hook runs FIRST and on the same edge the reference takes it: the
-                // deactivate virtual reads the descriptor that is about to go (decision 1640).
-                let store = index.0.get(&guid).and_then(|e| stores.get(*e).ok());
-                group::member_deactivated(guid, &mut group, store, &net_commands);
-                objects::object_destroyed(guid, &mut commands, &mut index, &mut items)
-            }
-            SessionEvent::ObjectsRemoved(guids) => {
-                // OUT_OF_RANGE and DESTROY take the same virtual in the reference — so the
-                // snapshot + `CMSG_REQUEST_PARTY_MEMBER_STATS` fire here too, which is the edge
-                // report B334 is actually about: a member walking over the hill.
-                for guid in &guids {
-                    let store = index.0.get(guid).and_then(|e| stores.get(*e).ok());
-                    group::member_deactivated(*guid, &mut group, store, &net_commands);
-                }
-                objects::objects_removed(guids, &mut commands, &mut index)
-            }
-            SessionEvent::MonsterMove {
-                guid,
-                transport,
-                start,
-                spline_id,
-                path,
-                facing,
-                stop,
-                duration_ms,
-                flying,
-                run_mode,
-            } => objects::monster_move(
-                guid,
-                transport,
-                start,
-                spline_id,
-                path,
-                facing,
-                stop,
-                duration_ms,
-                flying,
-                run_mode,
-                objects::modes_of(guid, &index, &unit_modes, &staged_modes).rooted(),
-                &mut commands,
-                &index,
-                &mut transforms,
-                &mut riders,
-            ),
-            SessionEvent::Teleport {
-                guid,
-                counter,
-                position,
-                orientation,
-            } => session::teleport(
-                guid,
-                counter,
-                position,
-                orientation,
-                &self_guid,
-                &mut teleports,
-            ),
             SessionEvent::Worldport {
                 map_id,
                 position,
@@ -534,15 +354,6 @@ fn apply_unpeeled(
             } => session::transfer_pending(map_id, transport_entry, &mut pending_transfer),
             SessionEvent::TransferAborted { reason } => {
                 session::transfer_aborted(reason, &mut pending_transfer)
-            }
-            SessionEvent::TimeSpeed {
-                hours,
-                minutes,
-                day_serial,
-                timescale,
-            } => session::time_speed(hours, minutes, day_serial, timescale, &mut server_time),
-            SessionEvent::ServerUnixTime { unix_time } => {
-                session::server_unix_time(unix_time, &mut wall_clock)
             }
             SessionEvent::Reputations { standings } => {
                 session::reputations(standings, &mut reputations)
@@ -586,49 +397,6 @@ fn apply_unpeeled(
                 subclass_mask,
             } => {
                 proficiencies.0.insert(item_class, subclass_mask);
-            }
-            SessionEvent::PlayerName {
-                guid,
-                name,
-                race,
-                class,
-                gender,
-            } => names::player_name(guid, name, race, class, gender, &mut names),
-            SessionEvent::PetName { pet_number, name } => {
-                names::pet_name(pet_number, name, &mut names)
-            }
-            SessionEvent::CreatureName {
-                entry,
-                name,
-                subname,
-                creature_type,
-                pet_family,
-                rank,
-                type_flags,
-                display_id,
-                civilian,
-                racial_leader,
-            } => names::creature_name(
-                entry,
-                name,
-                subname,
-                creature_type,
-                pet_family,
-                rank,
-                type_flags,
-                civilian,
-                racial_leader,
-                display_id,
-                &mut names,
-            ),
-            SessionEvent::GameObjectInfo {
-                entry,
-                type_id,
-                display_id,
-                name,
-                data,
-            } => {
-                objects::gameobject_info(entry, type_id, display_id, name, &data, &mut go_templates)
             }
             SessionEvent::GameObjectCustomAnim { guid, anim_id } => {
                 objects::gameobject_custom_anim(guid, anim_id, &mut go_custom_anims)
@@ -865,32 +633,11 @@ fn apply_unpeeled(
                 &mut death_net,
                 &mut move_modes,
             ),
-            // ── The observer movement-mode family (decision 1780) — the same modes, on a body
-            //    somebody else is driving. No ack, so this arm ends the packet.
-            SessionEvent::SplineMoveMode { guid, mode, apply } => objects::spline_move_mode(
-                guid,
-                mode,
-                apply,
-                &mut commands,
-                &index,
-                &mut unit_modes,
-                &mut remote_motion,
-                &mut staged_modes,
-            ),
             SessionEvent::KnockBack {
                 guid,
                 counter,
                 launch,
             } => session::knock_back(guid, counter, launch, &self_guid, &mut knockbacks),
-            // An item template's display head (`SMSG_ITEM_QUERY_SINGLE_RESPONSE`, answering our
-            // `CMSG_ITEM_QUERY_SINGLE`): fill the ask-once template cache (decisions 0068/0072 —
-            // one cache serves held-item resolution and the container layer); a server miss
-            // records `None` so the entry is never re-asked. Consumers re-read it next frame.
-            SessionEvent::ItemTemplate { entry, info } => {
-                let info = info.map(|b| *b);
-                debug!("net: item template {entry} → {info:?}");
-                items.insert_template(entry, info);
-            }
             SessionEvent::AttackStart { attacker, victim } => {
                 combat::attack_start(attacker, victim, &mut commands, &index)
             }
@@ -1166,6 +913,36 @@ fn apply_unpeeled(
                 &mut queued_melee,
                 play_seq.next(),
             ),
+            SessionEvent::SpellFailure {
+                caster,
+                spell_id,
+                reason,
+            } => {
+                // Same original cast teardown as interruption broadcasts; keep
+                // the direct packet's reason in the original error feed.
+                spell_failed_other(
+                    caster,
+                    spell_id,
+                    &mut commands,
+                    &index,
+                    &casting_units,
+                    &mut cast_events,
+                    &self_guid,
+                    &mut cast_bar,
+                    &mut pending_cast,
+                    &mut queued_melee,
+                    play_seq.next(),
+                );
+                if self_guid.0 == Some(caster) && reason != 0x17 {
+                    cast_errors.0.push(crate::ui_action::CastFail {
+                        spell_id,
+                        reason,
+                        arg: None,
+                        caster: crate::ui_action::Caster::Player,
+                        redisplay: false,
+                    });
+                }
+            }
             SessionEvent::SpellDelayed { caster, delay_ms } => spell_delayed(
                 caster,
                 delay_ms,
@@ -1288,26 +1065,6 @@ fn apply_unpeeled(
                     &mut kit_pushes,
                 )
             }
-            SessionEvent::InvalidatePlayer { guid } => names::invalidate_player(guid, &mut names),
-            SessionEvent::ForceSpeedChange {
-                guid,
-                kind,
-                counter,
-                speed,
-            } => objects::force_speed_change(
-                guid,
-                kind,
-                counter,
-                speed,
-                &index,
-                &unit_speeds,
-                &mut speed_stage,
-                &self_guid,
-                &mut speed_changes,
-            ),
-            SessionEvent::SpeedChanged { guid, kind, speed } => {
-                objects::speed_changed(guid, kind, speed, &index, &unit_speeds, &mut speed_stage)
-            }
             // ── The mount arc (decision 0441) — arm bodies in `mount` ─────────────────────────
             SessionEvent::MountResult { mount, code } => {
                 mount::mount_result(mount, code, &mut mount_errors)
@@ -1328,7 +1085,9 @@ fn apply_unpeeled(
             // client frame too slow again, which is B346 exactly — so it says so out loud rather
             // than measuring here and hiding it.
             SessionEvent::Pong { sequence } => {
-                warn!("net: pong seq={sequence} reached the drain — the read thread's RTT bypass is gone (B346)");
+                warn!(
+                    "net: pong seq={sequence} reached the drain — the read thread's RTT bypass is gone (B346)"
+                );
             }
             SessionEvent::PacketDropped {
                 opcode,
@@ -1346,44 +1105,6 @@ fn apply_unpeeled(
                 "net: {:?} reached the dispatch match with no arm — neither peeled nor handled",
                 benilla_protocol::SessionEventKind::from(&other)
             ),
-        }
-    }
-    // Flush the staged descriptor seeds/deltas onto the entities born this drain (now spawned by the
-    // above Commands) — one insert each, fully merged, so no partial delta clobbers another.
-    for (guid, fields) in pending {
-        if let Some(&e) = index.0.get(&guid) {
-            commands.entity(e).insert(ObjectStore(fields));
-        }
-    }
-    // And the movers' speed sets, for the same reason (decision 1478) — one insert each, carrying
-    // the create block and every force-change this drain saw, folded in the order they arrived.
-    speed_stage.flush(&mut commands, &index);
-}
-
-/// Tag our own player's streamed entity with [`SelfPlayer`] once we know our guid — by matching the
-/// [`Guid`] component against [`SelfGuid`]. The renderer skips this entity (the controller owns our
-/// avatar); the controller reads its transform to take control. Done as its own pass (rather than at
-/// spawn) so it's robust to the order our guid and our create packet arrive in.
-///
-/// The controller's animation motion source (`MovementState`) rides the tag: a cross-map worldport
-/// despawns every tracked entity — our avatar included — and the new map re-streams it, so any
-/// per-entity state attached only at the one-shot take-control edge is lost on transfer. That was
-/// the ".tele to another continent" bug: the re-tagged avatar had no `MovementState`, the anim
-/// selector read it as stationary, and it slid around in the Stand pose.
-pub(super) fn tag_self_player(
-    mut commands: Commands,
-    self_guid: Res<SelfGuid>,
-    untagged: Query<(Entity, &Guid), Without<SelfPlayer>>,
-) {
-    let Some(me) = self_guid.0 else {
-        return;
-    };
-    for (entity, guid) in &untagged {
-        if guid.0 == me {
-            // Identity only. The controller-fed [`crate::creature_anim::MovementState`] used to
-            // ride along here, but it belongs to whichever body we are *steering*, which is not
-            // always this one — `player::embody` owns it now (decision 1281).
-            commands.entity(entity).insert(SelfPlayer);
         }
     }
 }

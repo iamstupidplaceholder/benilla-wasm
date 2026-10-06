@@ -1,11 +1,11 @@
-use mlua::{ObjectLike, Table};
+use benilla_lua::{LuaContext, Table};
 
 use crate::framexml::{self, Element};
 
 use super::regions::FontAttrs;
 use super::{abs_dim, children_named, Loader};
 
-impl Loader<'_> {
+impl<C: LuaContext> Loader<'_, C> {
     /// LoadXML attribute handling (rf24 `0x769820`): the subset the v1 object model exposes, plus a
     /// warn-once for the attributes whose methods don't exist yet (a next-phase gap, not a workaround).
     pub(super) fn apply_attrs(&mut self, el: &Element, wrapper: &Table, dbg: &str) {
@@ -221,8 +221,8 @@ impl Loader<'_> {
         let Some(tr) = children_named(el, "TitleRegion").next() else {
             return;
         };
-        let region: Table = match wrapper.call_method("CreateTitleRegion", ()) {
-            Ok(r) => r,
+        let region: Table = match self.call_table(wrapper, "CreateTitleRegion", ()) {
+            Ok(region) => region,
             Err(e) => {
                 self.report
                     .errors

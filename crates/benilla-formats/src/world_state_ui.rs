@@ -42,7 +42,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 const WORLD_STATE_UI: &str = "DBFilesClient\\WorldStateUI.dbc";
 
@@ -157,7 +157,7 @@ fn schema() -> Schema {
 }
 
 /// Read `WorldStateUI.dbc` off the patch chain.
-pub fn load_world_state_ui_catalog(chain: &mut Chain) -> Result<WorldStateUiCatalog> {
+pub fn load_world_state_ui_catalog(chain: &mut impl FileSource) -> Result<WorldStateUiCatalog> {
     let bytes = chain
         .read_file(WORLD_STATE_UI)
         .context("reading WorldStateUI.dbc")?;

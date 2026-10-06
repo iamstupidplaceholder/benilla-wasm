@@ -309,8 +309,8 @@ pub(super) fn drive_self_ride(
 
 #[cfg(test)]
 mod tests {
+    use benilla_time::{Duration, Instant};
     use std::f32::consts::FRAC_PI_2;
-    use std::time::{Duration, Instant};
 
     use super::*;
 

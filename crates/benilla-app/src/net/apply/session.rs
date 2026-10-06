@@ -15,10 +15,9 @@ use crate::ui_quest::QuestGiver;
 
 use super::super::{
     CharActionResultMessage, CharListMessage, CharacterLoginFailedMessage,
-    CinematicTriggeredMessage, DisconnectedMessage, DroppedOpcodes, EnteredWorldMessage, GameTime,
-    GuidIndex, KnockBackMessage, LoggedOutMessage, LoginFailedMessage, LoginStageMessage,
-    NetStatus, PendingTransfer, Reputations, SelfGuid, ServerTime, ServerWallClock,
-    TeleportMessage, WorldportMessage,
+    CinematicTriggeredMessage, DisconnectedMessage, DroppedOpcodes, GuidIndex, KnockBackMessage,
+    LoggedOutMessage, LoginFailedMessage, LoginStageMessage, NetStatus, PendingTransfer,
+    Reputations, SelfGuid, WorldportMessage,
 };
 
 /// The pre-logon handshake reached a new stage (decision 0539) — the login screen's dialog reads it.
@@ -103,47 +102,19 @@ pub(super) fn cinematic_triggered(
     triggered.write(CinematicTriggeredMessage { cinematic_id });
 }
 
-/// We are in the world (the IO thread's first in-world event): record our guid, flip the status,
-/// and seed the name cache with our own name.
-pub(super) fn connected(
-    guid: u64,
-    name: String,
-    billing_time_rested: u32,
-    tutorial_flags: Option<Vec<u8>>,
-    addon_info: Option<Vec<String>>,
-    addon_reply: &mut crate::net::AddonInfoReply,
-    self_guid: &mut SelfGuid,
-    status: &mut NetStatus,
-    names: &mut NameCache,
-    entered_world: &mut MessageWriter<EnteredWorldMessage>,
-) {
-    self_guid.0 = Some(guid);
-    status.connected = true;
-    status.last_reason = None;
-    info!("net: in world as {name} (guid {guid})");
-    // **The reference's world-session wipe, first** (`0x555740`'s `0x5557ad` arm): the player-name
-    // and pet-name stores are cleared at every world entry, because a guid names one character and
-    // a pet number one spawn, and nothing on the wire says either has been handed to somebody else
-    // since we last looked (decision 2223 — a wiped server's new character wearing a deleted one's
-    // name, B386). Creature templates are keyed by an entry that means the same thing forever and
-    // survive this, exactly as they survive the process.
-    names.clear_world_session();
-    // Our own name came with the login — seed the cache so "player" never queries.
-    names.insert_player(guid, name, None);
-    // Seated before the world-entry UI load reads it (2175), and overwritten every login so a
-    // server that answers nothing cannot inherit the previous one's verdict.
-    addon_reply.0 = addon_info;
-    entered_world.write(EnteredWorldMessage {
-        billing_time_rested,
-        tutorial_flags,
-    });
-}
-
 /// The server confirmed our logout (`SMSG_LOGOUT_COMPLETE`) — back to character select.
 pub(super) fn logged_out(
     commands: &mut Commands,
     index: &mut GuidIndex,
     self_guid: &mut SelfGuid,
+    status: &mut NetStatus,
+    names: &mut NameCache,
+    items: &mut Items,
+    chat_log: &mut ChatLog,
+    death_net: &mut crate::death::DeathNet,
+    group: &mut crate::ui_party::GroupState,
+    cooldowns: &mut crate::cooldowns::Cooldowns,
+    pending_transfer: &mut PendingTransfer,
     logged_out: &mut MessageWriter<LoggedOutMessage>,
 ) {
     // A deliberate logout ends this *character's* session, not just the socket: unlike
@@ -152,11 +123,23 @@ pub(super) fn logged_out(
     // login may be a different character. Clearing `SelfGuid` first makes the follow-up
     // Disconnected teardown total.
     info!("net: logged out — back to character select");
-    if let Some(guid) = self_guid.0.take() {
-        if let Some(e) = index.0.remove(&guid) {
-            commands.entity(e).despawn();
-        }
-    }
+    self_guid.0 = None;
+    status.connected = false;
+    // TCP follows this event with Disconnected; an authenticated WebSocket
+    // instead refreshes the roster on the same socket. Character teardown
+    // belongs to the confirmed logout itself, not that host-specific reconnect.
+    clear_character_state(
+        commands,
+        index,
+        None,
+        names,
+        items,
+        chat_log,
+        death_net,
+        group,
+        cooldowns,
+        pending_transfer,
+    );
     logged_out.write(LoggedOutMessage);
 }
 
@@ -186,8 +169,6 @@ pub(super) fn disconnected(
     let over = msg.session_over;
     disconnects.write(msg);
     warn!("net: {reason} — tearing down the streamed world");
-    // An announced-but-unfinished far teleport died with the socket.
-    pending_transfer.0 = None;
     status.connected = false;
     // The RTT ring is NOT cleared here. It belongs to the connection, and the read thread wipes
     // it as it re-enters its cycle loop (`net::io`) — same instant, one thread, no race with a
@@ -208,6 +189,38 @@ pub(super) fn disconnected(
     if over {
         self_guid.0 = None;
     }
+    status.last_reason = Some(reason);
+    clear_character_state(
+        commands,
+        index,
+        keep,
+        names,
+        items,
+        chat_log,
+        death_net,
+        group,
+        cooldowns,
+        pending_transfer,
+    );
+}
+
+/// Common character-world teardown. It neither closes an authenticated socket
+/// nor emits a reconnect signal: those are transport/session-policy decisions.
+#[allow(clippy::too_many_arguments)]
+fn clear_character_state(
+    commands: &mut Commands,
+    index: &mut GuidIndex,
+    keep: Option<u64>,
+    names: &mut NameCache,
+    items: &mut Items,
+    chat_log: &mut ChatLog,
+    death_net: &mut crate::death::DeathNet,
+    group: &mut crate::ui_party::GroupState,
+    cooldowns: &mut crate::cooldowns::Cooldowns,
+    pending_transfer: &mut PendingTransfer,
+) {
+    pending_transfer.0 = None;
+    let before = index.0.len();
     index.0.retain(|guid, e| {
         if Some(*guid) == keep {
             return true;
@@ -215,7 +228,10 @@ pub(super) fn disconnected(
         commands.entity(*e).despawn();
         false
     });
-    status.last_reason = Some(reason);
+    info!(
+        "net: character world teardown — {} entities removed, keep={keep:?}",
+        before - index.0.len()
+    );
     // In-flight name queries died with the socket; let the next resolve re-ask.
     names.clear_pending();
     items.clear_session();
@@ -231,27 +247,6 @@ pub(super) fn disconnected(
     // The death stores are session-scoped too: a reclaim expiry, resurrect offer, or corpse
     // marker must not survive the socket (the reconnect re-sends the reclaim delay when dead).
     *death_net = crate::death::DeathNet::default();
-}
-
-/// A teleport ack request (`MSG_MOVE_TELEPORT_ACK`) — only our own matters (the ack resumes our
-/// movement); the controller consumes the message.
-pub(super) fn teleport(
-    guid: u64,
-    counter: u32,
-    position: [f32; 3],
-    orientation: f32,
-    self_guid: &SelfGuid,
-    teleports: &mut MessageWriter<TeleportMessage>,
-) {
-    // Only our own teleports matter to the controller (the ack resumes our movement).
-    if self_guid.0 == Some(guid) {
-        teleports.write(TeleportMessage {
-            guid,
-            counter,
-            position,
-            orientation,
-        });
-    }
 }
 
 /// **A knockback the server aimed at our mover** (`SMSG_MOVE_KNOCK_BACK`, decision 1702) — a
@@ -351,41 +346,6 @@ pub(super) fn worldport(
         needs_ack,
         transport_entry,
     });
-}
-
-/// The server game clock (`SMSG_LOGIN_SETTIMESPEED`) — drives the day/night lighting.
-pub(super) fn time_speed(
-    hours: u8,
-    minutes: u8,
-    day_serial: u32,
-    timescale: f32,
-    server_time: &mut ServerTime,
-) {
-    if server_time.0.is_none() {
-        info!("net: server game-time {hours:02}:{minutes:02} (drives lighting)");
-    }
-    server_time.0 = Some(GameTime::new(hours, minutes, day_serial, timescale));
-}
-
-/// The server **wall** clock (`SMSG_QUERY_TIME_RESPONSE`, answering the world-enter
-/// `CMSG_QUERY_TIME`) — the epoch the absolute descriptor stamps are dated in, and so the origin of
-/// every countdown drawn from one (today: the timed-quest timer, decision 1150). Nothing to do with
-/// [`time_speed`] above, which is the in-game day/night clock.
-///
-/// Logged once per session at info, with the skew against our own clock: that number is exactly
-/// what a "the countdown is wrong by a constant" report would be about, and it costs one line.
-pub(super) fn server_unix_time(unix_time: u32, clock: &mut ServerWallClock) {
-    if clock.0.is_none() {
-        let local = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        info!(
-            "net: server wall clock {unix_time} (local clock differs by {}s)",
-            local - i64::from(unix_time)
-        );
-    }
-    clock.sample(unix_time);
 }
 
 /// The login reputation store (`SMSG_INITIALIZE_FACTIONS`).

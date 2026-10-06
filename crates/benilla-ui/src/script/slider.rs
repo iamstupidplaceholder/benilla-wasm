@@ -23,11 +23,11 @@
 //! for Slider frames — so duck-typing addons (`if frame:GetThumbTexture() then …`) see `nil` on
 //! every other kind, exactly as against the client's per-class method sets.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{LuaContext, Table as LuaTable, Value as LuaValue, Vm};
 
-use super::object::{draw_layer_from_str, frame_handle_of};
+use super::object::{draw_layer_from_str, frame_handle_of_context};
 use super::pointer::point_in_rect;
-use super::region::region_wrapper;
+use super::region::region_wrapper_context;
 use super::{event, Model, RegionData};
 use crate::layout::Rect;
 use crate::order::DrawLayer;
@@ -42,37 +42,41 @@ pub(super) const REG_SLIDER_METHODS: &str = "__benilla_slider_methods";
 /// Slider (unreachable through the kind dispatcher, but the method table is a plain Lua value — a
 /// caller could fish it out and misapply it).
 fn with_slider<T>(
-    lua: &Lua,
-    this: &Table,
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
     f: impl FnOnce(&mut SliderState) -> T,
-) -> mlua::Result<T> {
-    let h = frame_handle_of(lua, this)?;
+) -> benilla_lua::Result<T> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let frame = model
         .arena
         .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
     match &mut frame.kind_state {
         KindState::Slider(s) => Ok(f(s)),
-        _ => Err(mlua::Error::runtime("not a Slider")),
+        _ => Err(benilla_lua::Error::runtime("not a Slider")),
     }
 }
 
 /// Get-or-create the thumb texture region (`SetThumbTexture`/`<ThumbTexture>`); `layer` re-layers an
 /// existing thumb. Returns the region's id (for wrapper lookup). The widget default layer is OVERLAY
 /// (RF-28 — the Slider's `drawLayer` attr defaults OVERLAY=3, unlike StatusBar's ARTWORK bar).
-fn ensure_thumb(lua: &Lua, this: &Table, layer: Option<DrawLayer>) -> mlua::Result<u32> {
-    let h = frame_handle_of(lua, this)?;
+fn ensure_thumb(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    layer: Option<DrawLayer>,
+) -> benilla_lua::Result<u32> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
 
     let existing = match &model
         .arena
         .frame(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?
+        .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?
         .kind_state
     {
         KindState::Slider(s) => s.thumb,
-        _ => return Err(mlua::Error::runtime("not a Slider")),
+        _ => return Err(benilla_lua::Error::runtime("not a Slider")),
     };
 
     let rh = match existing {
@@ -91,7 +95,7 @@ fn ensure_thumb(lua: &Lua, this: &Table, layer: Option<DrawLayer>) -> mlua::Resu
                     layer.unwrap_or(DrawLayer::Overlay),
                     0,
                 )
-                .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+                .ok_or_else(|| benilla_lua::Error::runtime("stale frame handle"))?;
             model.region_data.insert(rh, RegionData::default());
             model.touch_layout(); // a region entered the layout gate's read set (decision 0740)
             if let Some(frame) = model.arena.frame_mut(h) {
@@ -105,71 +109,70 @@ fn ensure_thumb(lua: &Lua, this: &Table, layer: Option<DrawLayer>) -> mlua::Resu
     Ok(model.region_id(rh))
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     let m = lua.create_table()?;
 
-    m.set(
-        "SetMinMaxValues",
-        lua.create_function(|lua, (this, min, max): (Table, f32, f32)| {
+    let function = lua.create_function(
+        "Slider:SetMinMaxValues",
+        |lua, (this, min, max): (LuaTable, f32, f32)| {
             // Unlike StatusBar, a reversed pair is NOT swapped (the Slider LoadXML stores min +
             // (max−min) and does no swap, RF-28). A held value re-clamps into the new range and a
             // move fires OnValueChanged — but only once a value EXISTS (`SliderState::set_min_max`,
             // the client's bit2): on a fresh slider this sets the range and fires nothing.
             let changed = with_slider(lua, &this, |s| s.set_min_max(min, max))?;
             fire_value_changed(lua, &this, changed)
-        })?,
+        },
     )?;
-    m.set(
-        "GetMinMaxValues",
-        lua.create_function(|lua, this: Table| with_slider(lua, &this, |s| (s.min, s.max)))?,
-    )?;
-    m.set(
-        "SetValue",
-        lua.create_function(|lua, (this, v): (Table, f32)| {
-            let changed = with_slider(lua, &this, |s| s.store_value(v))?;
-            fire_value_changed(lua, &this, changed)
-        })?,
-    )?;
-    m.set(
-        "GetValue",
-        lua.create_function(|lua, this: Table| with_slider(lua, &this, |s| s.value))?,
-    )?;
-    m.set(
-        "SetValueStep",
+    lua.table_set(&m, "SetMinMaxValues", function)?;
+    let function = lua.create_function("Slider:GetMinMaxValues", |lua, this: LuaTable| {
+        with_slider(lua, &this, |s| (s.min, s.max))
+    })?;
+    lua.table_set(&m, "GetMinMaxValues", function)?;
+    let function = lua.create_function("Slider:SetValue", |lua, (this, v): (LuaTable, f32)| {
+        let changed = with_slider(lua, &this, |s| s.store_value(v))?;
+        fire_value_changed(lua, &this, changed)
+    })?;
+    lua.table_set(&m, "SetValue", function)?;
+    let function = lua.create_function("Slider:GetValue", |lua, this: LuaTable| {
+        with_slider(lua, &this, |s| s.value)
+    })?;
+    lua.table_set(&m, "GetValue", function)?;
+    let function = lua.create_function(
+        "Slider:SetValueStep",
         // Not a field write (2143): past the step store it re-pushes the range through
         // `SetMinMaxValues`, which re-clamps and re-quantises the held value onto the new lattice
         // and fires `OnValueChanged` if it moved — so this binding fires like the other two.
-        lua.create_function(|lua, (this, step): (Table, f32)| {
+        |lua, (this, step): (LuaTable, f32)| {
             let changed = with_slider(lua, &this, |s| s.set_value_step(step))?;
             fire_value_changed(lua, &this, changed)
-        })?,
+        },
     )?;
-    m.set(
-        "GetValueStep",
-        lua.create_function(|lua, this: Table| with_slider(lua, &this, |s| s.step))?,
-    )?;
-    m.set(
-        "SetOrientation",
-        lua.create_function(|lua, (this, o): (Table, String)| {
+    lua.table_set(&m, "SetValueStep", function)?;
+    let function = lua.create_function("Slider:GetValueStep", |lua, this: LuaTable| {
+        with_slider(lua, &this, |s| s.step)
+    })?;
+    lua.table_set(&m, "GetValueStep", function)?;
+    let function = lua.create_function(
+        "Slider:SetOrientation",
+        |lua, (this, o): (LuaTable, String)| {
             let vertical = match o.to_ascii_uppercase().as_str() {
                 "HORIZONTAL" => false,
                 "VERTICAL" => true,
                 _ => {
-                    return Err(mlua::Error::runtime(format!(
+                    return Err(benilla_lua::Error::runtime(format!(
                         "SetOrientation: unknown orientation '{o}'"
                     )))
                 }
             };
             with_slider(lua, &this, |s| s.vertical = vertical)
-        })?,
+        },
     )?;
-    m.set(
-        "GetOrientation",
-        lua.create_function(|lua, this: Table| {
-            let v = with_slider(lua, &this, |s| s.vertical)?;
-            Ok(if v { "VERTICAL" } else { "HORIZONTAL" }.to_string())
-        })?,
-    )?;
+    lua.table_set(&m, "SetOrientation", function)?;
+    let function = lua.create_function("Slider:GetOrientation", |lua, this: LuaTable| {
+        let v = with_slider(lua, &this, |s| s.vertical)?;
+        Ok(if v { "VERTICAL" } else { "HORIZONTAL" }.to_string())
+    })?;
+    lua.table_set(&m, "GetOrientation", function)?;
 
     // `Enable`/`Disable`/`IsEnabled` WERE here and are GONE, with the `enabled` state they drove.
     // **A 1.12 Slider has no enabled state at all**: the three names are registered once each, in
@@ -192,78 +195,87 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // SetThumbTexture(path [, drawLayer]) | SetThumbTexture(r, g, b [, a]) — the same two forms as a
     // region's SetTexture, targeting the thumb region (created on first use). Mirrors
     // SetStatusBarTexture; the thumb defaults to the OVERLAY layer.
-    m.set(
-        "SetThumbTexture",
-        lua.create_function(
-            |lua, (this, a1, a2, a3, a4): (Table, Value, Value, Value, Value)| {
-                let layer = match &a2 {
-                    Value::String(s) => s.to_str().ok().and_then(|l| draw_layer_from_str(&l)),
-                    _ => None,
-                };
-                let id = ensure_thumb(lua, &this, layer)?;
-                let rh = {
-                    let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    *model.id_to_region.get(&id).expect("thumb region id")
-                };
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let data = model.region_data.entry(rh).or_default();
-                match &a1 {
-                    Value::String(s) => {
-                        data.texture = Some(s.to_str()?.to_string());
-                        data.fill = None;
-                    }
-                    // A solid thumb writes the same slot the path form does — each clears the other.
-                    Value::Number(_) | Value::Integer(_) => {
-                        data.texture = None;
-                        data.fill = Some([
-                            num_f32(&a1),
-                            num_f32(&a2),
-                            num_f32(&a3),
-                            match &a4 {
-                                Value::Nil => 1.0,
-                                v => num_f32(v),
-                            },
-                        ]);
-                    }
-                    _ => {}
-                }
-                Ok(())
-            },
-        )?,
-    )?;
-    m.set(
-        "GetThumbTexture",
-        lua.create_function(|lua, this: Table| {
-            let thumb = with_slider(lua, &this, |s| s.thumb)?;
-            let id = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                thumb.map(|rh| model.region_id(rh))
+    let function = lua.create_function(
+        "Slider:SetThumbTexture",
+        |lua, (this, a1, a2, a3, a4): (LuaTable, LuaValue, LuaValue, LuaValue, LuaValue)| {
+            let layer = match &a2 {
+                LuaValue::String(s) => s.as_str().ok().and_then(draw_layer_from_str),
+                _ => None,
             };
-            match id {
-                Some(id) => Ok(Value::Table(region_wrapper(lua, id)?)),
-                None => Ok(Value::Nil),
+            let id = ensure_thumb(lua, &this, layer)?;
+            let rh = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                *model.id_to_region.get(&id).expect("thumb region id")
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let data = model.region_data.entry(rh).or_default();
+            match &a1 {
+                LuaValue::String(s) => {
+                    data.texture = Some(
+                        s.as_str()
+                            .map_err(|error| {
+                                benilla_lua::Error::runtime(format!(
+                                    "slider thumb texture is not valid UTF-8: {error}"
+                                ))
+                            })?
+                            .to_string(),
+                    );
+                    data.fill = None;
+                }
+                // A solid thumb writes the same slot the path form does — each clears the other.
+                LuaValue::Number(_) | LuaValue::Integer(_) => {
+                    data.texture = None;
+                    data.fill = Some([
+                        num_f32(&a1),
+                        num_f32(&a2),
+                        num_f32(&a3),
+                        match &a4 {
+                            LuaValue::Nil => 1.0,
+                            v => num_f32(v),
+                        },
+                    ]);
+                }
+                _ => {}
             }
-        })?,
+            Ok(())
+        },
     )?;
+    lua.table_set(&m, "SetThumbTexture", function)?;
+    let function = lua.create_function("Slider:GetThumbTexture", |lua, this: LuaTable| {
+        let thumb = with_slider(lua, &this, |s| s.thumb)?;
+        let id = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            thumb.map(|rh| model.region_id(rh))
+        };
+        match id {
+            Some(id) => Ok(LuaValue::Table(region_wrapper_context(lua, id)?)),
+            None => Ok(LuaValue::Nil),
+        }
+    })?;
+    lua.table_set(&m, "GetThumbTexture", function)?;
 
-    lua.set_named_registry_value(REG_SLIDER_METHODS, m)?;
+    lua.put_registry(REG_SLIDER_METHODS, m)?;
     Ok(())
 }
 
 /// Fire `OnValueChanged(self, value)` if `changed` carries the new value (RF-28: the Slider's own
 /// script slot `+0x330`). Fired outside any model borrow; errors go to [`Model::errors`].
-fn fire_value_changed(lua: &Lua, this: &Table, changed: Option<f32>) -> mlua::Result<()> {
+fn fire_value_changed(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+    changed: Option<f32>,
+) -> benilla_lua::Result<()> {
     let Some(value) = changed else { return Ok(()) };
     let id = {
-        let h = frame_handle_of(lua, this)?;
+        let h = frame_handle_of_context(lua, this)?;
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         model.frame_id(h)
     };
-    if let Err(e) = event::fire_widget_handler(
+    if let Err(e) = event::fire_widget_handler_context(
         lua,
         id,
         "OnValueChanged",
-        vec![Value::Number(f64::from(value))],
+        vec![LuaValue::Number(f64::from(value))],
     ) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
@@ -274,10 +286,10 @@ fn fire_value_changed(lua: &Lua, this: &Table, changed: Option<f32>) -> mlua::Re
 }
 
 /// A Lua number-ish → f32 (nil/other → 0.0), for the color-form arguments.
-fn num_f32(v: &Value) -> f32 {
+fn num_f32(v: &LuaValue) -> f32 {
     match v {
-        Value::Number(n) => *n as f32,
-        Value::Integer(i) => *i as f32,
+        LuaValue::Number(n) => *n as f32,
+        LuaValue::Integer(i) => *i as f32,
         _ => 0.0,
     }
 }

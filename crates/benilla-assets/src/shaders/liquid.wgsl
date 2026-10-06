@@ -133,7 +133,35 @@ struct WowLight {
     wmo_fog_color: vec4<f32>,      // 18 rgb = INTERIOR fog (block 2); w = enable
     wmo_fog_params: vec4<f32>,     // 19 x = start yd; y = end yd
 };
-@group(#{MATERIAL_BIND_GROUP}) @binding(90) var<storage, read> wow_light: WowLight;
+#ifdef WOW_LIGHT_TEXTURE
+@group(#{MATERIAL_BIND_GROUP}) @binding(90) var wow_light_table: texture_2d<u32>;
+fn liquid_light_row(row: i32) -> vec4<f32> {
+    return bitcast<vec4<f32>>(textureLoad(wow_light_table, vec2<i32>(row, 0), 0));
+}
+#else
+@group(#{MATERIAL_BIND_GROUP}) @binding(90) var<storage, read> wow_light_storage: WowLight;
+#endif
+
+fn read_liquid_light() -> WowLight {
+#ifdef WOW_LIGHT_TEXTURE
+    var light: WowLight;
+    light.light_ambient = liquid_light_row(0);
+    light.light_diffuse = liquid_light_row(1);
+    light.light_sun = liquid_light_row(2);
+    light.light_spec = liquid_light_row(3);
+    light.fog_color = liquid_light_row(4);
+    light.fog_params = liquid_light_row(5);
+    light.water_river[0] = liquid_light_row(13);
+    light.water_river[1] = liquid_light_row(14);
+    light.water_ocean[0] = liquid_light_row(15);
+    light.water_ocean[1] = liquid_light_row(16);
+    light.wmo_fog_color = liquid_light_row(18);
+    light.wmo_fog_params = liquid_light_row(19);
+    return light;
+#else
+    return wow_light_storage;
+#endif
+}
 
 struct LiquidVsOut {
     @builtin(position) clip_position: vec4<f32>,
@@ -162,6 +190,7 @@ struct LiquidVsOut {
 // both stages so the per-vertex (faithful) and per-pixel (current) paths run IDENTICAL math — only the
 // EVALUATION DOMAIN differs (interpolated vs evaluated per fragment).
 fn sun_sheen(world_normal: vec3<f32>, world_pos: vec3<f32>) -> vec3<f32> {
+    let wow_light = read_liquid_light();
     let n = normalize(world_normal);
     let to_light = -normalize(wow_light.light_sun.xyz);
     // LOCAL viewer, not the infinite-viewer constant: the reference sets
@@ -248,6 +277,7 @@ fn apply_scroll(uv: vec2<f32>) -> vec2<f32> {
 // room's own `[0xca7f00]` bit on `MeshTag` bit 30 (decision 1787 — the flood decides it, and the
 // WMO geometry lane reads the same answer, which is what keeps the two in step).
 fn apply_fog(rgb: vec3<f32>, world_pos: vec3<f32>, room_fog: u32) -> vec3<f32> {
+    let wow_light = read_liquid_light();
     var fog_color = wow_light.fog_color;
     var fog_span = wow_light.fog_params.xy;
     if (w.kind.z > 0.5 && room_fog != 0u) {
@@ -349,6 +379,7 @@ fn swatch_at(shallow: vec4<f32>, deep: vec4<f32>, v: f32, ocean: bool) -> vec4<f
 
 @fragment
 fn fragment(in: LiquidVsOut) -> @location(0) vec4<f32> {
+    let wow_light = read_liquid_light();
     // HARD FAR-CLIP WALL (same as terrain/models, see terrain.wgsl): discard water beyond the
     // projection far plane so lakes/rivers don't render past the wall. `fog_params.w` = farclip
     // (0 ⇒ disabled).

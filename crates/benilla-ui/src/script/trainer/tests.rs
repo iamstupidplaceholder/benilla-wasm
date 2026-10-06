@@ -33,6 +33,7 @@ fn svc(
         is_trade_skill: false,
         group_key,
         group_name: group_name.into(),
+        skill_line_name: Some(group_name.into()),
     }
 }
 

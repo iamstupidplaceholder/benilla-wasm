@@ -269,7 +269,7 @@ impl SlashCommands {
     /// production, a stub map in tests); `text_id` resolves an `EmotesText` NAME to its id (the
     /// emote catalog). Pure over those two, so the whole table is testable without a VM.
     pub(crate) fn build(
-        get: impl Fn(&str) -> Option<String>,
+        mut get: impl FnMut(&str) -> Option<String>,
         text_id: impl Fn(&str) -> Option<u32>,
     ) -> Self {
         let mut by_alias: HashMap<String, Command> = HashMap::new();
@@ -380,17 +380,16 @@ fn insert(map: &mut HashMap<String, Command>, alias: &str, cmd: Command) {
 /// at the schedule boundary, so this needs no fragile `.after()` chain into two other modules.
 pub(crate) fn build_slash_commands(
     mut commands: Commands,
-    script: Option<NonSend<benilla_ui::script::UiScript>>,
+    script: Option<NonSendMut<benilla_ui::script::UiScript>>,
     emotes: Option<Res<crate::sound::EmoteSounds>>,
 ) {
-    let (Some(script), Some(emotes)) = (script, emotes) else {
+    let (Some(mut script), Some(emotes)) = (script, emotes) else {
         warn!("chat: no UI VM or emote catalog — the slash-command table is EMPTY");
         commands.insert_resource(SlashCommands::default());
         return;
     };
-    let globals = script.lua().globals();
     let table = SlashCommands::build(
-        |name| globals.get::<String>(name).ok().filter(|s| !s.is_empty()),
+        |name| script.global_string(name).filter(|s| !s.is_empty()),
         |token| emotes.text_id(token),
     );
     let (slash, emote, added, dev) = table.counts();

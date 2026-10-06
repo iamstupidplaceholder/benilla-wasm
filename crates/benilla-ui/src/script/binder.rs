@@ -11,7 +11,7 @@
 //! The app owns the innkeeper's guid ([`crate::script::UiScript::set_binder_pending`]'s writer),
 //! which is why `ConfirmBinder()` takes no arguments and queues only a count.
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use super::Model;
 
@@ -35,28 +35,20 @@ impl super::UiScript {
 }
 
 /// Register the two binder globals (the style [`super::duel`] registers its four).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // ConfirmBinder() — the CONFIRM_BINDER dialog's Accept. The one call in the client that binds
     // a hearthstone: everything before it is a question.
-    g.set(
-        "ConfirmBinder",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.binder_confirms += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ConfirmBinder", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.binder_confirms += 1;
+        Ok(())
+    })?;
 
     // CheckBinderDist() — polled from the dialog's OnUpdate; false hides it.
-    g.set(
-        "CheckBinderDist",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.binder_pending)
-        })?,
-    )?;
+    lua.register_function("CheckBinderDist", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.binder_pending)
+    })?;
 
     Ok(())
 }

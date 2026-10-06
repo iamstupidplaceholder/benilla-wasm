@@ -17,180 +17,11 @@
 //! resolve (skill/faction names from the DBC catalogs, trigger-spell display text) — the engine
 //! renders lines, it never reads DBCs.
 
-use std::collections::HashMap;
-
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
-/// An item template's tooltip view (decision 0274 P1) — the fields the line law consumes, in
-/// wire terms (vmangos `SMSG_ITEM_QUERY_SINGLE_RESPONSE`), plus app-resolved display strings.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ItemTemplateView {
-    /// The name line (quality-colored).
-    pub name: String,
-    pub quality: u32,
-    /// Item class/subclass (the slot line's right column) + the equip slot (its left).
-    pub class: u32,
-    pub subclass: u32,
-    pub inventory_type: u32,
-    /// `GetItemInfo`'s `itemType`: what [`Self::class`] is **called** — "Weapon", "Container",
-    /// "Trade Goods" — app-resolved from `ItemClass.dbc` (byte-verified: `0x48e070` pushes
-    /// `[classRow + 4*locale + 0xc]`). `None` for a class with no row, which the reference
-    /// renders as the empty string.
-    pub item_type: Option<String>,
-    /// `GetItemInfo`'s `itemSubType`: what `(class, subclass)` is **called** — app-resolved from
-    /// `ItemSubClass.dbc`, **VerboseName first with a DisplayName fallback**
-    /// ([`benilla_formats::ItemSubClassCatalog::name`]), which is the binding's own two-step at
-    /// `0x48e311`: read `[row + 4*locale + 0x4c]` and use it unless its first byte is 0, else
-    /// `[row + 4*locale + 0x28]`.
-    ///
-    /// **This is a different spelling from the tooltip's type cell**, which reads `+0x28`
-    /// (DisplayName) only — a one-handed sword is "One-Handed Swords" here and "Sword" there.
-    pub item_sub_type: Option<String>,
-    /// What `(class, subclass)` is called on the TOOLTIP's own type cell — `ItemSubClass.dbc`'s
-    /// **DisplayName** alone (`row + 4*locale + 0x28`, column 10: the read the builder makes at
-    /// `0x52c0xx` off the `0xc0db90` row cache), which is the SINGULAR spelling: "Sword", not
-    /// [`Self::item_sub_type`]'s "One-Handed Swords". App-resolved, because the engine reads no
-    /// DBCs — and it is the same string the bag line's `CONTAINER_SLOTS` second hole takes.
-    ///
-    /// This used to be a hand-typed `(class, subclass) → &str` table in the renderer, which is
-    /// the shape decision 2080 caught one file over: a stale copy of data the catalog already
-    /// held, missing every container family outright.
-    pub sub_class_display: Option<String>,
-    /// The alternate subclass whose proficiency also permits use (ItemSubClass.dbc
-    /// prerequisite/postrequisite, app-resolved with the builder's sentinel walk: prerequisite
-    /// wins, postrequisite only when prerequisite is −1). A weapon missing its own mask bit but
-    /// holding the alternate's reds the SLOT cell instead of the type cell.
-    pub proficiency_alt: Option<u32>,
-    /// ItemSubClass displayFlags bit 0 (app-resolved): the type cell never prints — the
-    /// "Miscellaneous" family (rings, trinkets, shirts, consumables, recipes).
-    pub hide_subclass: bool,
-    /// Template flags — bit `0x2` = conjured ("Conjured Item").
-    pub flags: u32,
-    /// Bonding: 1 = binds on pickup, 2 = on equip, 3 = on use, 4/5 = quest item.
-    pub bonding: u32,
-    /// `MaxCount` — 1 = "Unique", N > 1 = "Unique (N)", 0 = no line. **Not the stack size**; see
-    /// [`Self::stackable`].
-    pub max_count: u32,
-    /// `Stackable` — the biggest stack one slot can hold (1 = doesn't stack). `GetItemInfo`'s
-    /// `itemStackCount`, read from the cache record's `+0x60` at `0x48e28b` — the dword *after*
-    /// `MaxCount` at `+0x5c`. Linen Cloth is `maxcount 0, stackable 20`, so the two are not
-    /// interchangeable in either direction.
-    pub stackable: u32,
-    /// Nonzero = "This Item Begins a Quest".
-    pub start_quest: u32,
-    /// Container size — "N Slot Bag".
-    pub container_slots: u32,
-    /// Stat mods `(type, value)` in wire order (types: 0 mana, 1 health, 3 agi, 4 str, 5 int,
-    /// 6 spi, 7 stam — the `ITEM_MOD_*` GlobalStrings family).
-    pub stats: Vec<(u32, i32)>,
-    /// Damage blocks `(min, max, school)` in wire order; school 0 physical, 1..6 =
-    /// Holy/Fire/Nature/Frost/Shadow/Arcane.
-    pub damages: Vec<(f32, f32, u32)>,
-    pub delay_ms: u32,
-    pub armor: u32,
-    pub block: u32,
-    /// Holy..Arcane (armor is its own field), the "+N X Resistance" lines.
-    pub resistances: [i32; 6],
-    /// "Durability N / N" (a template hover shows full).
-    pub max_durability: u32,
-    /// "Requires Level N" — printed only for N > 1 (the real builder's `0x52d2cf` gate); red
-    /// when the player is lower.
-    pub required_level: u32,
-    /// Class/race masks; `<= 0` = everyone (no line). Red when the player's bit is absent.
-    pub allowable_class: i32,
-    pub allowable_race: i32,
-    /// Skill requirement: the SkillLine id + rank, with the display name app-resolved
-    /// (`SkillLine.dbc`). `required_skill_name = None` = no skill line.
-    pub required_skill: u32,
-    pub required_skill_rank: u32,
-    pub required_skill_name: Option<String>,
-    /// Spell requirement (nonzero = "Requires <name>") — red when the spellbook doesn't know it.
-    pub required_spell: u32,
-    pub required_spell_name: Option<String>,
-    /// `RequiredHonorRank` — no tooltip line in 1.12, but the item-usable gate (`0x5ea930`)
-    /// compares it against the player's highest honor rank; the merchant list reds on it.
-    pub required_honor_rank: u32,
-    /// `RequiredCityRank` — usable-gate only, like the honor rank. Vanilla data ships no nonzero
-    /// value and vmangos never writes the `PVP_MEDALS` bits the client would test, so a nonzero
-    /// requirement can only fail (see [`item_usable`]).
-    pub required_city_rank: u32,
-    /// Reputation requirement, app-resolved to "Requires <Faction> - <Standing>"; the raw
-    /// faction id + rank ride along for the red check against [`PlayerReqState::rep_ranks`].
-    pub required_rep_line: Option<String>,
-    pub required_rep_faction: u32,
-    pub required_rep_rank: u32,
-    /// Trigger-spell lines `(trigger, spell id, display text)` in wire order: trigger 0/5 =
-    /// "Use:", 1 = "Equip:", 2 = "Chance on hit:", 6 = a taught spell (the "Already known" red
-    /// check, no green line). The text is app-resolved (the spell's name in P1; its substituted
-    /// description in P2) — green lines.
-    pub spell_triggers: Vec<(u32, u32, String)>,
-    /// `LockID` — nonzero prints the red "Locked" line (the key-item sub-line joins with the
-    /// Lock.dbc resolve, the GO-locks follow-up).
-    pub lock_id: u32,
-    /// "N Charge(s)" — the app-resolved count for the first spell slot that survives the real
-    /// builder's charge gate (`0x52db51`: a slot whose value is 0 or the `-1` consume-on-use
-    /// sentinel prints nothing; else `abs`). 0 = no line.
-    pub charges: i32,
-    /// The yellow quoted flavor text (wrapped).
-    pub description: String,
-    /// Nonzero = "<Right Click to Read>" (green).
-    pub page_text: u32,
-    /// Copper — the merchant-open money row (the engine fires `OnTooltipAddMoney`), and
-    /// `ITEM_UNSELLABLE` when 0 in a sell context.
-    pub sell_price: u32,
-    /// `itemset` — nonzero renders the SET block ([`ItemSetView`], asked once by set id).
-    pub item_set: u32,
-    /// The inventory icon as a ready `Interface\Icons\…` path — app-resolved through
-    /// `ItemDisplayInfo.dbc` off the template's `display_info_id`, the same lookup the bag slots
-    /// use. `GetItemInfo`'s `itemTexture`; the reference builds the identical string at
-    /// `0x48e2dd` (`"%s%s%s"` over the icon directory, `"\\"`, and the row's icon name).
-    /// `None` on the ~26% of display rows that carry no icon.
-    pub icon: Option<String>,
-    /// `RandomProperty` (template `+0x1b8`) — the item CAN roll a "… of the Bear" suffix. Its one
-    /// consumer is the enchant family's third arm: with no instance to read a roll from, the
-    /// tooltip prints the `<Random enchantment>` placeholder instead of any per-slot line (wow-re
-    /// §1-ENCHANT §E5). Decision 0920.
-    pub random_property: u32,
-}
-
-/// The player state the red-line law compares against (decision 0274 P1): pushed by the app
-/// whenever it changes. Level and class also ride the `"player"` unit feed; this carries the
-/// pieces that don't (the class/race IDS as mask bits, and the skill ranks).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PlayerReqState {
-    pub level: u32,
-    /// Class id (1 warrior … 11 druid) — the `allowable_class` mask bit is `1 << (id-1)`.
-    pub class_id: u32,
-    /// Race id (1 human … 8 troll) — the `allowable_race` mask bit is `1 << (id-1)`.
-    pub race_id: u32,
-    /// SkillLine id → current rank, for "Requires <skill> (N)" checks.
-    pub skills: HashMap<u32, u32>,
-    /// Item class (2 weapons / 4 armor) → allowed-subclass bitmask (`SMSG_SET_PROFICIENCY`,
-    /// the client's `0xc4d4a0[class]` store). The slot-line proficiency red: a class WITH an
-    /// entry here reds when the item's `1 << subclass` bit is absent; a class with no entry
-    /// (consumables etc.) never reds.
-    pub proficiency: HashMap<u32, u32>,
-    /// Faction id → the player's reputation rank (0 hated … 7 exalted; DBC base + wire
-    /// standing, app-ranked) — the "Requires <Faction> - <Standing>" red check.
-    pub rep_ranks: HashMap<u32, u8>,
-    /// Whether the spellbook holds an effect-40 (SPELL_EFFECT_DUAL_WIELD) spell — the client's
-    /// `0xc4d770` global (stored on learn, cleared on unlearn; reader `0x5eab70`). An off-hand
-    /// weapon (InventoryType 22) reds its SLOT cell without it.
-    pub can_dual_wield: bool,
-    /// The player's **highest lifetime honor rank** (`PLAYER_FIELD_BYTES` byte 3) — the
-    /// usable-gate's `RequiredHonorRank` comparand.
-    pub honor_rank: u8,
-}
-
-/// [`item_usable`] for an item the caller knows only by **entry** — the shape every window seam
-/// wants, since a row carries an id and the engine holds the templates.
-///
-/// Two conventions are folded in here rather than re-derived per caller: entry `0` (a row with no
-/// item at all) is usable, and a template the app has not answered for yet is usable, which is the
-/// getter's own null-record skip. It was four identical private copies across the merchant, mail,
-/// trade and auction seams before it was one — three had the `item_id == 0` leg and the fourth
+pub use crate::script_game_data::{ItemSetView, ItemTemplateView, PlayerReqState};
 /// reached the same answer through `is_none_or`, which is exactly the kind of agreement that stops
 /// being reliable the moment someone edits one of them.
 pub(super) fn item_usable_by_id(model: &super::Model, item_id: u32) -> bool {
@@ -278,26 +109,6 @@ pub fn item_usable(
         }
     }
     true
-}
-
-/// An item set's tooltip view (the §22 SET block), app-resolved: the ItemSet.dbc row with
-/// member item NAMES joined from the template cache (a `None` name = the member's template is
-/// still in flight — its line waits; the app re-pushes as answers land) and the threshold
-/// bonuses' TEXT ($-substituted spell descriptions). The engine supplies the live half: the
-/// owned/equipped counts off its own inventory slots.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ItemSetView {
-    pub name: String,
-    /// `(item id, resolved name)` per member, DBC order.
-    pub members: Vec<(u32, Option<String>)>,
-    /// `(required equipped count, bonus text)` per bonus, in the DBC's stored slot order —
-    /// the renderer sorts threshold-ascending at print time, like the builder's qsort
-    /// (`0x52e5c0`; The Gladiator ships 3,2,5,4 and prints 2,3,4,5).
-    pub bonuses: Vec<(u32, String)>,
-    /// The set-level skill requirement ("Requires <skill> (N)"), app-named; 0/None = no line.
-    pub required_skill: u32,
-    pub required_skill_rank: u32,
-    pub required_skill_name: Option<String>,
 }
 
 impl super::UiScript {
@@ -484,12 +295,12 @@ fn reference_atoi(s: &str) -> i64 {
 /// on the real 1.12 client — neither begins with `item:`. The "itemlink" the usage string means is
 /// the *item string*, which is also what the binding returns as its second value. Auctioneer builds
 /// exactly that (`AucItemDB.lua:333`: `string.format("item:%s:%s:%s:0", …)`) before calling this.
-fn parse_item_arg(v: &Value) -> mlua::Result<(i64, u32, u32, u32)> {
+fn parse_item_arg(v: &Value) -> benilla_lua::Result<(i64, u32, u32, u32)> {
     // Arm 1 — a number, or a string Lua's own coercion reads as one.
     let as_number = match v {
         Value::Integer(i) => Some(*i as f64),
         Value::Number(n) => Some(*n),
-        Value::String(s) => s.to_str().ok().and_then(|s| s.trim().parse::<f64>().ok()),
+        Value::String(s) => s.as_str().ok().and_then(|s| s.trim().parse::<f64>().ok()),
         _ => None,
     };
     if let Some(n) = as_number {
@@ -497,13 +308,13 @@ fn parse_item_arg(v: &Value) -> mlua::Result<(i64, u32, u32, u32)> {
     }
     // Arm 2 — a string. Anything that is not `item:`-prefixed leaves the id at 0.
     let Value::String(s) = v else {
-        return Err(mlua::Error::RuntimeError(
-            "Usage: GetItemInfo(itemID|\"itemlink\")".into(),
+        return Err(benilla_lua::Error::runtime(
+            "Usage: GetItemInfo(itemID|\"itemlink\")",
         ));
     };
     let s = s
-        .to_str()
-        .map_err(|_| mlua::Error::RuntimeError("Usage: GetItemInfo(itemID|\"itemlink\")".into()))?;
+        .as_str()
+        .map_err(|_| benilla_lua::Error::runtime("Usage: GetItemInfo(itemID|\"itemlink\")"))?;
     let Some(rest) = s
         .get(..5)
         .filter(|p| p.eq_ignore_ascii_case("item:"))
@@ -517,7 +328,7 @@ fn parse_item_arg(v: &Value) -> mlua::Result<(i64, u32, u32, u32)> {
     Ok((id, next(), next(), next()))
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `GetItemQualityColor(quality)` → `r, g, b, escapeString` (decision 1199).
     //
     // A **C-registered** binding in the reference (`0x48dfb0`) and `function engine` in the
@@ -540,24 +351,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `GetLootSlotInfo` answers for a row whose item template is not cached, and that row's text
     // colour is this table's `-1` row (wow-re `system/ui/scratch/loot-slot-record.md` §10,
     // decision 1805).
-    lua.globals().set(
-        "GetItemQualityColor",
-        lua.create_function(|lua, quality: i64| {
-            // The reference reads its argument as a 32-bit int (`ftol`) and then compares it
-            // unsigned, which is exactly this pair of casts.
-            let i = match quality as i32 as u32 {
-                q if q >= 7 => 1,
-                q => q as usize,
-            };
-            let (r, g, b, hex) = QUALITY_COLORS[i];
-            Ok(mlua::MultiValue::from_vec(vec![
-                Value::Number(f64::from(r) / 255.0),
-                Value::Number(f64::from(g) / 255.0),
-                Value::Number(f64::from(b) / 255.0),
-                Value::String(lua.create_string(hex)?),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetItemQualityColor", |_lua, quality: i64| {
+        // The reference reads its argument as a 32-bit int (`ftol`) and then compares it
+        // unsigned, which is exactly this pair of casts.
+        let i = match quality as i32 as u32 {
+            q if q >= 7 => 1,
+            q => q as usize,
+        };
+        let (r, g, b, hex) = QUALITY_COLORS[i];
+        Ok(MultiValue::from(vec![
+            Value::Number(f64::from(r) / 255.0),
+            Value::Number(f64::from(g) / 255.0),
+            Value::Number(f64::from(b) / 255.0),
+            Value::from(hex),
+        ]))
+    })?;
 
     // `GetItemInfo(itemID | "item:id:enchant:randomProperty:suffix")` →
     //   itemName, itemLink, itemQuality, itemMinLevel, itemType, itemSubType,
@@ -596,80 +404,74 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `BenillaGetItemStats` — and exactly like the reference, whose cache lookup `0x55ba30` fires
     // the query and returns null, taking the binding straight to `xor eax,eax; ret` (0 values).
     // The first call comes back empty and the answer arrives later; we never block or fabricate.
-    lua.globals().set(
-        "GetItemInfo",
-        lua.create_function(|lua, arg: Value| {
-            let (id, enchant, random_property, suffix) = parse_item_arg(&arg)?;
-            let Ok(item_id) = u32::try_from(id) else {
-                return Ok(MultiValue::new()); // negative / past u32: no record can hold it
-            };
-            let view = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let v = model.item_templates.get(&item_id).cloned();
-                if v.is_none() && item_id != 0 {
-                    model.item_stat_asks.insert(item_id);
-                }
-                v
-            };
-            let Some(v) = view else {
-                return Ok(MultiValue::new());
-            };
-            let str_or_empty = |s: &Option<String>| s.clone().unwrap_or_default();
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&v.name)?),
-                Value::String(lua.create_string(format!(
-                    "item:{item_id}:{enchant}:{random_property}:{suffix}"
-                ))?),
-                Value::Integer(i64::from(v.quality)),
-                Value::Integer(i64::from(v.required_level)),
-                Value::String(lua.create_string(str_or_empty(&v.item_type))?),
-                Value::String(lua.create_string(str_or_empty(&v.item_sub_type))?),
-                Value::Integer(i64::from(v.stackable)),
-                Value::String(lua.create_string(equip_loc_token(v.inventory_type))?),
-                // The one value that can be genuinely absent rather than empty: a display row
-                // with no icon column. `nil` rather than the reference's `Interface\Icons\`,
-                // which is a path that cannot load — both read as "no icon" to `SetTexture`.
-                match &v.icon {
-                    Some(icon) => Value::String(lua.create_string(icon)?),
-                    None => Value::Nil,
-                },
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetItemInfo", |lua, arg: Value| {
+        let (id, enchant, random_property, suffix) = parse_item_arg(&arg)?;
+        let Ok(item_id) = u32::try_from(id) else {
+            return Ok(MultiValue::new()); // negative / past u32: no record can hold it
+        };
+        let view = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let v = model.item_templates.get(&item_id).cloned();
+            if v.is_none() && item_id != 0 {
+                model.item_stat_asks.insert(item_id);
+            }
+            v
+        };
+        let Some(v) = view else {
+            return Ok(MultiValue::new());
+        };
+        let str_or_empty = |s: &Option<String>| s.clone().unwrap_or_default();
+        Ok(MultiValue::from(vec![
+            Value::from(v.name),
+            Value::from(format!(
+                "item:{item_id}:{enchant}:{random_property}:{suffix}"
+            )),
+            Value::Integer(i64::from(v.quality)),
+            Value::Integer(i64::from(v.required_level)),
+            Value::from(str_or_empty(&v.item_type)),
+            Value::from(str_or_empty(&v.item_sub_type)),
+            Value::Integer(i64::from(v.stackable)),
+            Value::from(equip_loc_token(v.inventory_type)),
+            // The one value that can be genuinely absent rather than empty: a display row
+            // with no icon column. `nil` rather than the reference's `Interface\Icons\`,
+            // which is a path that cannot load — both read as "no icon" to `SetTexture`.
+            match &v.icon {
+                Some(icon) => Value::from(icon.clone()),
+                None => Value::Nil,
+            },
+        ]))
+    })?;
 
     // BenillaGetItemStats(itemId) → name, quality, invType, class, subclass, dmgMin, dmgMax,
     // dmgType, delayMs, armor, block, sellPrice — or nil (recording the ask).
-    lua.globals().set(
-        "BenillaGetItemStats",
-        lua.create_function(|lua, item_id: u32| {
-            let view = {
-                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                let v = model.item_templates.get(&item_id).cloned();
-                if v.is_none() && item_id != 0 {
-                    model.item_stat_asks.insert(item_id);
-                }
-                v
-            };
-            let Some(v) = view else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
-            };
-            let (dmg_min, dmg_max, dmg_type) = v.damages.first().copied().unwrap_or_default();
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&v.name)?),
-                Value::Integer(i64::from(v.quality)),
-                Value::Integer(i64::from(v.inventory_type)),
-                Value::Integer(i64::from(v.class)),
-                Value::Integer(i64::from(v.subclass)),
-                Value::Number(f64::from(dmg_min)),
-                Value::Number(f64::from(dmg_max)),
-                Value::Integer(i64::from(dmg_type)),
-                Value::Integer(i64::from(v.delay_ms)),
-                Value::Integer(i64::from(v.armor)),
-                Value::Integer(i64::from(v.block)),
-                Value::Integer(i64::from(v.sell_price)),
-            ]))
-        })?,
-    )
+    lua.register_function("BenillaGetItemStats", |lua, item_id: u32| {
+        let view = {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let v = model.item_templates.get(&item_id).cloned();
+            if v.is_none() && item_id != 0 {
+                model.item_stat_asks.insert(item_id);
+            }
+            v
+        };
+        let Some(v) = view else {
+            return Ok(MultiValue::from(vec![Value::Nil]));
+        };
+        let (dmg_min, dmg_max, dmg_type) = v.damages.first().copied().unwrap_or_default();
+        Ok(MultiValue::from(vec![
+            Value::from(v.name),
+            Value::Integer(i64::from(v.quality)),
+            Value::Integer(i64::from(v.inventory_type)),
+            Value::Integer(i64::from(v.class)),
+            Value::Integer(i64::from(v.subclass)),
+            Value::Number(f64::from(dmg_min)),
+            Value::Number(f64::from(dmg_max)),
+            Value::Integer(i64::from(dmg_type)),
+            Value::Integer(i64::from(v.delay_ms)),
+            Value::Integer(i64::from(v.armor)),
+            Value::Integer(i64::from(v.block)),
+            Value::Integer(i64::from(v.sell_price)),
+        ]))
+    })
 }
 
 #[cfg(test)]
@@ -1046,7 +848,7 @@ mod get_item_info_tests {
         // Neither a number nor a string raises the binding's own usage error (`0x842d24`, pushed
         // through the `luaL_error` shape at `0x6f4940`).
         let err = s
-            .eval::<mlua::Value>("return GetItemInfo(nil)")
+            .eval::<()>("return GetItemInfo(nil)")
             .unwrap_err()
             .to_string();
         assert!(
@@ -1102,8 +904,14 @@ mod quality_color_tests {
     /// a missing or differently-cased one shows as literal text in a chat line.
     #[test]
     fn get_item_quality_color_is_the_references_own_table() {
-        let s = UiScript::new().unwrap();
-        let hex = |q: i64| {
+        let mut s = UiScript::new().unwrap();
+        // The floats are `byte / 255`, not a rounded approximation — Epic's red is 0xa3/255.
+        let r = s
+            .eval::<f64>("local r = GetItemQualityColor(4) return r")
+            .unwrap();
+        assert!((r - 163.0 / 255.0).abs() < 1e-9, "epic red was {r}");
+
+        let mut hex = |q: i64| {
             s.eval::<String>(&format!(
                 "local r,g,b,h = GetItemQualityColor({q}) return h"
             ))
@@ -1121,11 +929,6 @@ mod quality_color_tests {
             assert_eq!(hex(q), want, "quality {q}");
         }
 
-        // The floats are `byte / 255`, not a rounded approximation — Epic's red is 0xa3/255.
-        let r = s
-            .eval::<f64>("local r = GetItemQualityColor(4) return r")
-            .unwrap();
-        assert!((r - 163.0 / 255.0).abs() < 1e-9, "epic red was {r}");
 
         // `>= 7` clamps to COMMON (index 1), the accessor `0x52ad70`'s own rule — not to Artifact,
         // and never to nil, because the caller concatenates the result.

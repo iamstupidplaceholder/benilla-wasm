@@ -1139,10 +1139,9 @@ mod tests {
                 {
                     let first = rot.keys[0].1;
                     assert!(
-                        rot.keys.iter().all(|(_, q)| q
+                        rot.keys
                             .iter()
-                            .zip(first)
-                            .all(|(a, b)| (a - b).abs() < 1e-6)),
+                            .all(|(_, q)| q.iter().zip(first).all(|(a, b)| (a - b).abs() < 1e-6)),
                         "UI_{token}'s stage rotation is a PARKED key, not an animation — a moving                          stage would have to be read off the live joint instead"
                     );
                     let [x, y, z, w] = first;

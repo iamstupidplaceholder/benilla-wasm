@@ -46,9 +46,9 @@
 //! four arrays are stored float and narrowed to int by `Object::BuildValuesUpdate`, and that cast
 //! saturates a negative to `0` on an arm64 host while wrapping it correctly on x86.
 
-use mlua::{Lua, Value};
+use benilla_lua::{LuaContext, Value, Vm};
 
-use super::binding_abi::flag;
+use super::binding_abi::neutral_flag;
 use super::{binding_abi, Model};
 
 /// The 1.12 weapon-subclass → `SkillLine.dbc` id table, transcribed from vmangos
@@ -515,7 +515,7 @@ impl super::UiScript {
 /// pushed yet — reads the default (the absent shape: zeros, `damage_percent` 1.0). See the module
 /// doc for why exactly these two tokens and no more.
 fn with_unit_stats<T>(
-    lua: &Lua,
+    lua: &mut impl LuaContext,
     token: &Option<String>,
     f: impl FnOnce(&UnitCombatStats) -> T,
 ) -> T {
@@ -566,7 +566,11 @@ fn cgunit_skill(model: &Model, token: &str) -> i64 {
 ///   `PLAYER_VISIBLE_ITEM_*` entries. No item objects exist for a foreign player (their inventory
 ///   guids are server-private), so those views carry entry/icon/name/quality and nothing else —
 ///   which is exactly why the reference's inspect window shows no stack counts or durability.
-fn player_inv_slot(lua: &Lua, token: &Option<String>, slot: i64) -> Option<InvSlotView> {
+fn player_inv_slot(
+    lua: &mut impl LuaContext,
+    token: &Option<String>,
+    slot: i64,
+) -> Option<InvSlotView> {
     let token = token.as_deref()?;
     let idx = usize::try_from(slot).ok()?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -717,9 +721,7 @@ const STAT_USAGE: &str = "Usage: UnitStat(\"unit\", statIndex)";
 const RESISTANCE_USAGE: &str = "Usage: UnitResistance(\"unit\", resistanceIndex)";
 
 /// Register the paper-doll stat/slot globals (decision 0208 §3).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // UnitStat("player", i /*1..=5*/) → (stat, effectiveStat, posBuff, negBuff).
     //
     // **The first two returns are the same field, UNDECOMPOSED** — `UNIT_FIELD_STAT0+i` raw
@@ -740,141 +742,120 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // and `PaperDollFormatStat` do not — is the tell.
     //
     // **An out-of-range index RAISES; it does not answer zeros** (see [`STAT_INDEX_ERROR`]).
-    g.set(
-        "UnitStat",
-        lua.create_function(|lua, (token, i): (Value, Value)| {
-            let token = binding_abi::string_arg(lua, token, STAT_USAGE)?;
-            let idx = binding_abi::number_arg(lua, i, STAT_USAGE)? - 1;
-            if !(0..5).contains(&idx) {
-                return Err(mlua::Error::RuntimeError(STAT_INDEX_ERROR.into()));
-            }
-            let idx = idx as usize;
-            Ok(with_unit_stats(lua, &Some(token), |s| {
-                let (raw, pos, neg) = (s.stats[idx], s.stat_pos[idx], s.stat_neg[idx]);
-                (
-                    i64::from(raw),
-                    i64::from(raw.max(0)),
-                    i64::from(pos),
-                    i64::from(neg),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitStat", |lua, (token, i): (Value, Value)| {
+        let token = binding_abi::neutral_string_arg(token, STAT_USAGE)?;
+        let idx = binding_abi::number_arg_value(i, STAT_USAGE)? - 1;
+        if !(0..5).contains(&idx) {
+            return Err(benilla_lua::Error::runtime(STAT_INDEX_ERROR));
+        }
+        let idx = idx as usize;
+        Ok(with_unit_stats(lua, &Some(token), |s| {
+            let (raw, pos, neg) = (s.stats[idx], s.stat_pos[idx], s.stat_neg[idx]);
+            (
+                i64::from(raw),
+                i64::from(raw.max(0)),
+                i64::from(pos),
+                i64::from(neg),
+            )
+        }))
+    })?;
 
     // UnitResistance("player", school /*0..=6*/) → (base, resistance, positive, negative) — the
     // decomposition helper `0x5efcd0` per school ([0] = armor): `base = raw − pos − neg`, computed
     // BEFORE the clamp, and `resistance = max(raw, 0)`. A school cursed below zero therefore reads
     // a *displayed* 0 with the real (negative) total still folded out of `base`.
     // Out-of-range raises too, with its own string ([`RESISTANCE_INDEX_ERROR`]).
-    g.set(
-        "UnitResistance",
-        lua.create_function(|lua, (token, school): (Value, Value)| {
-            let token = binding_abi::string_arg(lua, token, RESISTANCE_USAGE)?;
-            let school = binding_abi::number_arg(lua, school, RESISTANCE_USAGE)?;
-            if !(0..7).contains(&school) {
-                return Err(mlua::Error::RuntimeError(RESISTANCE_INDEX_ERROR.into()));
-            }
-            let idx = school as usize;
-            Ok(with_unit_stats(lua, &Some(token), |s| {
-                let (raw, pos, neg) = (
-                    s.resistances[idx],
-                    s.resistance_pos[idx],
-                    s.resistance_neg[idx],
-                );
-                (
-                    i64::from(raw - pos - neg),
-                    i64::from(raw.max(0)),
-                    i64::from(pos),
-                    i64::from(neg),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitResistance", |lua, (token, school): (Value, Value)| {
+        let token = binding_abi::neutral_string_arg(token, RESISTANCE_USAGE)?;
+        let school = binding_abi::number_arg_value(school, RESISTANCE_USAGE)?;
+        if !(0..7).contains(&school) {
+            return Err(benilla_lua::Error::runtime(RESISTANCE_INDEX_ERROR));
+        }
+        let idx = school as usize;
+        Ok(with_unit_stats(lua, &Some(token), |s| {
+            let (raw, pos, neg) = (
+                s.resistances[idx],
+                s.resistance_pos[idx],
+                s.resistance_neg[idx],
+            );
+            (
+                i64::from(raw - pos - neg),
+                i64::from(raw.max(0)),
+                i64::from(pos),
+                i64::from(neg),
+            )
+        }))
+    })?;
 
     // UnitArmor("player") → (base, effectiveArmor, armor, posBuff, negBuff) — school 0 through the
     // same `0x5efcd0`, whose 3rd and 4th out-params are both the clamped total (the ref reads
     // effectiveArmor and armor equivalently, and both are zeroed together when raw < 0).
-    g.set(
-        "UnitArmor",
-        lua.create_function(|lua, token: Option<String>| {
-            Ok(with_unit_stats(lua, &token, |s| {
-                let (raw, pos, neg) = (s.resistances[0], s.resistance_pos[0], s.resistance_neg[0]);
-                (
-                    i64::from(raw - pos - neg),
-                    i64::from(raw.max(0)),
-                    i64::from(raw.max(0)),
-                    i64::from(pos),
-                    i64::from(neg),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitArmor", |lua, token: Option<String>| {
+        Ok(with_unit_stats(lua, &token, |s| {
+            let (raw, pos, neg) = (s.resistances[0], s.resistance_pos[0], s.resistance_neg[0]);
+            (
+                i64::from(raw - pos - neg),
+                i64::from(raw.max(0)),
+                i64::from(raw.max(0)),
+                i64::from(pos),
+                i64::from(neg),
+            )
+        }))
+    })?;
 
     // UnitDamage("player") → (minDamage, maxDamage, minOffHandDamage, maxOffHandDamage,
     // physicalBonusPos, physicalBonusNeg, percent) — the damage fields verbatim plus the
     // school-0 MOD_DAMAGE_DONE decomposition (percent 1.0 when absent; decision 0208 "to
     // confirm" flags the buffed decomposition as inferred).
-    g.set(
-        "UnitDamage",
-        lua.create_function(|lua, token: Option<String>| {
-            Ok(with_unit_stats(lua, &token, |s| {
-                (
-                    f64::from(s.min_damage),
-                    f64::from(s.max_damage),
-                    f64::from(s.min_offhand_damage),
-                    f64::from(s.max_offhand_damage),
-                    i64::from(s.physical_bonus_pos),
-                    i64::from(s.physical_bonus_neg),
-                    f64::from(s.damage_percent),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitDamage", |lua, token: Option<String>| {
+        Ok(with_unit_stats(lua, &token, |s| {
+            (
+                f64::from(s.min_damage),
+                f64::from(s.max_damage),
+                f64::from(s.min_offhand_damage),
+                f64::from(s.max_offhand_damage),
+                i64::from(s.physical_bonus_pos),
+                i64::from(s.physical_bonus_neg),
+                f64::from(s.damage_percent),
+            )
+        }))
+    })?;
 
     // UnitAttackSpeed("player") → (mainSpeed, offhandSpeed|nil) in seconds (BASEATTACKTIME /
     // 1000). Offhand is nil unless an offhand weapon is equipped — the snapshot's has_offhand,
     // the app's call (the field itself streams regardless).
-    g.set(
-        "UnitAttackSpeed",
-        lua.create_function(|lua, token: Option<String>| {
-            Ok(with_unit_stats(lua, &token, |s| {
-                (
-                    f64::from(s.main_attack_time_ms) / 1000.0,
-                    s.has_offhand
-                        .then_some(f64::from(s.offhand_attack_time_ms) / 1000.0),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitAttackSpeed", |lua, token: Option<String>| {
+        Ok(with_unit_stats(lua, &token, |s| {
+            (
+                f64::from(s.main_attack_time_ms) / 1000.0,
+                s.has_offhand
+                    .then_some(f64::from(s.offhand_attack_time_ms) / 1000.0),
+            )
+        }))
+    })?;
 
     // UnitAttackPower("player") → (base, posBuff, negBuff): base = UNIT_FIELD_ATTACK_POWER, the
     // buffs the MODS field's split signed halves (neg ≤ 0 — StatSystem.cpp:335-336).
-    g.set(
-        "UnitAttackPower",
-        lua.create_function(|lua, token: Option<String>| {
-            Ok(with_unit_stats(lua, &token, |s| {
-                (
-                    i64::from(s.attack_power),
-                    i64::from(s.attack_power_pos),
-                    i64::from(s.attack_power_neg),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitAttackPower", |lua, token: Option<String>| {
+        Ok(with_unit_stats(lua, &token, |s| {
+            (
+                i64::from(s.attack_power),
+                i64::from(s.attack_power_pos),
+                i64::from(s.attack_power_neg),
+            )
+        }))
+    })?;
 
     // UnitRangedAttackPower("player") → (base, posBuff, negBuff) — the ranged twin.
-    g.set(
-        "UnitRangedAttackPower",
-        lua.create_function(|lua, token: Option<String>| {
-            Ok(with_unit_stats(lua, &token, |s| {
-                (
-                    i64::from(s.ranged_attack_power),
-                    i64::from(s.ranged_attack_power_pos),
-                    i64::from(s.ranged_attack_power_neg),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitRangedAttackPower", |lua, token: Option<String>| {
+        Ok(with_unit_stats(lua, &token, |s| {
+            (
+                i64::from(s.ranged_attack_power),
+                i64::from(s.ranged_attack_power_pos),
+                i64::from(s.ranged_attack_power_neg),
+            )
+        }))
+    })?;
 
     // UnitAttackBothHands("player") → (mainBase, mainMod, offBase, offMod) — **FOUR** returns, one
     // pair per hand: each hand's weapon-skill line, value + its temp+perm bonus, resolved app-side
@@ -891,40 +872,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // A non-player unit takes the same virtual fork `UnitDefense` does (`0x6136b0`) and lands on
     // the identical `level * 5` — and that one **ignores its hand index outright**, so both hands
     // answer the same pair. The pet sheet's Attack row reads 300 at level 60, like its Defense row.
-    g.set(
-        "UnitAttackBothHands",
-        lua.create_function(|lua, token: Option<String>| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match token.as_deref() {
-                Some("player") => model
-                    .player_combat_stats
-                    .as_ref()
-                    .map_or((0, 0, 0, 0), |s| {
-                        let (mb, mm) = skill_clamped(s.main_weapon_skill);
-                        let (ob, om) = skill_clamped(s.offhand_weapon_skill);
-                        (mb, mm, ob, om)
-                    }),
-                Some("pet") => {
-                    let base = cgunit_skill(&model, "pet");
-                    (base, 0, base, 0)
-                }
-                _ => (0, 0, 0, 0),
-            })
-        })?,
-    )?;
+    lua.register_function("UnitAttackBothHands", |lua, token: Option<String>| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match token.as_deref() {
+            Some("player") => model
+                .player_combat_stats
+                .as_ref()
+                .map_or((0, 0, 0, 0), |s| {
+                    let (mb, mm) = skill_clamped(s.main_weapon_skill);
+                    let (ob, om) = skill_clamped(s.offhand_weapon_skill);
+                    (mb, mm, ob, om)
+                }),
+            Some("pet") => {
+                let base = cgunit_skill(&model, "pet");
+                (base, 0, base, 0)
+            }
+            _ => (0, 0, 0, 0),
+        })
+    })?;
 
     // UnitRangedAttack("player") → (base, modifier) — the ranged weapon's skill pair.
-    g.set(
-        "UnitRangedAttack",
-        lua.create_function(|lua, token: Option<String>| {
-            Ok(with_unit_stats(lua, &token, |s| {
-                (
-                    i64::from(s.ranged_weapon_skill.0),
-                    i64::from(s.ranged_weapon_skill.1),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitRangedAttack", |lua, token: Option<String>| {
+        Ok(with_unit_stats(lua, &token, |s| {
+            (
+                i64::from(s.ranged_weapon_skill.0),
+                i64::from(s.ranged_weapon_skill.1),
+            )
+        }))
+    })?;
 
     // UnitDefense(unit) → (base, modifier). The ref reads exactly two numbers and folds the
     // modifier's sign itself (PaperDollFrame.lua:259-271: modifier > 0 → a green posBuff, < 0 → a
@@ -939,20 +914,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `UNIT_FIELD_SUMMONEDBY == my guid`, which our pet passes and no other token we serve does —
     // so `"player"` takes the skill leg, `"pet"` the level leg (a warlock's minion included: it is
     // summoned by us too), and everything else the gate-failure zeros.
-    g.set(
-        "UnitDefense",
-        lua.create_function(|lua, token: Option<String>| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match token.as_deref() {
-                Some("player") => model
-                    .player_combat_stats
-                    .as_ref()
-                    .map_or((0, 0), |s| skill_clamped(s.defense_skill)),
-                Some("pet") => (cgunit_skill(&model, "pet"), 0),
-                _ => (0, 0),
-            })
-        })?,
-    )?;
+    lua.register_function("UnitDefense", |lua, token: Option<String>| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(match token.as_deref() {
+            Some("player") => model
+                .player_combat_stats
+                .as_ref()
+                .map_or((0, 0), |s| skill_clamped(s.defense_skill)),
+            Some("pet") => (cgunit_skill(&model, "pet"), 0),
+            _ => (0, 0),
+        })
+    })?;
 
     // GetDodgeChance() / GetParryChance() / GetBlockChance() → one number each, no unit argument
     // (`reference/1.12-shapes.tsv`, all three `exact` on argc, arity and kind). Player-implicit,
@@ -963,78 +935,67 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         ("GetParryChance", 1),
         ("GetBlockChance", 2),
     ] {
-        g.set(
-            name,
-            lua.create_function(move |lua, ()| {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                Ok(model
-                    .player_combat_stats
-                    .as_ref()
-                    .map_or(0.0, |s| match pick {
-                        0 => f64::from(s.dodge_percent),
-                        1 => f64::from(s.parry_percent),
-                        _ => f64::from(s.block_percent),
-                    }))
-            })?,
-        )?;
+        lua.register_function(name, move |lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model
+                .player_combat_stats
+                .as_ref()
+                .map_or(0.0, |s| match pick {
+                    0 => f64::from(s.dodge_percent),
+                    1 => f64::from(s.parry_percent),
+                    _ => f64::from(s.block_percent),
+                }))
+        })?;
     }
 
     // UnitRangedDamage("player") → (speed, minDamage, maxDamage, physicalBonusPos,
     // physicalBonusNeg, percent) — RANGEDATTACKTIME/1000 + the ranged damage range + the same
     // school-0 mods as UnitDamage.
-    g.set(
-        "UnitRangedDamage",
-        lua.create_function(|lua, token: Option<String>| {
-            Ok(with_unit_stats(lua, &token, |s| {
-                (
-                    f64::from(s.ranged_attack_time_ms) / 1000.0,
-                    f64::from(s.ranged_min_damage),
-                    f64::from(s.ranged_max_damage),
-                    i64::from(s.physical_bonus_pos),
-                    i64::from(s.physical_bonus_neg),
-                    f64::from(s.damage_percent),
-                )
-            }))
-        })?,
-    )?;
+    lua.register_function("UnitRangedDamage", |lua, token: Option<String>| {
+        Ok(with_unit_stats(lua, &token, |s| {
+            (
+                f64::from(s.ranged_attack_time_ms) / 1000.0,
+                f64::from(s.ranged_min_damage),
+                f64::from(s.ranged_max_damage),
+                i64::from(s.physical_bonus_pos),
+                i64::from(s.physical_bonus_neg),
+                f64::from(s.damage_percent),
+            )
+        }))
+    })?;
 
     // HasWandEquipped() → 1/nil (the ref's ranged block swaps "Shoot" in on it). No unit arg —
     // the live global is player-implicit.
-    g.set(
-        "HasWandEquipped",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(flag(
-                model
-                    .player_combat_stats
-                    .as_ref()
-                    .is_some_and(|s| s.has_wand),
-            ))
-        })?,
-    )?;
+    lua.register_function("HasWandEquipped", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(neutral_flag(
+            model
+                .player_combat_stats
+                .as_ref()
+                .is_some_and(|s| s.has_wand),
+        ))
+    })?;
 
     // GetInventoryItemID("player", slot) → itemId | nil (slot per GetInventorySlotInfo: 0 ammo,
     // 1..=19 equipment). Player-token-only like the stat block — the INV_SLOT guids are PRIVATE.
-    g.set(
+    lua.register_function(
         "GetInventoryItemID",
-        lua.create_function(|lua, (token, slot): (Option<String>, i64)| {
-            match player_inv_slot(lua, &token, slot) {
-                Some(v) if v.item_id != 0 => Ok(Value::Integer(i64::from(v.item_id))),
-                _ => Ok(Value::Nil),
-            }
-        })?,
+        |lua, (token, slot): (Option<String>, i64)| match player_inv_slot(lua, &token, slot) {
+            Some(v) if v.item_id != 0 => Ok(Value::Integer(i64::from(v.item_id))),
+            _ => Ok(Value::Nil),
+        },
     )?;
 
     // GetInventoryItemTexture("player", slot) → icon path | nil (nil while the template answer is
     // in flight — the button shows the empty-slot art until the push lands).
-    g.set(
+    lua.register_function(
         "GetInventoryItemTexture",
-        lua.create_function(|lua, (token, slot): (Option<String>, i64)| {
-            match player_inv_slot(lua, &token, slot).and_then(|v| v.icon) {
-                Some(icon) => Ok(Value::String(lua.create_string(&icon)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
+        |lua, (token, slot): (Option<String>, i64)| match player_inv_slot(lua, &token, slot)
+            .and_then(|v| v.icon)
+        {
+            Some(icon) => Ok(Value::from(icon)),
+            None => Ok(Value::Nil),
+        },
     )?;
 
     // GetInventoryItemLink(unit, slot) → the full escaped `|cff…|Hitem:…|h[Name]|h|r` | nil (nil
@@ -1043,14 +1004,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // doll and its inspect twin both reach it from one binding:
     // `DressUpItemLink(GetInventoryItemLink("player", this:GetID()))` (PaperDollFrame.lua:650) and
     // the shift-click `ChatFrameEditBox:Insert(...)` beside it (l.653). Decision 1059.
-    g.set(
+    lua.register_function(
         "GetInventoryItemLink",
-        lua.create_function(|lua, (token, slot): (Option<String>, i64)| {
-            match player_inv_slot(lua, &token, slot).and_then(|v| v.link) {
-                Some(link) => Ok(Value::String(lua.create_string(&link)?)),
-                None => Ok(Value::Nil),
-            }
-        })?,
+        |lua, (token, slot): (Option<String>, i64)| match player_inv_slot(lua, &token, slot)
+            .and_then(|v| v.link)
+        {
+            Some(link) => Ok(Value::from(link)),
+            None => Ok(Value::Nil),
+        },
     )?;
 
     // The binding's own two `.data` literals, read out of the shipped 5875 image and NOT
@@ -1080,16 +1041,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     //    `isBag and count > 0` arm never fires.
     //  · a CONTAINER in one of the four equipped bag slots pushes the `ItemSubClass.dbc`-gated
     //    sum of its contents — see [`InvSlotView::contents_count`].
-    g.set(
+    lua.register_function(
         "GetInventoryItemCount",
-        lua.create_function(|lua, (unit, slot): (Value, Value)| {
-            let token = super::binding_abi::string_arg(lua, unit, USAGE_GET_INVENTORY_ITEM_COUNT)?;
+        |lua, (unit, slot): (Value, Value)| {
+            let token =
+                super::binding_abi::neutral_string_arg(unit, USAGE_GET_INVENTORY_ITEM_COUNT)?;
             let slot0 =
-                super::binding_abi::number_arg(lua, slot, INVALID_SLOT_GET_INVENTORY_ITEM_COUNT)?;
+                super::binding_abi::number_arg_value(slot, INVALID_SLOT_GET_INVENTORY_ITEM_COUNT)?;
             let slot0 = slot0.wrapping_sub(1);
             if !inventory_slot_reader_accepts(slot0) {
-                return Err(mlua::Error::RuntimeError(
-                    INVALID_SLOT_GET_INVENTORY_ITEM_COUNT.into(),
+                return Err(benilla_lua::Error::runtime(
+                    INVALID_SLOT_GET_INVENTORY_ITEM_COUNT,
                 ));
             }
             let Some(v) = player_inv_slot(lua, &Some(token), i64::from(slot0) + 1) else {
@@ -1100,33 +1062,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(_) if slot0 > 0x16 => 0,
                 Some(n) => i64::from(n),
             })
-        })?,
+        },
     )?;
 
     // GetInventoryItemQuality("player", slot) → 0..6 | nil (nil for an empty slot — the wiki
     // shape; the ref keys quality borders on it).
-    g.set(
+    lua.register_function(
         "GetInventoryItemQuality",
-        lua.create_function(|lua, (token, slot): (Option<String>, i64)| {
-            match player_inv_slot(lua, &token, slot) {
-                Some(v) if v.item_id != 0 => Ok(Value::Integer(i64::from(v.quality))),
-                _ => Ok(Value::Nil),
-            }
-        })?,
+        |lua, (token, slot): (Option<String>, i64)| match player_inv_slot(lua, &token, slot) {
+            Some(v) if v.item_id != 0 => Ok(Value::Integer(i64::from(v.quality))),
+            _ => Ok(Value::Nil),
+        },
     )?;
 
     // GetInventoryItemBroken("player", slot) → 1 | nil — the shared broken classification
     // ([`slot_is_broken`]: durability 0 with a max, or the force-red flag bit; wrapped never).
     // The ref's PaperDollItemSlotButton_Update keys the red slot tint on it
     // (PaperDollFrame.lua:670-676).
-    g.set(
+    lua.register_function(
         "GetInventoryItemBroken",
-        lua.create_function(|lua, (token, slot): (Option<String>, i64)| {
-            match player_inv_slot(lua, &token, slot) {
-                Some(v) if slot_is_broken(&v) => Ok(Value::Integer(1)),
-                _ => Ok(Value::Nil),
-            }
-        })?,
+        |lua, (token, slot): (Option<String>, i64)| match player_inv_slot(lua, &token, slot) {
+            Some(v) if slot_is_broken(&v) => Ok(Value::Integer(1)),
+            _ => Ok(Value::Nil),
+        },
     )?;
 
     // GetInventoryItemCooldown(unit, slot) → (start, duration, enable), the EQUIPPED twin of
@@ -1145,44 +1103,36 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // When an equipped-cooldown feed lands, this reads it the way the container twin reads
     // `container_cooldowns`, and the CooldownFrame the doll slots already carry starts sweeping
     // with no caller change.
-    g.set(
+    lua.register_function(
         "GetInventoryItemCooldown",
-        lua.create_function(|_, (_token, _slot): (Option<String>, i64)| {
-            Ok((0.0f64, 0.0f64, 1i64))
-        })?,
+        |_, (_token, _slot): (Option<String>, i64)| Ok((0.0f64, 0.0f64, 1i64)),
     )?;
 
     // GetInventoryAlertStatus(index) → the region's alert status (`INV_ALERT_STATUS`: 0 none,
     // 3 damaged/low-ammo, 4 broken; 1/2 = temp-enchant alerts, unfed) — DurabilityFrame's
     // armor-guy read. Valid 1..=12 (the client's own 12-entry table; index 12 = low ammo, which
     // the 1.12 FrameXML never reads); out-of-range reads 0.
-    g.set(
-        "GetInventoryAlertStatus",
-        lua.create_function(|lua, index: usize| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            Ok(if (1..=12).contains(&index) {
-                i64::from(model.inventory_alerts[index - 1])
-            } else {
-                0
-            })
-        })?,
-    )?;
+    lua.register_function("GetInventoryAlertStatus", |lua, index: usize| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        Ok(if (1..=12).contains(&index) {
+            i64::from(model.inventory_alerts[index - 1])
+        } else {
+            0
+        })
+    })?;
 
     // OffhandHasWeapon() → 1 | nil — whether the off-hand slot holds a WEAPON (item class 2)
     // rather than a shield/held-in-off-hand; DurabilityFrame.lua swaps the shield glyph for the
     // off-weapon glyph on it. Read off the equipped slot view + the template store.
-    g.set(
-        "OffhandHasWeapon",
-        lua.create_function(|lua, (): ()| {
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            let is_weapon = model.inventory_slots[17]
-                .as_ref()
-                .filter(|v| v.item_id != 0)
-                .and_then(|v| model.item_templates.get(&v.item_id))
-                .is_some_and(|t| t.class == 2);
-            Ok(is_weapon.then_some(1i64))
-        })?,
-    )?;
+    lua.register_function("OffhandHasWeapon", |lua, (): ()| {
+        let model = lua.app_data_mut::<Model>().expect("model app_data");
+        let is_weapon = model.inventory_slots[17]
+            .as_ref()
+            .filter(|v| v.item_id != 0)
+            .and_then(|v| model.item_templates.get(&v.item_id))
+            .is_some_and(|t| t.class == 2);
+        Ok(is_weapon.then_some(1i64))
+    })?;
 
     // GetInventorySlotInfo(slotName) → (slotId, textureName, checkRelic) — the client's own
     // PaperDollItemFrame.dbc rows (SLOT_INFO above). An unknown name is a Lua error, the client's
@@ -1193,63 +1143,56 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // which is the class half, and stock reads the two as a conjunction
     // (`PaperDollFrame.lua:680`/`:744`). This comment used to say `UnitHasRelicSlot` is a
     // later-era concept, always false in vanilla; it is not — decision 1796.
-    g.set(
-        "GetInventorySlotInfo",
-        lua.create_function(|lua, name: String| {
-            // **The name match is CASE-INSENSITIVE, and that was the whole bug.** `0x4c8215` calls
-            // `0x64a4c0` -> `0x414310`, the CRT `_strnicmp`, whose comparison folds BOTH operands
-            // (`0x414352 add ah,dh` / `0x41435c add al,dh`, with `dh = 0x20` and the A-Z bounds in
-            // `bh`/`bl`) before the byte compare — ASCII folding, which is exactly
-            // `eq_ignore_ascii_case`. Its locale-aware arm folds too, so the verdict does not
-            // depend on one. `maxlen` is `0x7fffffff` and the loop stops at the first NUL on either
-            // side, so it is a FULL-STRING compare, not a prefix. The non-circular control is that
-            // the image also ships a byte-identical case-SENSITIVE wrapper (`0x64a480` ->
-            // `0x40de80`, `rep cmpsb`, no fold) and this binding does not call it.
-            //
-            // Two 1.12-era corpus addons died at session start on this and both worked on the real
-            // client: `FuBar_AmmoFu` passes `"ammoSlot"` and `FuBar_PoisonFu` `"MAINHANDSLOT"`.
-            // The 36 shipped names stay pairwise distinct after folding, so first-match-wins cannot
-            // become ambiguous.
-            let Some((_, id, art)) = SLOT_INFO
-                .iter()
-                .find(|(n, _, _)| n.eq_ignore_ascii_case(&name))
-            else {
-                // The raise is faithful — there is no nil path, and `0x4c823c xor eax,eax; ret` is
-                // dead code after `luaL_error` longjmps. The message is the reference's own
-                // (`.rdata 0x848894`): no `Usage:` prefix, and the offending name is NOT
-                // interpolated. The `Usage:` literals either side of it in the string pool belong
-                // to `KeyRingButtonIDToInvSlotID` and `GetInventoryItemTexture` — the adjacency
-                // trap.
-                return Err(mlua::Error::runtime(
-                    "Invalid inventory slot in GetInventorySlotInfo",
-                ));
-            };
-            Ok((
-                *id,
-                // The DBC string, VERBATIM. `0x4c825b` pushes `[esi+4]` straight through
-                // (`0x6f3890`, `repne scasb` for the length) with no normalisation anywhere, and
-                // the stored bytes are `interface\paperdoll\UI-PaperDoll-Slot-Bag.blp` — a
-                // LOWERCASE directory, and the `.blp` extension present. Only the
-                // `UI-PaperDoll-Slot-` leaf is mixed case. Texture *loading* would not care (the
-                // asset VFS folds case), but this is a Lua-visible string: anything that compares
-                // it, keys a table by it or concatenates it sees these bytes.
-                Value::String(
-                    lua.create_string(format!(
-                        "interface\\paperdoll\\UI-PaperDoll-Slot-{art}.blp"
-                    ))?,
-                ),
-                // `checkRelic` — the NUMBER 1, never a boolean, and only for `RangedSlot`
-                // (`0x4c8263 dec ecx; cmp ecx,0x11`, i.e. SlotNumber 18); nil for every other slot.
-                // It shipped as a constant `false` here, which is falsey like nil but is the wrong
-                // type for a caller that compares it to 1, and wrong outright for the ranged slot.
-                if *id == 18 {
-                    Value::Integer(1)
-                } else {
-                    Value::Nil
-                },
-            ))
-        })?,
-    )?;
+    lua.register_function("GetInventorySlotInfo", |_, name: String| {
+        // **The name match is CASE-INSENSITIVE, and that was the whole bug.** `0x4c8215` calls
+        // `0x64a4c0` -> `0x414310`, the CRT `_strnicmp`, whose comparison folds BOTH operands
+        // (`0x414352 add ah,dh` / `0x41435c add al,dh`, with `dh = 0x20` and the A-Z bounds in
+        // `bh`/`bl`) before the byte compare — ASCII folding, which is exactly
+        // `eq_ignore_ascii_case`. Its locale-aware arm folds too, so the verdict does not
+        // depend on one. `maxlen` is `0x7fffffff` and the loop stops at the first NUL on either
+        // side, so it is a FULL-STRING compare, not a prefix. The non-circular control is that
+        // the image also ships a byte-identical case-SENSITIVE wrapper (`0x64a480` ->
+        // `0x40de80`, `rep cmpsb`, no fold) and this binding does not call it.
+        //
+        // Two 1.12-era corpus addons died at session start on this and both worked on the real
+        // client: `FuBar_AmmoFu` passes `"ammoSlot"` and `FuBar_PoisonFu` `"MAINHANDSLOT"`.
+        // The 36 shipped names stay pairwise distinct after folding, so first-match-wins cannot
+        // become ambiguous.
+        let Some((_, id, art)) = SLOT_INFO
+            .iter()
+            .find(|(n, _, _)| n.eq_ignore_ascii_case(&name))
+        else {
+            // The raise is faithful — there is no nil path, and `0x4c823c xor eax,eax; ret` is
+            // dead code after `luaL_error` longjmps. The message is the reference's own
+            // (`.rdata 0x848894`): no `Usage:` prefix, and the offending name is NOT
+            // interpolated. The `Usage:` literals either side of it in the string pool belong
+            // to `KeyRingButtonIDToInvSlotID` and `GetInventoryItemTexture` — the adjacency
+            // trap.
+            return Err(benilla_lua::Error::runtime(
+                "Invalid inventory slot in GetInventorySlotInfo",
+            ));
+        };
+        Ok((
+            *id,
+            // The DBC string, VERBATIM. `0x4c825b` pushes `[esi+4]` straight through
+            // (`0x6f3890`, `repne scasb` for the length) with no normalisation anywhere, and
+            // the stored bytes are `interface\paperdoll\UI-PaperDoll-Slot-Bag.blp` — a
+            // LOWERCASE directory, and the `.blp` extension present. Only the
+            // `UI-PaperDoll-Slot-` leaf is mixed case. Texture *loading* would not care (the
+            // asset VFS folds case), but this is a Lua-visible string: anything that compares
+            // it, keys a table by it or concatenates it sees these bytes.
+            Value::from(format!("interface\\paperdoll\\UI-PaperDoll-Slot-{art}.blp")),
+            // `checkRelic` — the NUMBER 1, never a boolean, and only for `RangedSlot`
+            // (`0x4c8263 dec ecx; cmp ecx,0x11`, i.e. SlotNumber 18); nil for every other slot.
+            // It shipped as a constant `false` here, which is falsey like nil but is the wrong
+            // type for a caller that compares it to 1, and wrong outright for the ranged slot.
+            if *id == 18 {
+                Value::Integer(1)
+            } else {
+                Value::Nil
+            },
+        ))
+    })?;
 
     Ok(())
 }
@@ -1555,7 +1498,7 @@ mod tests {
                 .unwrap(),
             (0.0, 0.0, 0.0, 0.0, 0, 0, 1.0)
         );
-        let fresh = UiScript::new().unwrap();
+        let mut fresh = UiScript::new().unwrap();
         assert_eq!(
             fresh
                 .eval::<(f64, f64, f64, f64, i64, i64, f64)>(r#"return UnitDamage("player")"#)
@@ -1883,12 +1826,12 @@ mod tests {
     #[test]
     fn has_wand_equipped_reads_the_flag() {
         let mut s = UiScript::new().unwrap();
-        assert!(!s.eval::<bool>("return HasWandEquipped()").unwrap());
+        assert!(!s.eval_truthy("return HasWandEquipped()").unwrap());
         s.set_player_combat_stats(Some(UnitCombatStats {
             has_wand: true,
             ..stats()
         }));
-        assert!(s.eval::<bool>("return HasWandEquipped()").unwrap());
+        assert!(s.eval_truthy("return HasWandEquipped()").unwrap());
     }
 
     /// **`GetInventoryItemCount`'s container fork** (`0x4c8680`, wow-re
@@ -1929,7 +1872,7 @@ mod tests {
         bank[0] = bag(Some(162)); // the very same quiver, in a bank bag slot
         s.set_bank_bag_slots(bank);
 
-        let count = |slot: i64| {
+        let mut count = |slot: i64| {
             s.eval::<i64>(&format!(
                 r#"return GetInventoryItemCount("player", {slot})"#
             ))
@@ -1948,11 +1891,18 @@ mod tests {
             "0-based 63 is past 0x16: every container short-circuits, quiver or not"
         );
 
+        assert_eq!(
+            count(0),
+            1,
+            "the ammo pseudo-slot (0-based -1) is in the whitelist, so it ANSWERS — and with no \
+             ammo seated the answer is the empty one, which is 1"
+        );
+
         // The two `.data` literals, and the fact that both arms RAISE rather than answer. A slot
         // outside the shared reader's whitelist is not an empty slot: the backpack's own item
         // slots (Lua 24..=39) are addressed through the container API, and handing one here
         // abandons the statement.
-        let err = |code: &str| s.run(code).unwrap_err().to_string();
+        let mut err = |code: &str| s.run(code).unwrap_err().to_string();
         assert!(
             err(r#"GetInventoryItemCount("player", 30)"#)
                 .contains("Invalid inventory slot in GetInventoryItemCount"),
@@ -1972,12 +1922,6 @@ mod tests {
             err("GetInventoryItemCount({}, 1)")
                 .contains("Usage: GetInventoryItemCount(unit, slot)"),
             "…and only a bad unit takes the Usage string"
-        );
-        assert_eq!(
-            count(0),
-            1,
-            "the ammo pseudo-slot (0-based -1) is in the whitelist, so it ANSWERS — and with no \
-             ammo seated the answer is the empty one, which is 1"
         );
     }
 
@@ -2073,7 +2017,7 @@ mod tests {
 
     #[test]
     fn get_inventory_slot_info_serves_the_dbc_rows() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.eval::<(i64, String)>(r#"return GetInventorySlotInfo("HeadSlot")"#)
                 .unwrap(),
@@ -2145,7 +2089,7 @@ mod tests {
     /// pane).
     #[test]
     fn each_model_pane_carries_its_own_facing_for_the_app_to_sample() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         assert_eq!(
             s.model_pane_facing("CharacterModelFrame"),
             0.0,

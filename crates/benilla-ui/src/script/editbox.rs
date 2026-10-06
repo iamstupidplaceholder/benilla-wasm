@@ -15,7 +15,7 @@
 //!   **`autoFocus` DOES focus on show** (corrected 2026-08-29, wow-re `editbox-selection-focus-law.md`
 //!   §6): the OnShow override tail-jumps `SetFocus` when nothing else holds focus, and the OnHide
 //!   mirror tail-jumps `ClearFocus`. The old "verified by absence" negative came from a `call`-only
-//!   census that could not see a tail-`jmp`. Both overrides are [`visibility_focus`] here, and the
+//!   census that could not see a tail-`jmp`. Both overrides are [`visibility_focus_context`] here, and the
 //!   construction default is `true` off the bytes (see
 //!   [`EditBoxState::auto_focus`](crate::widget::EditBoxState::auto_focus)). The
 //!   self-acquire-on-first-key half stands beside it.
@@ -46,9 +46,9 @@
 //!   Windows/Linux; decision 0301) and reuse the byte-verified word classes + selection-first
 //!   delete law.
 
-use mlua::{Lua, Table, Value};
+use benilla_lua::{CallbackContext, LuaContext, Table as LuaTable};
 
-use super::object::frame_handle_of;
+use super::object::frame_handle_of_context;
 use super::types::{EditAction, EditUnit};
 use super::{event, Model, RegionData};
 use crate::layout::{Anchor, Point};
@@ -65,7 +65,7 @@ pub(super) const REG_EDITBOX_METHODS: &str = "__benilla_editbox_methods";
 /// A typed character. Routes per §1/§2; on a focused box, Ctrl+A (delivered as the SOH control char)
 /// selects all, other C0 control chars are consumed-but-inert, and printable text is inserted. Always
 /// consumes when a box is (or becomes) focused.
-pub(super) fn char_input(lua: &Lua, text: &str) -> bool {
+pub(super) fn char_input(lua: &mut impl LuaContext, text: &str) -> bool {
     let Some(h) = route(lua) else {
         return false;
     };
@@ -90,7 +90,7 @@ pub(super) fn char_input(lua: &Lua, text: &str) -> bool {
 /// the same way a typed char is gated — every C0 control char is dropped, except a newline in a
 /// `multiLine` box — then inserted as one edit (selection-replace + numeric/caps rules via [`insert`],
 /// no `OnSpacePressed` fire: a paste is not a typed space). Always consumes when a box is focused.
-pub(super) fn paste(lua: &Lua, text: &str) -> bool {
+pub(super) fn paste(lua: &mut impl LuaContext, text: &str) -> bool {
     let Some(h) = route(lua) else {
         return false;
     };
@@ -98,7 +98,7 @@ pub(super) fn paste(lua: &Lua, text: &str) -> bool {
     // this layer's.
     if with_eb(lua, h, |eb| eb.paste(text)).is_some_and(|o| o.text_changed) {
         sync_text_region(lua, h);
-        mark_text_changed(lua, h);
+        mark_text_changed_context(lua, h);
     }
     true
 }
@@ -106,7 +106,7 @@ pub(super) fn paste(lua: &Lua, text: &str) -> bool {
 /// A non-character key by name — only the three *box-event* keys act (their FrameXML scripts);
 /// every editing key reaches the box as a semantic [`EditAction`] via [`action`] instead. Routes
 /// per §1/§2; a focused box consumes the key even when it does nothing with it.
-pub(super) fn key_input(lua: &Lua, key: &str) -> bool {
+pub(super) fn key_input(lua: &mut impl LuaContext, key: &str) -> bool {
     let Some(h) = route(lua) else {
         return false;
     };
@@ -117,12 +117,12 @@ pub(super) fn key_input(lua: &Lua, key: &str) -> bool {
             if with_eb(lua, h, |eb| eb.multi_line).unwrap_or(false) {
                 insert(lua, h, "\n", false);
             } else {
-                fire_script(lua, id, "OnEnterPressed");
+                fire_script_context(lua, id, "OnEnterPressed");
             }
         }
         // Escape fires the script but does NOT release focus (FrameXML calls ClearFocus itself).
-        "ESCAPE" => fire_script(lua, id, "OnEscapePressed"),
-        "TAB" => fire_script(lua, id, "OnTabPressed"),
+        "ESCAPE" => fire_script_context(lua, id, "OnEscapePressed"),
+        "TAB" => fire_script_context(lua, id, "OnTabPressed"),
         // Any other named key: a focused box still consumes it (past the guard), doing nothing.
         _ => {}
     }
@@ -132,7 +132,7 @@ pub(super) fn key_input(lua: &Lua, key: &str) -> bool {
 /// One semantic editing operation — the host's per-OS keymap output (decision 0301). Same
 /// routing/consumption law as [`key_input`]: the focused (or self-acquiring per §2) box processes
 /// it; no box → not consumed.
-pub(super) fn action(lua: &Lua, a: EditAction) -> bool {
+pub(super) fn action(lua: &mut impl LuaContext, a: EditAction) -> bool {
     let Some(h) = route(lua) else {
         return false;
     };
@@ -145,7 +145,9 @@ pub(super) fn action(lua: &Lua, a: EditAction) -> bool {
             EditUnit::Char => move_horizontal(lua, h, !back, extend),
             // Ctrl/Option picks the word-granular cursor helper (RF-0082 §4: "char- vs
             // word-granular by the Ctrl check").
-            EditUnit::Word => interact::move_word(lua, h, !back, extend),
+            EditUnit::Word => {
+                interact::move_word(lua, h, !back, extend);
+            }
             EditUnit::Edge => move_to_edge(lua, h, !back, extend),
         },
         EditAction::Delete { unit, back } => match unit {
@@ -193,10 +195,13 @@ pub(super) use interact::{
 /// - A focused handle that went stale → cleared, then fall through to self-acquire.
 /// - No focus → the topmost effectively-visible `autoFocus` EditBox self-acquires (firing
 ///   `OnEditFocusGained`) and processes this same event; otherwise `None` (not consumed).
-fn route(lua: &Lua) -> Option<FrameHandle> {
+fn route(lua: &mut impl LuaContext) -> Option<FrameHandle> {
     {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         if let Some(h) = model.focused_editbox {
+            if !model.input_presented(h) {
+                return None;
+            }
             match model.arena.frame(h) {
                 Some(f) if f.effective_visible && f.kind == FrameKind::EditBox => return Some(h),
                 Some(_) => return None, // alive but hidden: block self-acquire, don't consume
@@ -205,17 +210,20 @@ fn route(lua: &Lua) -> Option<FrameHandle> {
         }
     }
     let h = topmost_autofocus(lua)?;
-    set_focus_handle(lua, h);
+    set_focus_handle_context(lua, h);
     Some(h)
 }
 
 /// The topmost-drawn effectively-visible `autoFocus` EditBox (the keyboard self-acquire target), or
 /// `None`. Walks the draw order top-down like [`crate::order::hit_test`].
-fn topmost_autofocus(lua: &Lua) -> Option<FrameHandle> {
+fn topmost_autofocus(lua: &mut impl LuaContext) -> Option<FrameHandle> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     let sorted = order::traversal(&model.arena);
     for (target, _) in sorted.iter().rev() {
         if let ZTarget::Frame(fh) = *target {
+            if !model.input_presented(fh) {
+                continue;
+            }
             if let Some(KindState::EditBox(eb)) = model.arena.frame(fh).map(|f| &f.kind_state) {
                 if eb.auto_focus {
                     return Some(fh);
@@ -232,7 +240,7 @@ fn topmost_autofocus(lua: &Lua) -> Option<FrameHandle> {
 /// `0x77e3f6` (inside this) is the ONLY instruction image-wide that grants a box the focus, and it
 /// writes no selection field — so every focus gain in the client, whatever triggers it, is
 /// selection-neutral.
-fn set_focus_handle(lua: &Lua, h: FrameHandle) {
+fn set_focus_handle_context(lua: &mut impl LuaContext, h: FrameHandle) {
     let (old_id, new_id) = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let focusable = matches!(
@@ -253,9 +261,9 @@ fn set_focus_handle(lua: &Lua, h: FrameHandle) {
         (old.map(|o| model.frame_id(o)), model.frame_id(h))
     };
     if let Some(oid) = old_id {
-        fire_script(lua, oid, "OnEditFocusLost");
+        fire_script_context(lua, oid, "OnEditFocusLost");
     }
-    fire_script(lua, new_id, "OnEditFocusGained");
+    fire_script_context(lua, new_id, "OnEditFocusGained");
 }
 
 /// The EditBox's own **OnShow/OnHide vtable overrides** (`0x81c910` slots +0x30/+0x34), run by
@@ -271,11 +279,11 @@ fn set_focus_handle(lua: &Lua, h: FrameHandle) {
 /// Both were missing until 2026-08-29 (decision 1686). wow-re had published "autoFocus does NOT
 /// focus on show — VERIFIED by enumerating callers" off a census written over `call` alone, which
 /// cannot see the override's tail-`jmp`; benilla had transcribed the negative.
-pub(super) fn visibility_focus(lua: &Lua, h: FrameHandle, visible: bool) {
+pub(super) fn visibility_focus_context(lua: &mut impl LuaContext, h: FrameHandle, visible: bool) {
     if !visible {
         // The guard lives in `clear_focus_handle`, exactly as it does in `0x77e410` — so this is
         // called unconditionally here, like the reference's own unconditional tail-jmp.
-        clear_focus_handle(lua, h);
+        clear_focus_handle_context(lua, h);
         return;
     }
     let wants = {
@@ -288,14 +296,14 @@ pub(super) fn visibility_focus(lua: &Lua, h: FrameHandle, visible: bool) {
     };
     if wants {
         // `SetFocus` re-checks effective-visibility itself, which is the reference's gate too.
-        set_focus_handle(lua, h);
+        set_focus_handle_context(lua, h);
     }
 }
 
 /// `ClearFocus` (`0x77e410`): only if this box holds focus; fire `OnEditFocusLost`. The guard is
 /// `mov eax,ecx; mov ecx,[0xcf4dc8]; cmp ecx,eax; jne ret` — verified per-box, which is what makes
 /// the OnHide override's *unconditional* tail-jmp into it harmless.
-fn clear_focus_handle(lua: &Lua, h: FrameHandle) {
+fn clear_focus_handle_context(lua: &mut impl LuaContext, h: FrameHandle) {
     let id = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         if model.focused_editbox != Some(h) {
@@ -304,7 +312,7 @@ fn clear_focus_handle(lua: &Lua, h: FrameHandle) {
         model.focused_editbox = None;
         model.frame_id(h)
     };
-    fire_script(lua, id, "OnEditFocusLost");
+    fire_script_context(lua, id, "OnEditFocusLost");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -314,7 +322,7 @@ fn clear_focus_handle(lua: &Lua, h: FrameHandle) {
 /// Insert `ins` at the cursor (`0x77bee0`): replace any selection first; `numeric` aborts wholesale on
 /// a non-digit; splice + advance; enforce caps; fire `OnTextChanged`, and (when `fire_space`) one
 /// `OnSpacePressed` per space in `ins`.
-fn insert(lua: &Lua, h: FrameHandle, ins: &str, fire_space: bool) {
+fn insert(lua: &mut impl LuaContext, h: FrameHandle, ins: &str, fire_space: bool) {
     let Some(out) = with_eb(lua, h, |eb| eb.insert(ins)) else {
         return; // not an EditBox
     };
@@ -331,56 +339,62 @@ fn insert(lua: &Lua, h: FrameHandle, ins: &str, fire_space: bool) {
     // the one choke point every insert path goes through — typed char, the `|`→`||` escape, the
     // multiLine Enter newline, the Lua `Insert` — and so is absent from `SetText`, which is where
     // the reference has it absent too.
-    let on_char = lua
-        .create_string(ins)
-        .and_then(|s| event::fire_widget_handler(lua, id, "OnChar", vec![mlua::Value::String(s)]));
-    if let Err(e) = on_char {
+    if let Err(e) = event::fire_widget_handler_context(
+        lua,
+        id,
+        "OnChar",
+        vec![benilla_lua::Value::from(ins.to_owned())],
+    ) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
             .errors
             .push(e.to_string());
     }
-    mark_text_changed(lua, h);
+    mark_text_changed_context(lua, h);
     if fire_space {
         for _ in 0..out.spaces {
-            fire_script(lua, id, "OnSpacePressed");
+            fire_script_context(lua, id, "OnSpacePressed");
         }
     }
 }
 
 /// `SetText` (`0x77be00`): short-circuit when unchanged (no events); else clear selection, replace,
 /// cursor to end, enforce caps, fire `OnTextSet` then `OnTextChanged`.
-fn set_text(lua: &Lua, h: FrameHandle, s: &str) {
+fn set_text(lua: &mut impl LuaContext, h: FrameHandle, s: &str) {
     let changed = with_eb(lua, h, |eb| eb.set_text(s));
     if changed == Some(true) {
         sync_text_region(lua, h);
         let id = frame_id_of(lua, h);
-        fire_script(lua, id, "OnTextSet");
-        mark_text_changed(lua, h);
+        fire_script_context(lua, id, "OnTextSet");
+        mark_text_changed_context(lua, h);
     }
 }
 
 /// Word/edge deletes (`Delete{Word,Edge}` — no 1.12 counterpart; the OS-native keymap family):
 /// the selection first when one exists, else the span from the cursor to `target_of(eb)`; sync +
 /// `OnTextChanged` when anything was removed.
-fn delete_span(lua: &Lua, h: FrameHandle, target_of: impl FnOnce(&EditBoxState) -> usize) {
+fn delete_span(
+    lua: &mut impl LuaContext,
+    h: FrameHandle,
+    target_of: impl FnOnce(&EditBoxState) -> usize,
+) {
     let changed = with_eb(lua, h, |eb| {
         let t = target_of(eb);
         eb.delete_to(t)
     });
     if changed == Some(true) {
         sync_text_region(lua, h);
-        mark_text_changed(lua, h);
+        mark_text_changed_context(lua, h);
     }
 }
 
 /// BACKSPACE / DELETE: delete the selection if non-empty, else the char before (`forward=false`) or
 /// after (`forward=true`) the cursor; fire `OnTextChanged` if anything was removed.
-fn delete_dir(lua: &Lua, h: FrameHandle, forward: bool) {
+fn delete_dir(lua: &mut impl LuaContext, h: FrameHandle, forward: bool) {
     let changed = with_eb(lua, h, |eb| eb.delete_dir(forward));
     if changed == Some(true) {
         sync_text_region(lua, h);
-        mark_text_changed(lua, h);
+        mark_text_changed_context(lua, h);
     }
 }
 
@@ -388,7 +402,7 @@ fn delete_dir(lua: &Lua, h: FrameHandle, forward: bool) {
 /// internal `set_text` path (region sync + `OnTextSet`/`OnTextChanged` — a recall resets FrameXML
 /// tab-complete state exactly like any other text change). `set_text` (internal AND Lua) leaves
 /// the browse position intact; typed edits, `AddHistoryLine`, and focus gain end browsing.
-fn history_step_key(lua: &Lua, h: FrameHandle, older: bool) {
+fn history_step_key(lua: &mut impl LuaContext, h: FrameHandle, older: bool) {
     let recalled = with_eb(lua, h, |eb| eb.history_step(older)).flatten();
     if let Some(text) = recalled {
         set_text(lua, h, &text);
@@ -398,19 +412,19 @@ fn history_step_key(lua: &Lua, h: FrameHandle, older: bool) {
 /// LEFT/RIGHT one char: `shift` extends the selection from the fixed anchor; otherwise the caret
 /// collapses to the selection edge (if any) or moves one char. Fires no script (a cursor/selection
 /// move; `OnCursorChanged` geometry is out of scope).
-fn move_horizontal(lua: &Lua, h: FrameHandle, right: bool, shift: bool) {
+fn move_horizontal(lua: &mut impl LuaContext, h: FrameHandle, right: bool, shift: bool) {
     with_eb(lua, h, |eb| eb.move_by_char(right, shift));
 }
 
 /// HOME/END: move the caret to 0 / `len`; `shift` extends from the fixed anchor.
-fn move_to_edge(lua: &Lua, h: FrameHandle, end: bool, shift: bool) {
+fn move_to_edge(lua: &mut impl LuaContext, h: FrameHandle, end: bool, shift: bool) {
     with_eb(lua, h, |eb| eb.move_to_edge(end, shift));
 }
 
 /// `HighlightText` (`0x77cca0`), the client's exact clamp: `start = clamp(start, 0..=len)`;
 /// `end = (end < 0 || end > len) ? len : end`; then `if end < start { end = len }` — so `(0, -1)`
 /// selects all. Offsets are bytes, snapped to char boundaries.
-fn highlight_text(lua: &Lua, h: FrameHandle, start: i64, end: i64) {
+fn highlight_text(lua: &mut impl LuaContext, h: FrameHandle, start: i64, end: i64) {
     with_eb(lua, h, |eb| eb.highlight_text(start, end));
 }
 
@@ -419,8 +433,8 @@ fn highlight_text(lua: &Lua, h: FrameHandle, start: i64, end: i64) {
 /// Write the *display* string into the text region's [`RegionData::text`], creating the region lazily
 /// (the implicit FontString) if none exists. `password` shows one `'*'` per **character** (the mask,
 /// never the real text).
-fn sync_text_region(lua: &Lua, h: FrameHandle) {
-    let Some(rh) = ensure_text_region(lua, h) else {
+fn sync_text_region(lua: &mut impl LuaContext, h: FrameHandle) {
+    let Some(rh) = ensure_text_region_context(lua, h) else {
         return;
     };
     let display = with_eb(lua, h, |eb| {
@@ -441,11 +455,11 @@ fn sync_text_region(lua: &Lua, h: FrameHandle) {
 /// them (y-up: the top inset pulls the region's top DOWN, the bottom inset pulls its bottom UP).
 /// The chat edit box calls this per header change (`ChatEdit_UpdateHeader`'s
 /// `SetTextInsets(15 + headerWidth, 13, 0, 0)`), so typed text starts past the "Say:" header.
-fn set_text_insets(lua: &Lua, h: FrameHandle, l: f32, r: f32, t: f32, b: f32) {
+fn set_text_insets(lua: &mut impl LuaContext, h: FrameHandle, l: f32, r: f32, t: f32, b: f32) {
     if with_eb(lua, h, |eb| eb.text_insets = [l, r, t, b]).is_none() {
         return;
     }
-    let Some(rh) = ensure_text_region(lua, h) else {
+    let Some(rh) = ensure_text_region_context(lua, h) else {
         return;
     };
     write_inset_anchors(lua, h, rh, [l, r, t, b]);
@@ -453,9 +467,23 @@ fn set_text_insets(lua: &Lua, h: FrameHandle, l: f32, r: f32, t: f32, b: f32) {
 
 /// Anchor the text region inside its box by the insets — the two corner anchors that pin its rect
 /// (y-up: the top inset pulls the region's top DOWN, the bottom inset pulls its bottom UP).
-fn write_inset_anchors(lua: &Lua, h: FrameHandle, rh: RegionHandle, [l, r, t, b]: [f32; 4]) {
-    let owner = frame_id_of(lua, h);
+fn write_inset_anchors(
+    lua: &mut impl LuaContext,
+    h: FrameHandle,
+    rh: RegionHandle,
+    [l, r, t, b]: [f32; 4],
+) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    write_inset_anchors_model(&mut model, h, rh, [l, r, t, b]);
+}
+
+fn write_inset_anchors_model(
+    model: &mut Model,
+    h: FrameHandle,
+    rh: RegionHandle,
+    [l, r, t, b]: [f32; 4],
+) {
+    let owner = model.frame_id(h);
     let pair = [
         Anchor::new(Point::TopLeft, owner, Point::TopLeft, l, -t),
         Anchor::new(Point::BottomRight, owner, Point::BottomRight, -r, b),
@@ -481,33 +509,50 @@ fn write_inset_anchors(lua: &Lua, h: FrameHandle, rh: RegionHandle, [l, r, t, b]
 /// `maxBytes`), so the element DECLARES the ctor's object rather than adding a region. Creating a
 /// second one would leave an orphan on the frame and push the authored `<Layers>` regions one place
 /// down the creation-ordered list `GetRegions` walks.
-pub(crate) fn editbox_text_region_wrapper(lua: &Lua, frame: &Table) -> Option<Table> {
-    let h = frame_handle_of(lua, frame).ok()?;
-    let rh = ensure_text_region(lua, h)?;
+pub(crate) fn editbox_text_region_wrapper_context(
+    lua: &mut impl LuaContext,
+    frame: &LuaTable,
+) -> benilla_lua::Result<Option<LuaTable>> {
+    let h = frame_handle_of_context(lua, frame)?;
+    let Some(rh) = ensure_text_region_context(lua, h) else {
+        return Ok(None);
+    };
     let id = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         model.region_id(rh)
     };
-    super::region::region_wrapper(lua, id).ok()
+    super::region::region_wrapper_context(lua, id).map(Some)
 }
 
 /// The loader's special-`<FontString>` slot assignment: adopt `region` as `frame`'s text region,
 /// anchored by the current insets. The engine ASSIGNS an EditBox's font string at LoadXML — it
 /// never searches the region list (a find-first here once grabbed a `<Layers>` FontString, the
 /// chat header, so typing overwrote "Say:" and the insets clobbered the header's anchor).
-pub(crate) fn adopt_text_region(lua: &Lua, frame: &Table, region: &Table) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, frame)?;
-    let rh = super::region::region_handle_of(lua, region)?;
-    let Some((insets, multi_line)) = with_eb(lua, h, |eb| {
-        eb.text_region = Some(rh);
-        (eb.text_insets, eb.multi_line)
-    }) else {
+pub(crate) fn adopt_text_region_context(
+    lua: &mut impl LuaContext,
+    frame: &LuaTable,
+    region: &LuaTable,
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, frame)?;
+    let rh = super::region::region_handle_of_context(lua, region)?;
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    let Some((insets, multi_line)) =
+        model
+            .arena
+            .frame_mut(h)
+            .and_then(|frame| match &mut frame.kind_state {
+                KindState::EditBox(eb) => {
+                    eb.text_region = Some(rh);
+                    Some((eb.text_insets, eb.multi_line))
+                }
+                _ => None,
+            })
+    else {
         return Ok(()); // not an EditBox — the loader guards on the tag, but stay safe
     };
-    write_inset_anchors(lua, h, rh, insets);
+    write_inset_anchors_model(&mut model, h, rh, insets);
     // A live text region always carries Some(text) — an empty box still emits its Text quad, so
     // the host's caret has a styled quad to ride before the first keystroke.
-    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let data = model.region_data.entry(rh).or_default();
     data.text.get_or_insert_with(String::new);
     apply_text_region_justify(data, multi_line);
@@ -516,9 +561,13 @@ pub(crate) fn adopt_text_region(lua: &Lua, frame: &Table, region: &Table) -> mlu
 
 /// Get-or-create the implicit text FontString (the EditBox's ButtonText analogue). Returns `None` if
 /// `h` is not a live EditBox. An XML-declared `<FontString>` is wired explicitly by the loader's
-/// special pass ([`adopt_text_region`]); the lazy create covers CreateFrame'd boxes.
-pub(super) fn ensure_text_region(lua: &Lua, h: FrameHandle) -> Option<RegionHandle> {
+/// special pass ([`adopt_text_region_context`]); the lazy create covers CreateFrame'd boxes.
+fn ensure_text_region_context(lua: &impl LuaContext, h: FrameHandle) -> Option<RegionHandle> {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    ensure_text_region_model(&mut *model, h)
+}
+
+fn ensure_text_region_model(model: &mut Model, h: FrameHandle) -> Option<RegionHandle> {
     let (existing, multi_line) = match model.arena.frame(h).map(|f| &f.kind_state) {
         Some(KindState::EditBox(eb)) => (eb.text_region, eb.multi_line),
         _ => return None,
@@ -551,12 +600,23 @@ pub(super) fn ensure_text_region(lua: &Lua, h: FrameHandle) -> Option<RegionHand
     Some(rh)
 }
 
+pub(super) fn font_region_callback(
+    lua: &mut CallbackContext<'_>,
+    this: &LuaTable,
+) -> benilla_lua::Result<RegionHandle> {
+    let h = frame_handle_of_context(lua, this)?;
+    ensure_text_region_context(lua, h).ok_or_else(|| benilla_lua::Error::runtime("not an EditBox"))
+}
+
 /// Re-seat an already-wired text region's justify by the box's CURRENT multiLine flag — the
 /// `SetMultiLine` rider: the loader adopts the declared `<FontString>` (LoadXML step 5·b) before
 /// it applies the editbox flags (5b), so `multiLine="true"` must re-run the law or the body box
 /// keeps the single-line MIDDLE seat.
-pub(super) fn refresh_text_region_justify(lua: &Lua, this: &Table) -> mlua::Result<()> {
-    let h = frame_handle_of(lua, this)?;
+pub(super) fn refresh_text_region_justify(
+    lua: &mut impl LuaContext,
+    this: &LuaTable,
+) -> benilla_lua::Result<()> {
+    let h = frame_handle_of_context(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     let Some(KindState::EditBox(eb)) = model.arena.frame(h).map(|f| &f.kind_state) else {
         return Ok(());
@@ -586,7 +646,11 @@ fn apply_text_region_justify(data: &mut RegionData, multi_line: bool) {
 // ── small shared helpers ─────────────────────────────────────────────────────────────────────
 
 /// Run `f` over a frame's EditBox state under one short write borrow; `None` if not a live EditBox.
-fn with_eb<T>(lua: &Lua, h: FrameHandle, f: impl FnOnce(&mut EditBoxState) -> T) -> Option<T> {
+fn with_eb<T>(
+    lua: &impl LuaContext,
+    h: FrameHandle,
+    f: impl FnOnce(&mut EditBoxState) -> T,
+) -> Option<T> {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     match model.arena.frame_mut(h).map(|fr| &mut fr.kind_state) {
         Some(KindState::EditBox(eb)) => Some(f(eb)),
@@ -595,15 +659,15 @@ fn with_eb<T>(lua: &Lua, h: FrameHandle, f: impl FnOnce(&mut EditBoxState) -> T)
 }
 
 /// The stable id of a frame handle (minting one if needed).
-fn frame_id_of(lua: &Lua, h: FrameHandle) -> u32 {
+fn frame_id_of(lua: &impl LuaContext, h: FrameHandle) -> u32 {
     lua.app_data_mut::<Model>()
         .expect("model app_data")
         .frame_id(h)
 }
 
 /// Fire one specialized EditBox script (no args beyond `self`); errors go to [`Model::errors`].
-fn fire_script(lua: &Lua, id: u32, name: &str) {
-    if let Err(e) = event::fire_widget_handler(lua, id, name, Vec::new()) {
+fn fire_script_context(lua: &mut impl LuaContext, id: u32, name: &str) {
+    if let Err(e) = event::fire_widget_handler_context(lua, id, name, Vec::new()) {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
             .errors
@@ -641,7 +705,7 @@ fn fire_script(lua: &Lua, id: u32, name: &str) {
 /// focused box asks the host for one ([`super::editbox::seam`]). The reference flushes any dirty
 /// box; the difference is invisible for the customer this exists for — you are typing in the box
 /// you are looking at — and an unfocused box's caret is never drawn either way.
-pub(in crate::script) fn drain_cursor_changed(lua: &Lua) {
+pub(in crate::script) fn drain_cursor_changed(lua: &mut impl LuaContext) {
     let fire = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let Some(h) = model.focused_editbox else {
@@ -675,15 +739,15 @@ pub(in crate::script) fn drain_cursor_changed(lua: &Lua) {
         (id, x, -(row as f32) * pitch, pitch)
     };
     let (id, x, y, h) = fire;
-    if let Err(e) = event::fire_widget_handler(
+    if let Err(e) = event::fire_widget_handler_context(
         lua,
         id,
         "OnCursorChanged",
         vec![
-            Value::Number(f64::from(x)),
-            Value::Number(f64::from(y)),
-            Value::Number(f64::from(CARET_WIDTH)),
-            Value::Number(f64::from(h)),
+            benilla_lua::Value::Number(f64::from(x)),
+            benilla_lua::Value::Number(f64::from(y)),
+            benilla_lua::Value::Number(f64::from(CARET_WIDTH)),
+            benilla_lua::Value::Number(f64::from(h)),
         ],
     ) {
         lua.app_data_mut::<Model>()
@@ -714,7 +778,7 @@ mod tests;
 /// its `OnMouseDown` (`0x77b800`). So a Lua caller gets control back with the handler still
 /// unrun, and repeated changes **coalesce**: the box appears once on the pending list however many
 /// times it is written, and the one fire carries the final text.
-pub(super) fn mark_text_changed(lua: &Lua, h: FrameHandle) {
+pub(super) fn mark_text_changed_context(lua: &impl LuaContext, h: FrameHandle) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     if !model.dirty_editboxes.contains(&h) {
         model.dirty_editboxes.push(h);
@@ -736,7 +800,7 @@ pub(super) fn mark_text_changed(lua: &Lua, h: FrameHandle) {
 /// A handler may itself write to a box — including this one — so the list is taken before any Lua
 /// runs and anything re-marked during the sweep lands on the NEXT drain rather than extending this
 /// one. That is the reference's shape too: its bit is cleared before its fire.
-pub(in crate::script) fn drain_text_changed(lua: &Lua) {
+pub(in crate::script) fn drain_text_changed(lua: &mut impl LuaContext) {
     let pending = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         if model.dirty_editboxes.is_empty() {
@@ -753,6 +817,6 @@ pub(in crate::script) fn drain_text_changed(lua: &Lua) {
         ready
     };
     for h in pending {
-        fire_script(lua, frame_id_of(lua, h), "OnTextChanged");
+        fire_script_context(lua, frame_id_of(lua, h), "OnTextChanged");
     }
 }

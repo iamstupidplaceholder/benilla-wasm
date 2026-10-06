@@ -80,6 +80,10 @@ const BG_ENV_PREFIXES: &[&str] = &[
     "WOW_WORLDVIEW_",
 ];
 
+#[cfg_attr(target_arch = "wasm32", path = "bgwin/environment_browser.rs")]
+#[cfg_attr(not(target_arch = "wasm32"), path = "bgwin/environment_native.rs")]
+mod environment;
+
 /// Is this an instrumented background run? `WOW_BG=1` forces yes on any run, `WOW_BG=0` forces
 /// no (the escape hatch when the director wants to *watch* a probe live); otherwise, auto-detect
 /// from the run-driving env ([`BG_ENV_PREFIXES`]).
@@ -89,7 +93,7 @@ pub fn background_run() -> bool {
         Ok(_) => return true,
         Err(_) => {}
     }
-    std::env::vars_os().any(|(name, _)| {
+    environment::names().any(|name| {
         name.to_str()
             .is_some_and(|name| BG_ENV_PREFIXES.iter().any(|p| name.starts_with(p)))
     })
@@ -147,7 +151,7 @@ pub fn no_pixel_run() -> bool {
         return false;
     }
     let mut saw_one = false;
-    for (name, _) in std::env::vars_os() {
+    for name in environment::names() {
         let Some(name) = name.to_str() else { continue };
         if !BG_ENV_PREFIXES.iter().any(|p| name.starts_with(p)) {
             continue;

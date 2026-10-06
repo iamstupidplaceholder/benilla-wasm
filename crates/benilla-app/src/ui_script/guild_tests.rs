@@ -206,32 +206,32 @@ fn setup() -> UiScript {
 }
 
 /// Open the window on the guild tab.
-fn open(s: &UiScript) {
+fn open(s: &mut UiScript) {
     s.run("ToggleFriendsFrame(3)").unwrap();
 }
 
-fn text(s: &UiScript, expr: &str) -> String {
+fn text(s: &mut UiScript, expr: &str) -> String {
     s.eval::<String>(&format!("return {expr}:GetText() or \"\""))
         .unwrap_or_else(|e| panic!("{expr}:GetText() — {e}"))
 }
 
-fn visible(s: &UiScript, frame: &str) -> bool {
+fn visible(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsVisible()"))
         .unwrap_or_else(|e| panic!("{frame}:IsVisible() — {e}"))
 }
 
-fn enabled(s: &UiScript, button: &str) -> bool {
+fn enabled(s: &mut UiScript, button: &str) -> bool {
     s.eval::<bool>(&format!("return {button}:IsEnabled() ~= 0"))
         .unwrap_or_else(|e| panic!("{button}:IsEnabled() — {e}"))
 }
 
-fn calls(s: &UiScript) -> String {
+fn calls(s: &mut UiScript) -> String {
     s.eval::<String>("return BenillaGuildCalls()").unwrap()
 }
 
 /// A region's text colour, rounded to two places. The engine stores colours as `f32`, so 0.82 comes
 /// back as 0.8199999928474426 and an exact compare would fail on every one of them.
-fn colour(s: &UiScript, region: &str) -> (f64, f64, f64) {
+fn colour(s: &mut UiScript, region: &str) -> (f64, f64, f64) {
     let (r, g, b) = s
         .eval::<(f64, f64, f64)>(&format!("return {region}:GetTextColor()"))
         .unwrap_or_else(|e| panic!("{region}:GetTextColor() — {e}"));
@@ -245,7 +245,7 @@ fn colour(s: &UiScript, region: &str) -> (f64, f64, f64) {
 #[test]
 fn the_guild_tab_opens_the_roster_and_asks_for_it() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
+    let mut s = setup();
     assert_eq!(
         s.eval::<i64>("return FriendsFrameTab3.isDisabled or 0")
             .unwrap(),
@@ -253,50 +253,50 @@ fn the_guild_tab_opens_the_roster_and_asks_for_it() {
         "in a guild, the tab is live"
     );
 
-    let _ = calls(&s);
-    open(&s);
-    assert!(visible(&s, "FriendsFrame"));
-    assert!(visible(&s, "GuildFrame"));
+    let _ = calls(&mut s);
+    open(&mut s);
+    assert!(visible(&mut s, "FriendsFrame"));
+    assert!(visible(&mut s, "GuildFrame"));
     assert!(
-        !visible(&s, "FriendsListFrame"),
+        !visible(&mut s, "FriendsListFrame"),
         "the friends list is one of the four exclusive sub-frames"
     );
     assert_eq!(
-        text(&s, "FriendsFrameTitleText"),
+        text(&mut s, "FriendsFrameTitleText"),
         "Legacy of Steel",
         "the guild tab's title is the guild's own name"
     );
     assert!(
-        calls(&s).contains("GuildRoster"),
+        calls(&mut s).contains("GuildRoster"),
         "showing the pane requests the roster"
     );
 
     // The player view is the one that opens (FriendsFrame.playerStatusFrame starts 1).
-    assert!(visible(&s, "GuildPlayerStatusFrame"));
-    assert!(!visible(&s, "GuildStatusFrame"));
+    assert!(visible(&mut s, "GuildPlayerStatusFrame"));
+    assert!(!visible(&mut s, "GuildStatusFrame"));
 
-    assert_eq!(text(&s, "GuildFrameButton1Name"), "Tigole");
-    assert_eq!(text(&s, "GuildFrameButton1Zone"), "Ironforge");
-    assert_eq!(text(&s, "GuildFrameButton1Level"), "60");
+    assert_eq!(text(&mut s, "GuildFrameButton1Name"), "Tigole");
+    assert_eq!(text(&mut s, "GuildFrameButton1Zone"), "Ironforge");
+    assert_eq!(text(&mut s, "GuildFrameButton1Level"), "60");
     assert_eq!(
-        text(&s, "GuildFrameButton1Class"),
+        text(&mut s, "GuildFrameButton1Class"),
         "Warrior",
         "the roster's ten returns in order — class is the fifth, not the fourth"
     );
     assert!(
-        visible(&s, "GuildFrameButton3"),
+        visible(&mut s, "GuildFrameButton3"),
         "three members, three rows"
     );
     assert!(
-        !visible(&s, "GuildFrameButton4"),
+        !visible(&mut s, "GuildFrameButton4"),
         "rows past the roster are hidden"
     );
 
     // "|cffffffff3|r Guild Members" + "(|cffffffff2|r |cff00ff00Online|r)" — the plural form for
     // three, and the online count is a separate string beside it.
-    assert_eq!(text(&s, "GuildFrameTotals"), "|cffffffff3|r Guild Members");
+    assert_eq!(text(&mut s, "GuildFrameTotals"), "|cffffffff3|r Guild Members");
     assert_eq!(
-        text(&s, "GuildFrameOnlineTotals"),
+        text(&mut s, "GuildFrameOnlineTotals"),
         "(|cffffffff2|r |cff00ff00Online|r)"
     );
 }
@@ -306,24 +306,24 @@ fn the_guild_tab_opens_the_roster_and_asks_for_it() {
 #[test]
 fn an_offline_member_keeps_its_columns_and_only_greys() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
-    assert_eq!(text(&s, "GuildFrameButton3Name"), "Kaplan");
-    assert_eq!(text(&s, "GuildFrameButton3Zone"), "Elwynn Forest");
+    let mut s = setup();
+    open(&mut s);
+    assert_eq!(text(&mut s, "GuildFrameButton3Name"), "Kaplan");
+    assert_eq!(text(&mut s, "GuildFrameButton3Zone"), "Elwynn Forest");
     assert_eq!(
-        text(&s, "GuildFrameButton3Level"),
+        text(&mut s, "GuildFrameButton3Level"),
         "12",
         "an offline member still reports a level"
     );
-    assert_eq!(text(&s, "GuildFrameButton3Class"), "Mage");
+    assert_eq!(text(&mut s, "GuildFrameButton3Class"), "Mage");
 
     assert_eq!(
-        colour(&s, "GuildFrameButton3Name"),
+        colour(&mut s, "GuildFrameButton3Name"),
         (0.5, 0.5, 0.5),
         "offline rows go flat grey"
     );
     assert_eq!(
-        colour(&s, "GuildFrameButton1Name"),
+        colour(&mut s, "GuildFrameButton1Name"),
         (1.0, 0.82, 0.0),
         "an online name keeps the gold"
     );
@@ -335,43 +335,43 @@ fn an_offline_member_keeps_its_columns_and_only_greys() {
 #[test]
 fn the_page_button_flips_to_the_guild_status_view() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     assert_eq!(
-        text(&s, "GuildFrameGuildListToggleButton"),
+        text(&mut s, "GuildFrameGuildListToggleButton"),
         "Show Player Status"
     );
 
     s.run("GuildFrameGuildListToggleButton:Click()").unwrap();
-    assert!(visible(&s, "GuildStatusFrame"));
-    assert!(!visible(&s, "GuildPlayerStatusFrame"));
+    assert!(visible(&mut s, "GuildStatusFrame"));
+    assert!(!visible(&mut s, "GuildPlayerStatusFrame"));
     assert_eq!(
-        text(&s, "GuildFrameGuildListToggleButton"),
+        text(&mut s, "GuildFrameGuildListToggleButton"),
         "Show Guild Status"
     );
 
-    assert_eq!(text(&s, "GuildFrameGuildStatusButton2Name"), "Furor");
-    assert_eq!(text(&s, "GuildFrameGuildStatusButton2Rank"), "Officer");
-    assert_eq!(text(&s, "GuildFrameGuildStatusButton2Note"), "raid lead");
+    assert_eq!(text(&mut s, "GuildFrameGuildStatusButton2Name"), "Furor");
+    assert_eq!(text(&mut s, "GuildFrameGuildStatusButton2Rank"), "Officer");
+    assert_eq!(text(&mut s, "GuildFrameGuildStatusButton2Note"), "raid lead");
     assert_eq!(
-        text(&s, "GuildFrameGuildStatusButton2Online"),
+        text(&mut s, "GuildFrameGuildStatusButton2Online"),
         "<AFK>",
         "an online member's STATUS tag replaces the plain Online label"
     );
     assert_eq!(
-        text(&s, "GuildFrameGuildStatusButton1Online"),
+        text(&mut s, "GuildFrameGuildStatusButton1Online"),
         "Online",
         "…and an empty status falls back to it"
     );
     assert_eq!(
-        text(&s, "GuildFrameGuildStatusButton3Online"),
+        text(&mut s, "GuildFrameGuildStatusButton3Online"),
         "3 days",
         "an offline member reports how long ago, coarsest unit only"
     );
 
     // …and back.
     s.run("GuildFrameGuildListToggleButton:Click()").unwrap();
-    assert!(visible(&s, "GuildPlayerStatusFrame"));
+    assert!(visible(&mut s, "GuildPlayerStatusFrame"));
 }
 
 /// `GuildFrame_GetLastOnline` takes the COARSEST non-zero unit and never composes two, and all
@@ -380,9 +380,9 @@ fn the_page_button_flips_to_the_guild_status_view() {
 #[test]
 fn the_last_online_formatter_takes_the_coarsest_unit() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
-    let last = |years, months, days, hours| {
+    let mut s = setup();
+    open(&mut s);
+    let mut last = |years, months, days, hours| {
         s.run(&format!(
             "BenillaGuildFixture.members[3].lastOnline = {{ {years}, {months}, {days}, {hours} }}"
         ))
@@ -408,27 +408,27 @@ fn the_last_online_formatter_takes_the_coarsest_unit() {
 #[test]
 fn a_row_click_toggles_the_detail_card() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
-    assert!(!visible(&s, "GuildMemberDetailFrame"));
+    let mut s = setup();
+    open(&mut s);
+    assert!(!visible(&mut s, "GuildMemberDetailFrame"));
 
     s.run("GuildFrameButton2:Click()").unwrap();
-    assert!(visible(&s, "GuildMemberDetailFrame"));
+    assert!(visible(&mut s, "GuildMemberDetailFrame"));
     assert_eq!(
         s.eval::<i64>("return GetGuildRosterSelection()").unwrap(),
         2
     );
-    assert_eq!(text(&s, "GuildMemberDetailName"), "Furor");
-    assert_eq!(text(&s, "GuildMemberDetailLevel"), "Level 60 Rogue");
-    assert_eq!(text(&s, "GuildMemberDetailZoneText"), "Orgrimmar");
-    assert_eq!(text(&s, "GuildMemberDetailRankText"), "Officer");
-    assert_eq!(text(&s, "GuildMemberDetailOnlineText"), "Online");
-    assert_eq!(text(&s, "PersonalNoteText"), "raid lead");
-    assert_eq!(text(&s, "OfficerNoteText"), "trusted");
+    assert_eq!(text(&mut s, "GuildMemberDetailName"), "Furor");
+    assert_eq!(text(&mut s, "GuildMemberDetailLevel"), "Level 60 Rogue");
+    assert_eq!(text(&mut s, "GuildMemberDetailZoneText"), "Orgrimmar");
+    assert_eq!(text(&mut s, "GuildMemberDetailRankText"), "Officer");
+    assert_eq!(text(&mut s, "GuildMemberDetailOnlineText"), "Online");
+    assert_eq!(text(&mut s, "PersonalNoteText"), "raid lead");
+    assert_eq!(text(&mut s, "OfficerNoteText"), "trusted");
 
     s.run("GuildFrameButton2:Click()").unwrap();
     assert!(
-        !visible(&s, "GuildMemberDetailFrame"),
+        !visible(&mut s, "GuildMemberDetailFrame"),
         "the same row again closes the card"
     );
     assert_eq!(
@@ -440,10 +440,10 @@ fn a_row_click_toggles_the_detail_card() {
     // A DIFFERENT row while the card is open re-points it rather than closing it.
     s.run("GuildFrameButton2:Click()").unwrap();
     s.run("GuildFrameButton3:Click()").unwrap();
-    assert!(visible(&s, "GuildMemberDetailFrame"));
-    assert_eq!(text(&s, "GuildMemberDetailName"), "Kaplan");
+    assert!(visible(&mut s, "GuildMemberDetailFrame"));
+    assert_eq!(text(&mut s, "GuildMemberDetailName"), "Kaplan");
     assert_eq!(
-        text(&s, "GuildMemberDetailOnlineText"),
+        text(&mut s, "GuildMemberDetailOnlineText"),
         "3 days",
         "an offline member's card shows the last-online line, not Online"
     );
@@ -455,63 +455,63 @@ fn a_row_click_toggles_the_detail_card() {
 #[test]
 fn the_detail_buttons_follow_the_rank_comparisons() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
 
     // Row 2 — the officer directly below us. Nothing to promote him to; demote is fine.
     s.run("GuildFrameButton2:Click()").unwrap();
     assert!(
-        !enabled(&s, "GuildFramePromoteButton"),
+        !enabled(&mut s, "GuildFramePromoteButton"),
         "rankIndex 1 is already directly below the master"
     );
-    assert!(enabled(&s, "GuildFrameDemoteButton"));
+    assert!(enabled(&mut s, "GuildFrameDemoteButton"));
     assert!(
-        visible(&s, "GuildFramePromoteButton"),
+        visible(&mut s, "GuildFramePromoteButton"),
         "one of the pair live keeps BOTH on screen"
     );
-    assert!(enabled(&s, "GuildMemberRemoveButton"));
+    assert!(enabled(&mut s, "GuildMemberRemoveButton"));
     assert!(
-        enabled(&s, "GuildMemberGroupInviteButton"),
+        enabled(&mut s, "GuildMemberGroupInviteButton"),
         "an online guildmate can be invited"
     );
 
     // Row 3 — the bottom rank. Promotable, but there is nothing below to demote him to.
     s.run("GuildFrameButton3:Click()").unwrap();
-    assert!(enabled(&s, "GuildFramePromoteButton"));
+    assert!(enabled(&mut s, "GuildFramePromoteButton"));
     assert!(
-        !enabled(&s, "GuildFrameDemoteButton"),
+        !enabled(&mut s, "GuildFrameDemoteButton"),
         "the bottom rank has nowhere to fall"
     );
     assert!(
-        !enabled(&s, "GuildMemberGroupInviteButton"),
+        !enabled(&mut s, "GuildMemberGroupInviteButton"),
         "…and he is offline"
     );
 
     // Row 1 — ourselves, the guild master. Every rank verb is dead, so the arrows go away.
     s.run("GuildFrameButton1:Click()").unwrap();
-    assert!(!enabled(&s, "GuildFramePromoteButton"));
-    assert!(!enabled(&s, "GuildFrameDemoteButton"));
+    assert!(!enabled(&mut s, "GuildFramePromoteButton"));
+    assert!(!enabled(&mut s, "GuildFrameDemoteButton"));
     assert!(
-        !visible(&s, "GuildFramePromoteButton"),
+        !visible(&mut s, "GuildFramePromoteButton"),
         "both dead → the arrows leave the card entirely"
     );
-    assert!(!visible(&s, "GuildFrameDemoteButton"));
+    assert!(!visible(&mut s, "GuildFrameDemoteButton"));
     assert!(
-        !enabled(&s, "GuildMemberRemoveButton"),
+        !enabled(&mut s, "GuildMemberRemoveButton"),
         "you cannot remove yourself here"
     );
     assert!(
-        !enabled(&s, "GuildMemberGroupInviteButton"),
+        !enabled(&mut s, "GuildMemberGroupInviteButton"),
         "nor invite yourself"
     );
 
     // The verbs address the selected NAME.
     s.run("GuildFrameButton3:Click()").unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildFramePromoteButton:Click()").unwrap();
-    assert_eq!(calls(&s), "GuildPromoteByName:Kaplan");
+    assert_eq!(calls(&mut s), "GuildPromoteByName:Kaplan");
     assert!(
-        !enabled(&s, "GuildFramePromoteButton"),
+        !enabled(&mut s, "GuildFramePromoteButton"),
         "the arrow disables itself until the roster comes back"
     );
 }
@@ -521,10 +521,10 @@ fn the_detail_buttons_follow_the_rank_comparisons() {
 #[test]
 fn the_officer_note_pane_resizes_the_card() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameButton2:Click()").unwrap();
-    assert!(visible(&s, "GuildMemberDetailOfficerNoteLabel"));
+    assert!(visible(&mut s, "GuildMemberDetailOfficerNoteLabel"));
     assert_eq!(
         s.eval::<f64>("return GuildMemberDetailFrame:GetHeight()")
             .unwrap(),
@@ -534,13 +534,13 @@ fn the_officer_note_pane_resizes_the_card() {
     // May view but not edit: grey text, mouse-dead pane, and no edit-me placeholder.
     s.run("BenillaGuildFixture.rights.editOfficerNote = nil; GuildStatus_Update()")
         .unwrap();
-    assert_eq!(colour(&s, "OfficerNoteText"), (0.65, 0.65, 0.65));
+    assert_eq!(colour(&mut s, "OfficerNoteText"), (0.65, 0.65, 0.65));
 
     // May not view at all: the pane goes, and the card shrinks.
     s.run("BenillaGuildFixture.rights.viewOfficerNote = nil; GuildStatus_Update()")
         .unwrap();
-    assert!(!visible(&s, "GuildMemberDetailOfficerNoteLabel"));
-    assert!(!visible(&s, "GuildMemberOfficerNoteBackground"));
+    assert!(!visible(&mut s, "GuildMemberDetailOfficerNoteLabel"));
+    assert!(!visible(&mut s, "GuildMemberOfficerNoteBackground"));
     assert_eq!(
         s.eval::<f64>("return GuildMemberDetailFrame:GetHeight()")
             .unwrap(),
@@ -554,23 +554,23 @@ fn the_officer_note_pane_resizes_the_card() {
 #[test]
 fn an_editable_empty_note_invites_the_click() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameButton1:Click()").unwrap(); // Tigole's public note is ""
     assert_eq!(
-        text(&s, "PersonalNoteText"),
+        text(&mut s, "PersonalNoteText"),
         "Click here to set a Public Note."
     );
-    assert_eq!(colour(&s, "PersonalNoteText"), (1.0, 1.0, 1.0));
+    assert_eq!(colour(&mut s, "PersonalNoteText"), (1.0, 1.0, 1.0));
 
     s.run("BenillaGuildFixture.rights.editPublicNote = nil; GuildStatus_Update()")
         .unwrap();
     assert_eq!(
-        text(&s, "PersonalNoteText"),
+        text(&mut s, "PersonalNoteText"),
         "",
         "no edit right → the empty note stays empty"
     );
-    assert_eq!(colour(&s, "PersonalNoteText"), (0.65, 0.65, 0.65));
+    assert_eq!(colour(&mut s, "PersonalNoteText"), (0.65, 0.65, 0.65));
 }
 
 /// Clicking a note pane opens the WIDE-box dialog, prefilled with the note it edits, and accepting
@@ -579,21 +579,21 @@ fn an_editable_empty_note_invites_the_click() {
 #[test]
 fn the_note_pane_opens_the_wide_dialog_and_sends_it() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameButton2:Click()").unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
 
     s.run("GuildMemberNoteBackground:GetScript(\"OnMouseUp\")()")
         .unwrap();
-    assert!(visible(&s, "StaticPopup1"));
-    assert_eq!(text(&s, "StaticPopup1Text"), "Set Player Note:");
+    assert!(visible(&mut s, "StaticPopup1"));
+    assert_eq!(text(&mut s, "StaticPopup1Text"), "Set Player Note:");
     assert!(
-        visible(&s, "StaticPopup1WideEditBox"),
+        visible(&mut s, "StaticPopup1WideEditBox"),
         "the wide box is the one that shows"
     );
     assert!(
-        !visible(&s, "StaticPopup1EditBox"),
+        !visible(&mut s, "StaticPopup1EditBox"),
         "…and the narrow one is hidden, never both"
     );
     assert_eq!(
@@ -602,7 +602,7 @@ fn the_note_pane_opens_the_wide_dialog_and_sends_it() {
         "a guild message dialog is the wide one"
     );
     assert_eq!(
-        text(&s, "StaticPopup1WideEditBox"),
+        text(&mut s, "StaticPopup1WideEditBox"),
         "raid lead",
         "prefilled with the note being edited"
     );
@@ -610,8 +610,8 @@ fn the_note_pane_opens_the_wide_dialog_and_sends_it() {
     s.run("StaticPopup1WideEditBox:SetText(\"main tank\")")
         .unwrap();
     s.run("StaticPopup1Button1:Click()").unwrap();
-    assert_eq!(calls(&s), "GuildRosterSetPublicNote:2:main tank");
-    assert!(!visible(&s, "StaticPopup1"), "accepting closes it");
+    assert_eq!(calls(&mut s), "GuildRosterSetPublicNote:2:main tank");
+    assert!(!visible(&mut s, "StaticPopup1"), "accepting closes it");
 }
 
 /// The message of the day paints the CACHED value, is click-to-edit only for a rank that may set
@@ -620,43 +620,43 @@ fn the_note_pane_opens_the_wide_dialog_and_sends_it() {
 fn the_motd_is_cached_click_to_edit_and_right_gated() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
-    open(&s);
-    assert_eq!(text(&s, "GuildFrameNotesText"), "Raid Tuesday at eight.");
+    open(&mut s);
+    assert_eq!(text(&mut s, "GuildFrameNotesText"), "Raid Tuesday at eight.");
     assert_eq!(
-        text(&s, "GuildFrameNotesLabel"),
+        text(&mut s, "GuildFrameNotesLabel"),
         "Guild Message Of The Day:"
     );
-    assert!(enabled(&s, "GuildMOTDEditButton"));
+    assert!(enabled(&mut s, "GuildMOTDEditButton"));
 
     s.run("BenillaGuildFixture.rights.editMOTD = nil; GuildStatus_Update()")
         .unwrap();
     assert!(
-        !enabled(&s, "GuildMOTDEditButton"),
+        !enabled(&mut s, "GuildMOTDEditButton"),
         "without the right the MOTD is not clickable"
     );
-    assert_eq!(colour(&s, "GuildFrameNotesText"), (0.65, 0.65, 0.65));
+    assert_eq!(colour(&mut s, "GuildFrameNotesText"), (0.65, 0.65, 0.65));
 
     s.run("BenillaGuildFixture.rights.editMOTD = 1; GuildStatus_Update()")
         .unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildMOTDEditButton:Click()").unwrap();
-    assert!(visible(&s, "StaticPopup1WideEditBox"));
+    assert!(visible(&mut s, "StaticPopup1WideEditBox"));
     assert_eq!(
-        text(&s, "StaticPopup1WideEditBox"),
+        text(&mut s, "StaticPopup1WideEditBox"),
         "Raid Tuesday at eight.",
         "the dialog opens on the cached MOTD"
     );
     s.run("StaticPopup1WideEditBox:SetText(\"Raid Wednesday.\")")
         .unwrap();
     s.run("StaticPopup1Button1:Click()").unwrap();
-    assert_eq!(calls(&s), "GuildSetMOTD:Raid Wednesday.");
+    assert_eq!(calls(&mut s), "GuildSetMOTD:Raid Wednesday.");
 
     // The event is what actually repaints the pane — the roster never carries it back.
     s.fire_event(
         "GUILD_MOTD",
         vec![ScriptValue::Str("Raid Thursday.".to_string())],
     );
-    assert_eq!(text(&s, "GuildFrameNotesText"), "Raid Thursday.");
+    assert_eq!(text(&mut s, "GuildFrameNotesText"), "Raid Thursday.");
 }
 
 /// Guild Control is the guild MASTER's alone and Add Member follows the invite right — the two
@@ -664,33 +664,33 @@ fn the_motd_is_cached_click_to_edit_and_right_gated() {
 #[test]
 fn the_pane_buttons_follow_the_rights() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
-    assert!(enabled(&s, "GuildFrameControlButton"));
-    assert!(enabled(&s, "GuildFrameAddMemberButton"));
+    let mut s = setup();
+    open(&mut s);
+    assert!(enabled(&mut s, "GuildFrameControlButton"));
+    assert!(enabled(&mut s, "GuildFrameAddMemberButton"));
 
     s.run("BenillaGuildFixture.isLeader = nil; BenillaGuildFixture.rights.invite = nil; GuildStatus_Update()")
         .unwrap();
     assert!(
-        !enabled(&s, "GuildFrameControlButton"),
+        !enabled(&mut s, "GuildFrameControlButton"),
         "rank control is the master's alone"
     );
-    assert!(!enabled(&s, "GuildFrameAddMemberButton"));
+    assert!(!enabled(&mut s, "GuildFrameAddMemberButton"));
 
     // Add Member opens the name dialog, and it is the NARROW box (a name, not a sentence).
     s.run("BenillaGuildFixture.rights.invite = 1; GuildStatus_Update()")
         .unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildFrameAddMemberButton:Click()").unwrap();
-    assert!(visible(&s, "StaticPopup1EditBox"));
-    assert!(!visible(&s, "StaticPopup1WideEditBox"));
+    assert!(visible(&mut s, "StaticPopup1EditBox"));
+    assert!(!visible(&mut s, "StaticPopup1WideEditBox"));
     assert_eq!(
         s.eval::<f64>("return StaticPopup1:GetWidth()").unwrap(),
         320.0
     );
     s.run("StaticPopup1EditBox:SetText(\"Thrall\")").unwrap();
     s.run("StaticPopup1Button1:Click()").unwrap();
-    assert_eq!(calls(&s), "GuildInviteByName:Thrall");
+    assert_eq!(calls(&mut s), "GuildInviteByName:Thrall");
 }
 
 /// The rank editor loads its thirteen checkboxes from the rank BUFFER, opens with Accept dead, and
@@ -699,27 +699,27 @@ fn the_pane_buttons_follow_the_rights() {
 #[test]
 fn the_rank_editor_loads_its_flags_and_arms_accept_on_an_edit() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameControlButton:Click()").unwrap();
-    assert!(visible(&s, "GuildControlPopupFrame"));
+    assert!(visible(&mut s, "GuildControlPopupFrame"));
     assert!(
-        !visible(&s, "GuildMemberDetailFrame"),
+        !visible(&mut s, "GuildMemberDetailFrame"),
         "the three satellites are mutually exclusive"
     );
 
     assert_eq!(
-        text(&s, "GuildControlPopupFrameCheckbox1Label"),
+        text(&mut s, "GuildControlPopupFrameCheckbox1Label"),
         "Guildchat Listen"
     );
     assert_eq!(
-        text(&s, "GuildControlPopupFrameCheckbox13Label"),
+        text(&mut s, "GuildControlPopupFrameCheckbox13Label"),
         "Modify Guild Info",
         "all thirteen labels, in the reference's own checkbox order"
     );
-    assert_eq!(text(&s, "GuildControlPopupFrameEditBox"), "Guild Master");
+    assert_eq!(text(&mut s, "GuildControlPopupFrameEditBox"), "Guild Master");
 
-    let checked = |n: i32| {
+    let mut checked = |n: i32| {
         s.eval::<bool>(&format!(
             "return GuildControlPopupFrameCheckbox{n}:GetChecked() and true or false"
         ))
@@ -728,31 +728,31 @@ fn the_rank_editor_loads_its_flags_and_arms_accept_on_an_edit() {
     assert!(checked(1) && checked(4) && checked(7) && checked(11));
     assert!(!checked(5) && !checked(6) && !checked(8) && !checked(13));
     assert!(
-        !enabled(&s, "GuildControlPopupAcceptButton"),
+        !enabled(&mut s, "GuildControlPopupAcceptButton"),
         "Accept is the buffer-is-dirty light; it opens dead"
     );
 
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildControlPopupFrameCheckbox5:Click()").unwrap();
     assert_eq!(
-        calls(&s),
+        calls(&mut s),
         // The Lua hands `this:GetChecked()` straight through, and in 1.12 that is the NUMBER 1
         // (1830) — so 1 is what the reference's own call carries too.
         "GuildControlSetRankFlag:5:1",
         "the checkbox's own ID is what reaches the engine"
     );
-    assert!(enabled(&s, "GuildControlPopupAcceptButton"));
+    assert!(enabled(&mut s, "GuildControlPopupAcceptButton"));
 
     // Accept flushes the buffer under the name in the box, then closes.
     s.run("GuildControlPopupFrameEditBox:SetText(\"Warchief\")")
         .unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildControlPopupAcceptButton:Click()").unwrap();
     assert!(
-        calls(&s).starts_with("GuildControlSaveRank:Warchief"),
+        calls(&mut s).starts_with("GuildControlSaveRank:Warchief"),
         "one flush, carrying the edited name"
     );
-    assert!(!visible(&s, "GuildControlPopupFrame"));
+    assert!(!visible(&mut s, "GuildControlPopupFrame"));
 }
 
 /// Picking another rank in the dropdown re-loads the buffer, repaints the boxes from THAT rank's
@@ -760,36 +760,36 @@ fn the_rank_editor_loads_its_flags_and_arms_accept_on_an_edit() {
 #[test]
 fn switching_rank_reloads_the_buffer_and_disarms_accept() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameControlButton:Click()").unwrap();
     s.run("GuildControlPopupFrameCheckbox5:Click()").unwrap();
-    assert!(enabled(&s, "GuildControlPopupAcceptButton"));
+    assert!(enabled(&mut s, "GuildControlPopupAcceptButton"));
 
     // Through the real menu, not the handler: the dropdown's rows ARE the ranks, so the row's own
     // ID is the rank the buffer loads, and calling the handler by hand would prove nothing about
     // that wiring.
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("ToggleDropDownMenu(1, nil, GuildControlPopupFrameDropDown)")
         .unwrap();
     assert_eq!(
-        text(&s, "DropDownList1Button3"),
+        text(&mut s, "DropDownList1Button3"),
         "Veteran",
         "the rows are the ranks, in rank order"
     );
     s.run("DropDownList1Button3:Click()").unwrap();
     assert!(
-        calls(&s).contains("GuildControlSetRank:3"),
+        calls(&mut s).contains("GuildControlSetRank:3"),
         "the buffer is re-loaded from rank 3"
     );
-    assert_eq!(text(&s, "GuildControlPopupFrameEditBox"), "Veteran");
+    assert_eq!(text(&mut s, "GuildControlPopupFrameEditBox"), "Veteran");
     assert!(
         !s.eval::<bool>("return GuildControlPopupFrameCheckbox1:GetChecked() and true or false")
             .unwrap(),
         "rank 3 has no flags seeded, so every box clears"
     );
     assert!(
-        !enabled(&s, "GuildControlPopupAcceptButton"),
+        !enabled(&mut s, "GuildControlPopupAcceptButton"),
         "switching rank throws the half-made edit away"
     );
 }
@@ -799,14 +799,14 @@ fn switching_rank_reloads_the_buffer_and_disarms_accept() {
 #[test]
 fn the_rank_buttons_follow_the_count_and_the_bottom_rank() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameControlButton:Click()").unwrap();
 
     s.run("GuildControlPopupFrameAddRankButton_OnUpdate()")
         .unwrap();
     assert!(
-        enabled(&s, "GuildControlPopupFrameAddRankButton"),
+        enabled(&mut s, "GuildControlPopupFrameAddRankButton"),
         "six ranks, room for four more"
     );
     s.run("BenillaGuildFixture.ranks = { \"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\",\"j\" }")
@@ -814,7 +814,7 @@ fn the_rank_buttons_follow_the_count_and_the_bottom_rank() {
     s.run("GuildControlPopupFrameAddRankButton_OnUpdate()")
         .unwrap();
     assert!(
-        !enabled(&s, "GuildControlPopupFrameAddRankButton"),
+        !enabled(&mut s, "GuildControlPopupFrameAddRankButton"),
         "ten is the ceiling"
     );
     s.run("BenillaGuildFixture.ranks = { \"Guild Master\",\"Officer\",\"Veteran\",\"Member\",\"Initiate\",\"Peon\" }")
@@ -824,14 +824,14 @@ fn the_rank_buttons_follow_the_count_and_the_bottom_rank() {
     s.run("UIDropDownMenu_SetSelectedID(GuildControlPopupFrameDropDown, 1); GuildControlPopupFrameRemoveRankButton_OnUpdate()")
         .unwrap();
     assert!(
-        !visible(&s, "GuildControlPopupFrameRemoveRankButton"),
+        !visible(&mut s, "GuildControlPopupFrameRemoveRankButton"),
         "you can only ever remove the last rank"
     );
     s.run("UIDropDownMenu_SetSelectedID(GuildControlPopupFrameDropDown, 6); GuildControlPopupFrameRemoveRankButton_OnUpdate()")
         .unwrap();
-    assert!(visible(&s, "GuildControlPopupFrameRemoveRankButton"));
+    assert!(visible(&mut s, "GuildControlPopupFrameRemoveRankButton"));
     assert!(
-        !enabled(&s, "GuildControlPopupFrameRemoveRankButton"),
+        !enabled(&mut s, "GuildControlPopupFrameRemoveRankButton"),
         "Kaplan still sits in the bottom rank"
     );
 
@@ -840,13 +840,13 @@ fn the_rank_buttons_follow_the_count_and_the_bottom_rank() {
         .unwrap();
     s.run("GuildControlPopupFrameRemoveRankButton_OnUpdate()")
         .unwrap();
-    assert!(enabled(&s, "GuildControlPopupFrameRemoveRankButton"));
+    assert!(enabled(&mut s, "GuildControlPopupFrameRemoveRankButton"));
 
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildControlPopupFrameRemoveRankButton:Click()")
         .unwrap();
     assert!(
-        calls(&s).starts_with("GuildControlDelRank:Peon"),
+        calls(&mut s).starts_with("GuildControlDelRank:Peon"),
         "the LAST rank's name is what goes"
     );
 }
@@ -856,17 +856,17 @@ fn the_rank_buttons_follow_the_count_and_the_bottom_rank() {
 #[test]
 fn the_column_headers_sort_by_their_own_keys() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     for (header, key) in [
         ("GuildFrameColumnHeader1", "name"),
         ("GuildFrameColumnHeader2", "zone"),
         ("GuildFrameColumnHeader3", "level"),
         ("GuildFrameColumnHeader4", "class"),
     ] {
-        let _ = calls(&s);
+        let _ = calls(&mut s);
         s.run(&format!("{header}:Click()")).unwrap();
-        assert_eq!(calls(&s), format!("SortGuildRoster:{key}"));
+        assert_eq!(calls(&mut s), format!("SortGuildRoster:{key}"));
     }
 
     s.run("GuildFrameGuildListToggleButton:Click()").unwrap();
@@ -876,9 +876,9 @@ fn the_column_headers_sort_by_their_own_keys() {
         ("GuildFrameGuildStatusColumnHeader3", "note"),
         ("GuildFrameGuildStatusColumnHeader4", "online"),
     ] {
-        let _ = calls(&s);
+        let _ = calls(&mut s);
         s.run(&format!("{header}:Click()")).unwrap();
-        assert_eq!(calls(&s), format!("SortGuildRoster:{key}"));
+        assert_eq!(calls(&mut s), format!("SortGuildRoster:{key}"));
     }
 }
 
@@ -893,13 +893,13 @@ fn the_column_headers_sort_by_their_own_keys() {
 #[test]
 fn the_show_offline_checkbox_is_real_and_drops_the_selection() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     assert!(
         s.eval::<bool>("return GuildFrameLFGButton ~= nil").unwrap(),
         "the reference's `virtual=` on a <Frames> child does not suppress the frame"
     );
-    assert_eq!(text(&s, "GuildFrameLFGButtonText"), "Show Offline Members");
+    assert_eq!(text(&mut s, "GuildFrameLFGButtonText"), "Show Offline Members");
 
     s.run("GuildFrameButton2:Click()").unwrap();
     assert_eq!(
@@ -907,9 +907,9 @@ fn the_show_offline_checkbox_is_real_and_drops_the_selection() {
         2
     );
 
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildFrameLFGButton:Click()").unwrap();
-    let seen = calls(&s);
+    let seen = calls(&mut s);
     assert!(
         seen.starts_with("SetGuildRosterSelection:0"),
         "the selection is dropped FIRST, before the filter changes: {seen}"
@@ -925,18 +925,18 @@ fn the_show_offline_checkbox_is_real_and_drops_the_selection() {
 #[test]
 fn the_guild_information_board_is_right_gated() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameGuildInformationButton:Click()").unwrap();
-    assert!(visible(&s, "GuildInfoFrame"));
-    assert_eq!(text(&s, "GuildInfoEditBox"), "Be excellent to each other.");
-    assert!(enabled(&s, "GuildInfoSaveButton"));
+    assert!(visible(&mut s, "GuildInfoFrame"));
+    assert_eq!(text(&mut s, "GuildInfoEditBox"), "Be excellent to each other.");
+    assert!(enabled(&mut s, "GuildInfoSaveButton"));
 
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.run("GuildInfoEditBox:SetText(\"Read the rules.\")")
         .unwrap();
     s.run("GuildInfoSaveButton:Click()").unwrap();
-    let seen = calls(&s);
+    let seen = calls(&mut s);
     assert!(
         seen.starts_with("SetGuildInfoText:Read the rules."),
         "{seen}"
@@ -945,23 +945,23 @@ fn the_guild_information_board_is_right_gated() {
         seen.contains("GuildRoster"),
         "saving asks for the roster back: {seen}"
     );
-    assert!(!visible(&s, "GuildInfoFrame"), "…and closes");
+    assert!(!visible(&mut s, "GuildInfoFrame"), "…and closes");
 
     // Without the right: grey, dead, and no placeholder even when empty.
     s.run("BenillaGuildFixture.rights.editGuildInfo = nil; BenillaGuildFixture.infoText = \"\"")
         .unwrap();
     s.run("ToggleGuildInfoFrame()").unwrap();
-    assert!(visible(&s, "GuildInfoFrame"));
-    assert_eq!(text(&s, "GuildInfoEditBox"), "");
-    assert!(!enabled(&s, "GuildInfoSaveButton"));
-    assert_eq!(colour(&s, "GuildInfoEditBox"), (0.65, 0.65, 0.65));
+    assert!(visible(&mut s, "GuildInfoFrame"));
+    assert_eq!(text(&mut s, "GuildInfoEditBox"), "");
+    assert!(!enabled(&mut s, "GuildInfoSaveButton"));
+    assert_eq!(colour(&mut s, "GuildInfoEditBox"), (0.65, 0.65, 0.65));
 
     // …and with the right, an empty board shows the invitation.
     s.run("ToggleGuildInfoFrame()").unwrap();
     s.run("BenillaGuildFixture.rights.editGuildInfo = 1")
         .unwrap();
     s.run("ToggleGuildInfoFrame()").unwrap();
-    assert_eq!(text(&s, "GuildInfoEditBox"), "Click here to set message");
+    assert_eq!(text(&mut s, "GuildInfoEditBox"), "Click here to set message");
 }
 
 /// The three satellite windows are mutually exclusive — each one's opener shuts the other two —
@@ -969,28 +969,28 @@ fn the_guild_information_board_is_right_gated() {
 #[test]
 fn the_three_satellites_are_exclusive_and_close_with_the_window() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameButton2:Click()").unwrap();
-    assert!(visible(&s, "GuildMemberDetailFrame"));
+    assert!(visible(&mut s, "GuildMemberDetailFrame"));
 
     s.run("GuildFrameGuildInformationButton:Click()").unwrap();
-    assert!(visible(&s, "GuildInfoFrame"));
-    assert!(!visible(&s, "GuildMemberDetailFrame"));
+    assert!(visible(&mut s, "GuildInfoFrame"));
+    assert!(!visible(&mut s, "GuildMemberDetailFrame"));
 
     s.run("GuildFrameControlButton:Click()").unwrap();
-    assert!(visible(&s, "GuildControlPopupFrame"));
-    assert!(!visible(&s, "GuildInfoFrame"));
+    assert!(visible(&mut s, "GuildControlPopupFrame"));
+    assert!(!visible(&mut s, "GuildInfoFrame"));
 
     s.run("GuildFrameButton2:Click()").unwrap();
-    assert!(visible(&s, "GuildMemberDetailFrame"));
-    assert!(!visible(&s, "GuildControlPopupFrame"));
+    assert!(visible(&mut s, "GuildMemberDetailFrame"));
+    assert!(!visible(&mut s, "GuildControlPopupFrame"));
 
     s.run("HideUIPanel(FriendsFrame)").unwrap();
-    assert!(!visible(&s, "GuildMemberDetailFrame"));
-    assert!(!visible(&s, "GuildControlPopupFrame"));
-    assert!(!visible(&s, "GuildInfoFrame"));
-    assert!(!visible(&s, "GuildFrame"));
+    assert!(!visible(&mut s, "GuildMemberDetailFrame"));
+    assert!(!visible(&mut s, "GuildControlPopupFrame"));
+    assert!(!visible(&mut s, "GuildInfoFrame"));
+    assert!(!visible(&mut s, "GuildFrame"));
 }
 
 /// `GUILD_ROSTER_UPDATE`'s `arg1` is the STALE flag, and it is the difference between a repaint and
@@ -1000,26 +1000,26 @@ fn the_three_satellites_are_exclusive_and_close_with_the_window() {
 fn the_roster_event_only_re_requests_when_told_the_roster_is_stale() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
-    open(&s);
+    open(&mut s);
 
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.fire_event("GUILD_ROSTER_UPDATE", vec![]);
     assert!(
-        !calls(&s).contains("GuildRoster"),
+        !calls(&mut s).contains("GuildRoster"),
         "a plain repaint must not ask the server again"
     );
 
     s.fire_event("GUILD_ROSTER_UPDATE", vec![ScriptValue::Int(1)]);
     assert!(
-        calls(&s).contains("GuildRoster"),
+        calls(&mut s).contains("GuildRoster"),
         "…but a STALE roster is re-requested"
     );
 
     // With the pane closed the event does nothing at all — the arm's own visibility gate.
     s.run("HideUIPanel(FriendsFrame)").unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.fire_event("GUILD_ROSTER_UPDATE", vec![ScriptValue::Int(1)]);
-    assert_eq!(calls(&s), "", "the pane is closed; nothing repaints");
+    assert_eq!(calls(&mut s), "", "the pane is closed; nothing repaints");
 }
 
 /// Leaving the guild while STANDING on the guild tab falls back to tab 1 rather than leaving a
@@ -1029,8 +1029,8 @@ fn the_roster_event_only_re_requests_when_told_the_roster_is_stale() {
 fn losing_the_guild_falls_back_off_the_guild_tab() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
-    open(&s);
-    assert!(visible(&s, "GuildFrame"));
+    open(&mut s);
+    assert!(visible(&mut s, "GuildFrame"));
 
     s.run("BenillaGuildFixture.inGuild = nil").unwrap();
     s.fire_event("PLAYER_GUILD_UPDATE", vec![]);
@@ -1040,16 +1040,16 @@ fn losing_the_guild_falls_back_off_the_guild_tab() {
         1,
         "the tab greys again"
     );
-    assert!(!visible(&s, "GuildFrame"), "the pane goes");
+    assert!(!visible(&mut s, "GuildFrame"), "the pane goes");
     assert!(
-        visible(&s, "FriendsListFrame"),
+        visible(&mut s, "FriendsListFrame"),
         "and the window falls back to the friends list"
     );
 
     // The tab also refuses to be selected by number while guildless (the second lock).
     s.run("ToggleFriendsFrame(3)").unwrap();
-    assert!(!visible(&s, "GuildFrame"));
-    assert!(visible(&s, "FriendsListFrame"));
+    assert!(!visible(&mut s, "GuildFrame"));
+    assert!(visible(&mut s, "FriendsListFrame"));
 
     // Joining one re-arms it.
     s.run("BenillaGuildFixture.inGuild = 1").unwrap();
@@ -1061,7 +1061,7 @@ fn losing_the_guild_falls_back_off_the_guild_tab() {
     );
     s.run("FriendsFrameTab3:Click()").unwrap();
     assert!(
-        visible(&s, "GuildFrame"),
+        visible(&mut s, "GuildFrame"),
         "and the tab's own OnClick opens the pane — it had none at all before this arc"
     );
 }
@@ -1071,8 +1071,8 @@ fn losing_the_guild_falls_back_off_the_guild_tab() {
 #[test]
 fn right_clicking_a_roster_row_offers_the_guild_rows() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameButton2:Click(\"RightButton\")").unwrap();
     assert!(
         s.eval::<bool>("return DropDownList1:IsVisible()").unwrap(),
@@ -1094,19 +1094,19 @@ fn right_clicking_a_roster_row_offers_the_guild_rows() {
             return nil"#
         )
     };
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     assert_eq!(
         s.eval::<Option<i64>>(&row("GUILD_PROMOTE")).unwrap(),
         Some(1),
         "the guild master sees Promote on someone else's row"
     );
-    assert!(visible(&s, "StaticPopup1"));
+    assert!(visible(&mut s, "StaticPopup1"));
     assert_eq!(
-        text(&s, "StaticPopup1Text"),
+        text(&mut s, "StaticPopup1Text"),
         "Really promote Furor to Guildmaster?"
     );
     s.run("StaticPopup1Button1:Click()").unwrap();
-    assert_eq!(calls(&s), "GuildSetLeaderByName:Furor");
+    assert_eq!(calls(&mut s), "GuildSetLeaderByName:Furor");
 
     // GUILD_LEAVE is only ever offered on YOURSELF…
     s.run("GuildFrameButton1:Click(\"RightButton\")").unwrap();
@@ -1116,14 +1116,14 @@ fn right_clicking_a_roster_row_offers_the_guild_rows() {
         "…and Promote never is"
     );
     s.run("GuildFrameButton1:Click(\"RightButton\")").unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     assert_eq!(s.eval::<Option<i64>>(&row("GUILD_LEAVE")).unwrap(), Some(1));
     assert_eq!(
-        text(&s, "StaticPopup1Text"),
+        text(&mut s, "StaticPopup1Text"),
         "Really leave Legacy of Steel?"
     );
     s.run("StaticPopup1Button1:Click()").unwrap();
-    assert_eq!(calls(&s), "GuildLeave");
+    assert_eq!(calls(&mut s), "GuildLeave");
 }
 
 /// The same two rows are ABSENT from a `/who` row's menu, which opens the identical FRIEND menu.
@@ -1132,7 +1132,7 @@ fn right_clicking_a_roster_row_offers_the_guild_rows() {
 #[test]
 fn the_guild_rows_stay_off_a_who_row_menu() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
+    let mut s = setup();
     s.run("ShowWhoPanel()").unwrap();
     // NOT our own name: the WHISPER row hides on yourself, and with INVITE gated the same way the
     // menu would have nothing to show and never open — which would make the assertion below pass
@@ -1160,9 +1160,9 @@ fn the_guild_rows_stay_off_a_who_row_menu() {
 fn a_guild_invite_raises_its_dialog_without_the_window() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
-    assert!(!visible(&s, "FriendsFrame"), "the window is shut");
+    assert!(!visible(&mut s, "FriendsFrame"), "the window is shut");
 
-    let _ = calls(&s);
+    let _ = calls(&mut s);
     s.fire_event(
         "GUILD_INVITE_REQUEST",
         vec![
@@ -1170,17 +1170,17 @@ fn a_guild_invite_raises_its_dialog_without_the_window() {
             ScriptValue::Str("Legacy of Steel".to_string()),
         ],
     );
-    assert!(visible(&s, "StaticPopup1"));
+    assert!(visible(&mut s, "StaticPopup1"));
     assert_eq!(
-        text(&s, "StaticPopup1Text"),
+        text(&mut s, "StaticPopup1Text"),
         "Furor invites you to join Legacy of Steel"
     );
-    assert_eq!(text(&s, "StaticPopup1Button1"), "Accept");
-    assert_eq!(text(&s, "StaticPopup1Button2"), "Decline");
+    assert_eq!(text(&mut s, "StaticPopup1Button1"), "Accept");
+    assert_eq!(text(&mut s, "StaticPopup1Button2"), "Decline");
 
     s.run("StaticPopup1Button2:Click()").unwrap();
     assert_eq!(
-        calls(&s),
+        calls(&mut s),
         "DeclineGuild",
         "Cancel DECLINES, it does not drop"
     );
@@ -1193,7 +1193,7 @@ fn a_guild_invite_raises_its_dialog_without_the_window() {
         ],
     );
     s.run("StaticPopup1Button1:Click()").unwrap();
-    assert_eq!(calls(&s), "AcceptGuild");
+    assert_eq!(calls(&mut s), "AcceptGuild");
 
     // A withdrawn invite takes its dialog with it.
     s.fire_event(
@@ -1203,9 +1203,9 @@ fn a_guild_invite_raises_its_dialog_without_the_window() {
             ScriptValue::Str("Legacy of Steel".to_string()),
         ],
     );
-    assert!(visible(&s, "StaticPopup1"));
+    assert!(visible(&mut s, "StaticPopup1"));
     s.fire_event("GUILD_INVITE_CANCEL", vec![]);
-    assert!(!visible(&s, "StaticPopup1"));
+    assert!(!visible(&mut s, "StaticPopup1"));
 }
 
 /// Removing a member goes behind a confirm that NAMES them — the registry line carries a
@@ -1214,20 +1214,20 @@ fn a_guild_invite_raises_its_dialog_without_the_window() {
 #[test]
 fn removing_a_member_names_them_in_the_confirm() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     s.run("GuildFrameButton3:Click()").unwrap();
-    let _ = calls(&s);
+    let _ = calls(&mut s);
 
     s.run("GuildMemberRemoveButton:Click()").unwrap();
     assert_eq!(
-        text(&s, "StaticPopup1Text"),
+        text(&mut s, "StaticPopup1Text"),
         "Are you sure you want to remove Kaplan from the guild?"
     );
     s.run("StaticPopup1Button1:Click()").unwrap();
-    assert_eq!(calls(&s), "GuildUninviteByName:Kaplan");
+    assert_eq!(calls(&mut s), "GuildUninviteByName:Kaplan");
     assert!(
-        !visible(&s, "GuildMemberDetailFrame"),
+        !visible(&mut s, "GuildMemberDetailFrame"),
         "the card goes with the member"
     );
 }
@@ -1246,7 +1246,7 @@ fn removing_a_member_names_them_in_the_confirm() {
 #[test]
 fn the_rank_flags_binding_answers_thirteen_values_even_when_all_are_nil() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     assert_eq!(
         s.arity("GuildControlGetRankFlags()").unwrap(),
         13,
@@ -1353,7 +1353,7 @@ fn each_permission_predicate_reads_the_bit_its_checkbox_owns() {
 #[test]
 fn the_roster_binding_answers_ten_values_and_the_tenth_is_status() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     assert_eq!(
         s.arity("GetGuildRosterInfo(1)").unwrap(),
         10,
@@ -1375,7 +1375,7 @@ fn the_roster_binding_answers_ten_values_and_the_tenth_is_status() {
 fn driving_the_guild_windows_raises_no_script_errors() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
-    open(&s);
+    open(&mut s);
     s.run("GuildFrameButton1:Click()").unwrap();
     s.run("GuildFrameGuildListToggleButton:Click()").unwrap();
     s.run("GuildFrameGuildStatusButton2:Click()").unwrap();
@@ -1401,8 +1401,8 @@ fn driving_the_guild_windows_raises_no_script_errors() {
 #[test]
 fn every_list_in_the_window_takes_the_mouse_wheel() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = setup();
-    open(&s);
+    let mut s = setup();
+    open(&mut s);
     // The reference's wheel lives on each list's FauxScrollFrameTemplate scroll frame, not on
     // the pane (1959).
     for frame in [

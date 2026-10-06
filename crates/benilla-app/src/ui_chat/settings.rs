@@ -105,7 +105,7 @@ use crate::ui_script::VmMemo;
 
 /// How long a dirty look sits before the save fires. [`crate::cvars`]'s own constant and its own
 /// reasoning — an opacity drag is exactly the gesture it was sized for.
-const SAVE_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
+const SAVE_QUIET: benilla_time::Duration = benilla_time::Duration::from_secs(1);
 
 /// The file's header — where these values come from and where the law lives. Comment lines; the
 /// reference's reader has none, ours skips them.
@@ -152,7 +152,7 @@ pub(super) struct ChatWindowFile {
     /// stock row — the "refusing to compose the file from nothing" hazard `crate::cvars` guards
     /// against, one store over. A fresh VM starts undirty and cannot write until Lua writes.
     dirty: VmMemo<bool>,
-    last_change: Option<std::time::Instant>,
+    last_change: Option<benilla_time::Instant>,
 }
 
 /// What a file parses to: the windows it names (0-based index, the record), the `COLORS` rows
@@ -568,7 +568,7 @@ pub(crate) fn restore_chat_looks(world: &mut World, script: &mut UiScript) {
         let text = file
             .path
             .as_ref()
-            .and_then(|path| match std::fs::read_to_string(path) {
+            .and_then(|path| match crate::local_state::read_to_string(path) {
                 Ok(t) => Some(t),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => {
@@ -675,13 +675,18 @@ fn watch_chat_looks(script: Option<NonSendMut<UiScript>>, mut file: ResMut<ChatW
         return;
     }
     *file.dirty.get(&script) = true;
-    file.last_change = Some(std::time::Instant::now());
+    file.last_change = Some(benilla_time::Instant::now());
 }
 
-fn write(script: &UiScript, channels: &super::edit::ChannelState, path: &std::path::Path) {
+fn write(
+    script: &mut UiScript,
+    zone_mask: Option<u32>,
+    roster: &[(String, u32)],
+    path: &std::path::Path,
+) {
     // Never compose a file from an unseated mask: `ZONECHANNELS 0` in every block is exactly the
     // damage 2120 repaired, and a `None` here means the character's file was never read.
-    let Some(zone_mask) = channels.zone_mask else {
+    let Some(zone_mask) = zone_mask else {
         warn!(
             "chat cache: refusing to write {} — the zone mask has not been seated",
             path.display()
@@ -691,7 +696,7 @@ fn write(script: &UiScript, channels: &super::edit::ChannelState, path: &std::pa
     let body = render(
         &script.chat_window_looks(),
         &script.chat_colors(),
-        &roster(channels),
+        roster,
         zone_mask,
         script.guild_recruitment_mode() != 0,
     );
@@ -725,9 +730,13 @@ fn owes_write(exiting: bool, restored: bool, dirty: bool, quiet: bool) -> bool {
 }
 
 /// The write itself, on the terms [`owes_write`] set.
+/// The channel roster and zone mask arrive as an owned snapshot, not a borrow: the two
+/// callers hold the VM exclusively while the roster lives in shared world state, and the
+/// two borrows cannot coexist.
 fn flush(
-    script: &UiScript,
-    channels: &super::edit::ChannelState,
+    script: &mut UiScript,
+    zone_mask: Option<u32>,
+    roster: &[(String, u32)],
     file: &mut ChatWindowFile,
     exiting: bool,
 ) {
@@ -738,7 +747,7 @@ fn flush(
         return;
     }
     if let Some(path) = file.path.clone() {
-        write(script, channels, &path);
+        write(script, zone_mask, roster, &path);
     }
     *file.dirty.get(script) = false;
 }
@@ -751,8 +760,14 @@ fn save_chat_looks(
     mut exits: MessageReader<AppExit>,
 ) {
     let exiting = exits.read().next().is_some();
-    let Some(script) = script else { return };
-    flush(&script, &channels, &mut file, exiting);
+    let Some(mut script) = script else { return };
+    flush(
+        &mut script,
+        channels.zone_mask,
+        &roster(&channels),
+        &mut file,
+        exiting,
+    );
 }
 
 /// The session-end flush — the reference's chat teardown (`0x499a80` from `0x490c55`), called
@@ -789,13 +804,18 @@ pub(crate) fn fold_dying_vm_chat_cache(world: &mut World) {
     // leaves the VM and the channel roster as two plain shared borrows of the world — the whole
     // fetch, with no system machinery and nothing to keep in step with the signature.
     world.resource_scope(|world, mut file: Mut<ChatWindowFile>| {
-        let (Some(script), Some(channels)) = (
-            world.get_non_send_resource::<UiScript>(),
-            world.get_resource::<super::edit::ChannelState>(),
+        // Snapshot first, under a shared borrow that ends here; the VM below needs the
+        // world exclusively, and the two cannot coexist.
+        let snapshot = world
+            .get_resource::<super::edit::ChannelState>()
+            .map(|channels| (channels.zone_mask, roster(channels)));
+        let (Some((zone_mask, roster)), Some(mut script)) = (
+            snapshot,
+            world.get_non_send_resource_mut::<UiScript>(),
         ) else {
             return;
         };
-        flush(script, channels, &mut file, true);
+        flush(&mut script, zone_mask, &roster, &mut file, true);
     });
 }
 

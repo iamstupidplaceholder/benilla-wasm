@@ -13,7 +13,7 @@
 use anyhow::Result;
 
 use crate::messages::{self, opcode, JumpInfo, MoveMode, TransportPose};
-use crate::world::movement::{client_uptime_ms, movement_info};
+use crate::world::movement::{client_uptime_ms, movement_info, movement_snapshot};
 
 use super::WorldWriter;
 
@@ -36,14 +36,10 @@ impl WorldWriter {
         jump: Option<JumpInfo>,
         transport: Option<TransportPose>,
     ) -> Result<()> {
-        let mut info = movement_info(pos, orientation, flags);
         // Each conditional tail is gated on its flag by the serializer, so the flag and the value must
         // agree (they share `flags`): `SWIMMING` ⇒ the swim pitch, `JUMPING` ⇒ the ballistic launch
         // tail, `ON_TRANSPORT` ⇒ the rider's local pose.
-        info.pitch = pitch;
-        info.fall_time = fall_time;
-        info.jump = jump;
-        info.transport = transport;
+        let info = movement_snapshot(pos, orientation, flags, pitch, fall_time, jump, transport);
         self.send(opcode, &messages::movement(&info))
     }
 
@@ -146,11 +142,7 @@ impl WorldWriter {
         jump: Option<JumpInfo>,
         transport: Option<TransportPose>,
     ) -> Result<()> {
-        let mut info = movement_info(pos, orientation, flags);
-        info.pitch = pitch;
-        info.fall_time = fall_time;
-        info.jump = jump;
-        info.transport = transport;
+        let info = movement_snapshot(pos, orientation, flags, pitch, fall_time, jump, transport);
         self.send(
             kind.ack_opcode(),
             &messages::force_speed_ack(guid, counter, &info, speed),

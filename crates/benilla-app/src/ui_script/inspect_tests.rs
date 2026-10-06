@@ -113,23 +113,23 @@ fn armed() -> UiScript {
     s.set_screen_size(1024.0, 768.0);
     // `PLAYER_LEVEL`, the template the stock level line formats through — the reference keeps its
     // strings here, and our retired file had the sentence written into it (1832).
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // `TEXT`, which the stock `InspectPaperDollFrame_SetLevel` formats its level line through.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
     // The inspect window's four tabs (`Blizzard_InspectUI`) inherit it (1993).
-    load_xml(&s, r"Interface\FrameXML\CharacterFrameTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, r"Interface\FrameXML\CharacterFrameTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     // `InspectUnit` lives here now — the reference's own home for that name, and no longer in the
     // window's own file (decision 1832). The manifest's order, and 49 other harnesses'.
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
     // Before InspectFrame.xml, and required rather than tidy: this window's honor page inherits
     // HonorFrame.xml's five row templates and `inherits=` resolves at LOAD, so without it the
     // twelve honor rows materialize bare (decision 1512; the manifest states the same order).
@@ -137,8 +137,8 @@ fn armed() -> UiScript {
     // comes from, which `InspectPaperDollItemSlotButton_OnLoad` indexes unconditionally. Our own
     // slot template declared its icon inline and needed no such file; the manifest has carried
     // this entry far above the inspect window all along (decision 1832).
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\HonorFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\HonorFrame.xml");
     // The window is a LoadOnDemand addon, reached the way the app reaches it: seated off the
     // chain as a registry row (1957) and loaded by the reference's own `InspectFrame_LoadUI`
     // (UIParent.xml; 1967).
@@ -158,23 +158,23 @@ fn shipped_inspect_frame_loads_clean() {
     let mut s = UiScript::new().unwrap();
     // `PLAYER_LEVEL`, the template the stock level line formats through — the reference keeps its
     // strings here, and our retired file had the sentence written into it (1832).
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // `TEXT`, which the stock `InspectPaperDollFrame_SetLevel` formats its level line through.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
     // The inspect window's four tabs (`Blizzard_InspectUI`) inherit it (1993).
-    load_xml(&s, r"Interface\FrameXML\CharacterFrameTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, r"Interface\FrameXML\CharacterFrameTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
     // `InspectUnit` lives here now — the reference's own home for that name, and no longer in the
     // window's own file (decision 1832). The manifest's order, and 49 other harnesses'.
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
     // Before InspectFrame.xml, and required rather than tidy: this window's honor page inherits
     // HonorFrame.xml's five row templates and `inherits=` resolves at LOAD, so without it the
     // twelve honor rows materialize bare (decision 1512; the manifest states the same order).
@@ -182,8 +182,8 @@ fn shipped_inspect_frame_loads_clean() {
     // comes from, which `InspectPaperDollItemSlotButton_OnLoad` indexes unconditionally. Our own
     // slot template declared its icon inline and needed no such file; the manifest has carried
     // this entry far above the inspect window all along (decision 1832).
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\HonorFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\HonorFrame.xml");
     // The window is a LoadOnDemand addon, reached the way the app reaches it: seated off the
     // chain as a registry row (1957) and loaded by the reference's own `InspectFrame_LoadUI`
     // (UIParent.xml; 1967).
@@ -551,7 +551,7 @@ fn the_active_tab_is_inert_and_toggle_inspect_closes() {
 #[test]
 fn toggle_inspect_reopens_after_a_close_and_raises_like_the_reference() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = armed();
+    let mut s = armed();
     s.run(r#"InspectUnit("target")"#).unwrap();
     s.run(r#"ToggleInspect("InspectPaperDollFrame")"#).unwrap();
     assert!(!s.eval::<bool>("return InspectFrame:IsVisible()").unwrap());

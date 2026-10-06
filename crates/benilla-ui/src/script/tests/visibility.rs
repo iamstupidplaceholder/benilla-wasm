@@ -4,7 +4,7 @@ use super::common::script;
 
 #[test]
 fn show_hide_fires_only_on_effective_transitions() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         shows, hides = 0, 0
@@ -25,7 +25,7 @@ fn show_hide_fires_only_on_effective_transitions() {
 
 #[test]
 fn mid_tree_hide_fires_onhide_for_the_subtree() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         childhides = 0

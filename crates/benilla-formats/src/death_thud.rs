@@ -97,7 +97,7 @@ fn n_u32_schema(name: &str, n: usize) -> Schema {
 }
 
 /// Read the two tables off the patch chain.
-pub fn load_death_thud_catalog(chain: &mut Chain) -> Result<DeathThudCatalog> {
+pub fn load_death_thud_catalog(chain: &mut impl crate::FileSource) -> Result<DeathThudCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\TerrainTypeSounds.dbc")
         .context("reading TerrainTypeSounds.dbc")?;

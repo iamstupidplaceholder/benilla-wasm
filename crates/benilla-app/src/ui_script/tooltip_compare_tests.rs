@@ -262,7 +262,7 @@ fn doll_hover_renders_the_live_instance() {
     // mouse onto the button rather than by calling the handler.
     s.run("MainMenuBarBackpackButton:Click()").unwrap();
     s.take_sounds();
-    let btn = bag_slot_button(&s, 0, 1);
+    let btn = bag_slot_button(&mut s, 0, 1);
     hover(&mut s, &btn);
     // The doll slot needs its window open to be hoverable at all.
     s.run(r#"ToggleCharacter("PaperDollFrame")"#).unwrap();

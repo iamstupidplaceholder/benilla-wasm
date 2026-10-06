@@ -33,7 +33,7 @@ fn ns_per(t: Instant, n: usize) -> f64 {
 #[test]
 #[ignore = "bench — run explicitly with --release --nocapture"]
 fn dispatch_bench() {
-    let s = script();
+    let mut s = script();
     s.run(
         r#"
         F = CreateFrame("Frame")
@@ -44,13 +44,54 @@ fn dispatch_bench() {
     )
     .expect("fixtures");
 
+    // **The control that says WHERE the bridged calls' extra microsecond goes.** `__direct` is one
+    // host closure; `__wrapped` is one host closure that calls another through the context —
+    // the exact shape `region_map`'s shared arm has. The gap between these two rows is what a
+    // re-entrant Lua call costs, and it is the number that decides whether those 19 names are worth
+    // restructuring into a single Rust body with an internal branch (the reference's own shape: one
+    // C function doing a virtual dispatch on the receiver).
+    {
+        use benilla_lua::{LuaContext, MultiValue};
+        let vm = s.vm_mut();
+        let direct = vm
+            .create_function("__direct", |_, n: i64| Ok(n + 1))
+            .expect("direct fn");
+        vm.set_global_function("__direct", &direct).expect("set");
+        let wrapped = vm
+            .create_function("__wrapped", move |ctx, n: i64| {
+                // Fully qualified: the context's inherent `call_function` takes a
+                // `MultiValue`, so the generic trait door needs its full path here.
+                LuaContext::call_function::<(i64,), i64>(ctx, &direct, (n,))
+            })
+            .expect("wrapped fn");
+        vm.set_global_function("__wrapped", &wrapped).expect("set");
+
+        // The same pair again in the SHAPE the bridge actually has: a variadic `MultiValue` whose
+        // first value is the receiver table. `Table` and `MultiValue` are the two conversions the
+        // scalar controls above leave out, and between them they are most of the gap.
+        let mv_direct = vm
+            .create_function("__mv_direct", |_, args: MultiValue| Ok(args.len() as i64))
+            .expect("mv direct");
+        vm.set_global_function("__mv_direct", &mv_direct)
+            .expect("set");
+        let mv_relay = vm
+            .create_function(
+                "__mv_relay",
+                move |ctx, args: MultiValue| {
+                    ctx.call_function_values(&mv_direct, args)
+                },
+            )
+            .expect("mv relay");
+        vm.set_global_function("__mv_relay", &mv_relay).expect("set");
+    }
+
     // A plain Lua table with a table `__index` — the floor this path could reach, and what the
     // reference client's flat `{name, lua_CFunction}` probe costs in C.
     // **The MINIMUM of [`ROUNDS`] runs, never the mean.** This machine builds while it measures —
     // a neighbouring worktree's `cargo` saturates ten cores — and a mean of a contended loop reads
     // whatever else was running. The minimum is the closest thing to the uncontended cost that a
     // shared machine can report, and it is what makes two rows of one run comparable at all.
-    let floor = |what: &str, chunk: &str| {
+    let mut floor = |what: &str, chunk: &str| {
         let mut best = f64::INFINITY;
         for _ in 0..ROUNDS {
             let t = Instant::now();
@@ -143,39 +184,6 @@ fn dispatch_bench() {
         ),
     );
 
-    // **The control that says WHERE the bridged calls' extra microsecond goes.** `__direct` is one
-    // mlua closure; `__wrapped` is one mlua closure that calls another through `Function::call` —
-    // the exact shape `region_map`'s shared arm has. The gap between these two rows is what a
-    // re-entrant Lua call costs, and it is the number that decides whether those 19 names are worth
-    // restructuring into a single Rust body with an internal branch (the reference's own shape: one
-    // C function doing a virtual dispatch on the receiver).
-    {
-        let lua = s.lua();
-        let direct = lua
-            .create_function(|_, n: i64| Ok(n + 1))
-            .expect("direct fn");
-        lua.globals().set("__direct", direct.clone()).expect("set");
-        let wrapped = lua
-            .create_function(move |_, n: i64| direct.call::<i64>(n))
-            .expect("wrapped fn");
-        lua.globals().set("__wrapped", wrapped).expect("set");
-
-        // The same pair again in the SHAPE the bridge actually has: a variadic `MultiValue` whose
-        // first value is the receiver table. `Table` and `MultiValue` are the two conversions the
-        // scalar controls above leave out, and between them they are most of the gap.
-        let mv_direct = lua
-            .create_function(|_, args: mlua::MultiValue| Ok(args.len() as i64))
-            .expect("mv direct");
-        lua.globals()
-            .set("__mv_direct", mv_direct.clone())
-            .expect("set");
-        let mv_relay = lua
-            .create_function(move |_, args: mlua::MultiValue| {
-                mv_direct.call::<mlua::MultiValue>(args)
-            })
-            .expect("mv relay");
-        lua.globals().set("__mv_relay", mv_relay).expect("set");
-    }
     floor(
         "ctrl: 1 mlua hop",
         &format!("for _ = 1, {N} do local v = __direct(1) end"),

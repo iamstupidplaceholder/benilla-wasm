@@ -258,7 +258,8 @@ pub(super) fn upload_prop_probes(
     *last = Some(data.generation);
     let rows = &data.rows[lo..hi];
     if !rows.is_empty() {
-        queue.write_buffer(
+        benilla_assets::gpu_table::write_gpu_table(
+            &queue,
             &buffer.0,
             prop_probe_region_offset() + (lo * std::mem::size_of::<[[f32; 4]; 7]>()) as u64,
             bytemuck::cast_slice(rows),

@@ -1,0 +1,20 @@
+# Copy to gateway.toml in the directory from which you launch the gateway.
+# CLI flags override these settings. Relative paths are relative to that directory.
+data = "/path/to/World of Warcraft/Data"
+# Optional single loose-addon root override; otherwise uses the installed
+# client's Interface/AddOns. Restart gateway after changing addon files.
+# addons = "/path/to/World of Warcraft/Interface/AddOns"
+web = "web"
+bind = "127.0.0.1:8000"
+auth_upstream = "127.0.0.1:3724"
+world_upstream = "127.0.0.1:8085"
+
+# Optional resource limits (defaults shown).
+workers = 4
+queue = 16
+max_asset_mib = 64
+cache_mib = 128
+
+# Fresh browser asset responses avoid round trips during reconnects.
+# Set 0 when actively editing MPQs to revalidate on every request.
+asset_max_age_secs = 300

@@ -484,9 +484,9 @@ pub(super) fn cast_fail_text(
     reason: u8,
     spell: Option<&SpellDisplay>,
     args: FailArgs<'_>,
-    get: &dyn Fn(&str) -> Option<String>,
+    get: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Option<CastFailLine> {
-    let get_text = |key: &str| get(key).filter(|s| !s.is_empty());
+    let mut get_text = |key: &str| get(key).filter(|s| !s.is_empty());
     // `[ebp-0x488]` — the FIRST-layer string, `SStrCopy`d at `0x6e1d77` and pointed at by `edi`
     // at `0x6e1d9a`, both of which run before the argument dispatch and neither of which any
     // errorId override touches. It is therefore what the combat log reads for every reason no
@@ -497,7 +497,7 @@ pub(super) fn cast_fail_text(
         .and_then(|k| get_text(k))
         .map(|t| strip_tokens(&t))
         .unwrap_or_default();
-    let get_display = |key: &'static str| {
+    let mut get_display = |key: &'static str| {
         get_text(key).map(|text| CastFailLine {
             key,
             text,
@@ -705,9 +705,9 @@ mod tests {
     #[test]
     fn the_pet_speaks_its_own_six_refusals() {
         let m = gs();
-        let g = getter(&m);
-        let say = |caster, reason| {
-            cast_fail_text(caster, reason, None, FailArgs::default(), &g).map(|l| l.text)
+        let mut g = getter(&m);
+        let mut say = |caster, reason| {
+            cast_fail_text(caster, reason, None, FailArgs::default(), &mut g).map(|l| l.text)
         };
         for (reason, pet, player) in [
             (0x00, "Your pet is in combat.", "You are in combat"),
@@ -745,13 +745,13 @@ mod tests {
     #[test]
     fn the_pets_nopath_is_silent_because_5875_ships_no_string() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         assert_eq!(
-            cast_fail_text(Caster::Pet, 0x32, None, FailArgs::default(), &g),
+            cast_fail_text(Caster::Pet, 0x32, None, FailArgs::default(), &mut g),
             None
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x32, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x32, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "No path available"
@@ -765,11 +765,11 @@ mod tests {
     #[test]
     fn the_pet_has_no_food_or_potion_cooldown_leg() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         let potion = spell(0, 4, 0);
         let ability = spell(0, 0, 0x10);
-        let text = |caster, d| {
-            cast_fail_text(caster, 0x3C, Some(d), FailArgs::default(), &g)
+        let mut text = |caster, d| {
+            cast_fail_text(caster, 0x3C, Some(d), FailArgs::default(), &mut g)
                 .unwrap()
                 .text
         };
@@ -788,9 +788,9 @@ mod tests {
     fn the_pet_does_not_take_the_players_overrides() {
         use benilla_ui::messages::{kind_of, MsgKind};
         let m = gs();
-        let g = getter(&m);
-        let line = |caster, reason| {
-            cast_fail_text(caster, reason, None, FailArgs::default(), &g).expect("a line")
+        let mut g = getter(&m);
+        let mut line = |caster, reason| {
+            cast_fail_text(caster, reason, None, FailArgs::default(), &mut g).expect("a line")
         };
 
         assert_eq!(line(Caster::Player, 0x09).text, "You have no target.");
@@ -812,11 +812,11 @@ mod tests {
     #[test]
     fn the_pets_no_power_pick_is_the_players() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         let focus = spell(2, 0, 0);
         for caster in [Caster::Player, Caster::Pet] {
             assert_eq!(
-                cast_fail_text(caster, 0x4D, Some(&focus), FailArgs::default(), &g)
+                cast_fail_text(caster, 0x4D, Some(&focus), FailArgs::default(), &mut g)
                     .unwrap()
                     .text,
                 "Not enough focus"
@@ -832,11 +832,11 @@ mod tests {
     #[test]
     fn dont_report_is_silent_on_both_paths_for_two_different_reasons() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         assert!(!m.contains_key("SPELL_FAILED_DONT_REPORT"));
         for caster in [Caster::Player, Caster::Pet] {
             assert_eq!(
-                cast_fail_text(caster, 0x17, None, FailArgs::default(), &g),
+                cast_fail_text(caster, 0x17, None, FailArgs::default(), &mut g),
                 None
             );
         }
@@ -858,21 +858,21 @@ mod tests {
     fn the_unsheathed_refusal_is_yellow_and_its_neighbours_are_red() {
         use benilla_ui::messages::{kind_of, MsgKind};
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
 
         let line =
-            cast_fail_text(Caster::Player, 0x41, None, FailArgs::default(), &g).expect("a line");
+            cast_fail_text(Caster::Player, 0x41, None, FailArgs::default(), &mut g).expect("a line");
         assert_eq!(line.key, "ERR_SPELL_FAILED_NOTUNSHEATHED");
         assert_eq!(kind_of(line.key), MsgKind::Info);
 
         // An override that IS red, and a passthrough that falls to errorId 0x2c.
         let red =
-            cast_fail_text(Caster::Player, 0x59, None, FailArgs::default(), &g).expect("a line");
+            cast_fail_text(Caster::Player, 0x59, None, FailArgs::default(), &mut g).expect("a line");
         assert_eq!(red.key, "ERR_SPELL_OUT_OF_RANGE");
         assert_eq!(kind_of(red.key), MsgKind::Error);
 
         let through =
-            cast_fail_text(Caster::Player, 0x43, None, FailArgs::default(), &g).expect("a line");
+            cast_fail_text(Caster::Player, 0x43, None, FailArgs::default(), &mut g).expect("a line");
         assert_eq!(through.key, PASSTHROUGH);
         assert_eq!(kind_of(through.key), MsgKind::Error);
     }
@@ -887,14 +887,14 @@ mod tests {
     #[test]
     fn only_shapeshift_names_the_forms_the_stance_mask_asks_for() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         let forms = forms([
             (1, "Cat Form"),
             (5, "Bear Form"),
             (8, "Dire Bear Form"),
             (9, ""),
         ]);
-        let text = |stances: u32| {
+        let mut text = |stances: u32| {
             let d = SpellDisplay {
                 stances,
                 ..Default::default()
@@ -907,7 +907,7 @@ mod tests {
                     forms: Some(&forms),
                     ..FailArgs::default()
                 },
-                &g,
+                &mut g,
             )
             .map(|l| l.text)
         };
@@ -936,10 +936,10 @@ mod tests {
     #[test]
     fn an_unfillable_only_shapeshift_says_nothing_at_all() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         let forms = forms([(1, "Cat Form"), (9, "")]);
-        let line = |spell: Option<&SpellDisplay>, args| {
-            cast_fail_text(Caster::Player, 0x56, spell, args, &g)
+        let mut line = |spell: Option<&SpellDisplay>, args| {
+            cast_fail_text(Caster::Player, 0x56, spell, args, &mut g)
         };
         let with = FailArgs {
             forms: Some(&forms),
@@ -964,7 +964,7 @@ mod tests {
         );
         // The control: the arm next door still strips rather than falling silent.
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x5C, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x5C, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Missing reagent"
@@ -981,9 +981,9 @@ mod tests {
     #[test]
     fn the_pets_only_shapeshift_names_the_first_form_and_never_joins() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         let forms = forms([(1, "Cat Form"), (5, "Bear Form"), (8, "Dire Bear Form")]);
-        let text = |caster, stances: u32| {
+        let mut text = |caster, stances: u32| {
             let d = SpellDisplay {
                 stances,
                 ..Default::default()
@@ -996,7 +996,7 @@ mod tests {
                     forms: Some(&forms),
                     ..FailArgs::default()
                 },
-                &g,
+                &mut g,
             )
             .map(|l| l.text)
         };
@@ -1026,9 +1026,9 @@ mod tests {
     #[test]
     fn the_combat_log_reads_the_argtext_buffer_not_the_displayed_line() {
         let m = gs();
-        let g = getter(&m);
-        let line = |reason, spell| {
-            cast_fail_text(Caster::Player, reason, spell, FailArgs::default(), &g).expect("a line")
+        let mut g = getter(&m);
+        let mut line = |reason, spell| {
+            cast_fail_text(Caster::Player, reason, spell, FailArgs::default(), &mut g).expect("a line")
         };
 
         // 1b · an errorId override with NO argument arm: `edi` never moved off the first-layer
@@ -1074,10 +1074,10 @@ mod tests {
             "You are already at full %s.",
         );
         m.insert("RAGE", "Rage");
-        let g = getter(&m);
+        let mut g = getter(&m);
         let rage = spell(1, 0, 0);
         let line =
-            cast_fail_text(Caster::Player, 0x02, Some(&rage), FailArgs::default(), &g).unwrap();
+            cast_fail_text(Caster::Player, 0x02, Some(&rage), FailArgs::default(), &mut g).unwrap();
         assert_eq!(line.text, "You are already at full Rage.");
         assert_eq!(line.logged(), "Rage");
     }
@@ -1128,27 +1128,27 @@ mod tests {
     #[test]
     fn overrides_replace_and_passthrough_reads() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x43, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x43, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Out of ammo"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x59, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x59, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Out of range."
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x76, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x76, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Target too close"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x09, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x09, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "You have no target."
@@ -1156,7 +1156,7 @@ mod tests {
         // 0x3c: plain spell → spell cooldown; Attr&0x10 → ability; potion category → potion.
         let plain = spell(0, 0, 0);
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x3C, Some(&plain), FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x3C, Some(&plain), FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Spell is not ready yet."
@@ -1168,7 +1168,7 @@ mod tests {
                 0x3C,
                 Some(&ability),
                 FailArgs::default(),
-                &g
+                &mut g
             )
             .unwrap()
             .text,
@@ -1176,7 +1176,7 @@ mod tests {
         );
         let potion = spell(0, 4, 0);
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x3C, Some(&potion), FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x3C, Some(&potion), FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Item is not ready yet."
@@ -1188,17 +1188,17 @@ mod tests {
     #[test]
     fn no_power_reads_the_spells_power_family() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         let rage = spell(1, 0, 0);
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x4D, Some(&rage), FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x4D, Some(&rage), FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Not enough rage"
         );
         let mana = spell(0, 0, 0);
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x4D, Some(&mana), FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x4D, Some(&mana), FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Not enough mana"
@@ -1211,23 +1211,23 @@ mod tests {
     #[test]
     fn suppression_hex_fallback_and_template_strip() {
         let m = gs();
-        let g = getter(&m);
+        let mut g = getter(&m);
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x17, None, FailArgs::default(), &g),
+            cast_fail_text(Caster::Player, 0x17, None, FailArgs::default(), &mut g),
             None
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x08, None, FailArgs::default(), &g),
+            cast_fail_text(Caster::Player, 0x08, None, FailArgs::default(), &mut g),
             None
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x92, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x92, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Spell failed (0x92)"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x5C, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x5C, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Missing reagent"
@@ -1246,31 +1246,31 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| s.global_string(key);
 
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x43, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x43, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Out of ammo"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x59, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x59, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Out of range."
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x3C, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x3C, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Spell is not ready yet."
         );
         let rage = spell(1, 0, 0);
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x4D, Some(&rage), FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x4D, Some(&rage), FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Not enough rage"
@@ -1279,24 +1279,24 @@ mod tests {
         // player reads IS the GlobalStrings value. A typo'd key here would degrade a real refusal
         // to a dead-looking button, which is what this test exists to catch.
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x50, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x50, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Cannot use while swimming"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x58, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x58, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "Can only use while swimming"
         );
         // The data-suppression face on the real file: the absent keys show nothing.
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x08, None, FailArgs::default(), &g),
+            cast_fail_text(Caster::Player, 0x08, None, FailArgs::default(), &mut g),
             None
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x21, None, FailArgs::default(), &g),
+            cast_fail_text(Caster::Player, 0x21, None, FailArgs::default(), &mut g),
             None
         );
 
@@ -1321,14 +1321,14 @@ mod tests {
             (0x65, "Your pet\'s target is dead.", "Your target is dead"),
         ] {
             assert_eq!(
-                cast_fail_text(Caster::Pet, reason, None, FailArgs::default(), &g)
+                cast_fail_text(Caster::Pet, reason, None, FailArgs::default(), &mut g)
                     .map(|l| l.text)
                     .as_deref(),
                 Some(pet),
                 "pet {reason:#04x}"
             );
             assert_eq!(
-                cast_fail_text(Caster::Player, reason, None, FailArgs::default(), &g)
+                cast_fail_text(Caster::Player, reason, None, FailArgs::default(), &mut g)
                     .map(|l| l.text)
                     .as_deref(),
                 Some(player),
@@ -1336,7 +1336,7 @@ mod tests {
             );
         }
         assert_eq!(
-            cast_fail_text(Caster::Pet, 0x32, None, FailArgs::default(), &g),
+            cast_fail_text(Caster::Pet, 0x32, None, FailArgs::default(), &mut g),
             None,
             "5875 ships no ERR_PET_SPELL_NOPATH, so the reference shows nothing"
         );
@@ -1368,19 +1368,19 @@ mod tests {
         // the wire. The names are lower-case adjectives in the shipped data, which is what makes
         // them read as the tail of the sentence.
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x8D, None, args(12), &g)
+            cast_fail_text(Caster::Player, 0x8D, None, args(12), &mut g)
                 .unwrap()
                 .text,
             "Can't do that while stunned"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x8D, None, args(5), &g)
+            cast_fail_text(Caster::Player, 0x8D, None, args(5), &mut g)
                 .unwrap()
                 .text,
             "Can't do that while fleeing"
         );
         // An unknown or absent mechanic strips to the bare stem rather than showing a raw `%s`.
-        assert!(!cast_fail_text(Caster::Player, 0x8D, None, args(999), &g)
+        assert!(!cast_fail_text(Caster::Player, 0x8D, None, args(999), &mut g)
             .unwrap()
             .text
             .contains('%'));
@@ -1388,20 +1388,20 @@ mod tests {
         // 0x5e REQUIRES_SPELL_FOCUS: the Crown of the Earth phials' own refusal. Focus 12 is the
         // Starbreeze Village moonwell — using the Jade Phial at any *other* pool is the report.
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x5E, None, args(12), &g)
+            cast_fail_text(Caster::Player, 0x5E, None, args(12), &mut g)
                 .unwrap()
                 .text,
             "Requires Starbreeze Village Moonwell"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x5E, None, args(1), &g)
+            cast_fail_text(Caster::Player, 0x5E, None, args(1), &mut g)
                 .unwrap()
                 .text,
             "Requires Anvil"
         );
         // 0x5d REQUIRES_AREA: area 1657 is Darnassus.
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x5D, None, args(1657), &g)
+            cast_fail_text(Caster::Player, 0x5D, None, args(1657), &mut g)
                 .unwrap()
                 .text,
             "You need to be in Darnassus"
@@ -1409,13 +1409,13 @@ mod tests {
         // The fallbacks. An id the DBC doesn't name, and a wire word the server never sent, both
         // decline the arm and fall through to the strip — never a raw `%s` on screen.
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x5E, None, args(999_999), &g)
+            cast_fail_text(Caster::Player, 0x5E, None, args(999_999), &mut g)
                 .unwrap()
                 .text,
             "Requires"
         );
         assert_eq!(
-            cast_fail_text(Caster::Player, 0x5D, None, FailArgs::default(), &g)
+            cast_fail_text(Caster::Player, 0x5D, None, FailArgs::default(), &mut g)
                 .unwrap()
                 .text,
             "You need to be in"
@@ -1425,7 +1425,7 @@ mod tests {
         // real `"Must be in %s"`. Prowl in bear form is the report; Maul is the multi-form join,
         // which a single-bit test could not tell apart from "name the lowest bit".
         let catalog = benilla_formats::load_spell_catalog(&mut chain).expect("Spell.dbc");
-        let shifted = |spell_id: u32| {
+        let mut shifted = |spell_id: u32| {
             let d = catalog.get(spell_id).expect("a shipped spell");
             cast_fail_text(
                 Caster::Player,
@@ -1435,7 +1435,7 @@ mod tests {
                     forms: Some(&forms),
                     ..FailArgs::default()
                 },
-                &g,
+                &mut g,
             )
             .map(|l| l.text)
         };
@@ -1481,7 +1481,7 @@ mod tests {
                     focus: Some(&focus),
                     ..FailArgs::default()
                 },
-                &g
+                &mut g
             )
             .unwrap()
             .text,

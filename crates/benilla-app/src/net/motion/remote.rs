@@ -1023,10 +1023,10 @@ impl RemoteMotion {
 #[cfg(test)]
 mod under_floor {
     use avian3d::prelude::*;
+    use benilla_time::Duration;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
     use bevy::time::Real;
-    use std::time::Duration;
 
     use super::{extrapolate_remote_units, RelayChain, RemoteMotion};
     use crate::creature_anim::move_flags;

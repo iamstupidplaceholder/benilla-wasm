@@ -31,6 +31,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
+#[cfg(test)]
 use crate::Chain;
 
 const AUCTION_HOUSE: &str = "DBFilesClient\\AuctionHouse.dbc";
@@ -95,7 +96,7 @@ fn auction_house_schema() -> Schema {
 }
 
 /// Load AuctionHouse.dbc from the patch chain.
-pub fn load_auction_houses(chain: &mut Chain) -> Result<AuctionHouseCatalog> {
+pub fn load_auction_houses(chain: &mut impl crate::FileSource) -> Result<AuctionHouseCatalog> {
     let bytes = chain
         .read_file(AUCTION_HOUSE)
         .with_context(|| format!("reading {AUCTION_HOUSE}"))?;

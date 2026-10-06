@@ -13,7 +13,7 @@
 //! shipped caller of `GetNetStats` and discards both. They stay in the signature (numbers, not
 //! `nil`, so arithmetic on them can't error) as a named gap, not a claim.
 
-use mlua::Lua;
+use benilla_lua::Vm;
 
 use super::Model;
 
@@ -28,13 +28,10 @@ impl super::UiScript {
 }
 
 /// Register the net-stats globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetNetStats() → bandwidthIn, bandwidthOut, latency (see the module doc for the two zeros).
-    lua.globals().set(
-        "GetNetStats",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok((0.0_f64, 0.0_f64, i64::from(model.net_latency_ms)))
-        })?,
-    )
+    lua.register_function("GetNetStats", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok((0.0_f64, 0.0_f64, i64::from(model.net_latency_ms)))
+    })
 }

@@ -200,7 +200,7 @@ fn feed_tabard(
     let lines: Vec<_> = open
         .lines
         .drain(..)
-        .filter_map(|key| crate::ui_action::keyed_line(&script, key))
+        .filter_map(|key| crate::ui_action::keyed_line(&mut script, key))
         .collect();
     crate::ui_action::show_messages(&mut script, &mut sink, "ui_tabard", lines);
 
@@ -246,7 +246,7 @@ fn drain_tabard(
                 let purse = store.and_then(|s| s.0.player_money()).unwrap_or(0);
                 match preflight(design, record, rank, purse) {
                     Err(key) => {
-                        if let Some(line) = crate::ui_action::keyed_line(&script, key) {
+                        if let Some(line) = crate::ui_action::keyed_line(&mut script, key) {
                             crate::ui_action::show_messages(
                                 &mut script,
                                 &mut sink,

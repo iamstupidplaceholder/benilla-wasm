@@ -97,7 +97,7 @@ fn load_world_map(mut commands: Commands, world_assets: Option<Res<WorldAssets>>
         return;
     };
     let mut chain = world_assets.chain.lock_recover();
-    match load_map_catalog(&mut chain) {
+    match load_map_catalog(&mut *chain) {
         Ok(c) => {
             info!("Map.dbc: {} maps catalogued", c.len());
             commands.insert_resource(MapCatalogRes(c));

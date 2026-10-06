@@ -425,7 +425,7 @@ fn pre_resolved_lines_land_on_the_errors_frame_in_the_arms_colour() {
             "Interface\\FrameXML\\Fonts.xml",
             "Interface\\FrameXML\\UIErrorsFrame.xml",
         ] {
-            crate::ui_script::load_ui_for_test(&script, file);
+            crate::ui_script::load_ui_for_test(&mut script, file);
         }
     }
 
@@ -530,7 +530,7 @@ fn a_pets_refused_cast_writes_no_combat_log_line() {
         .init_resource::<crate::ui_chat::ChatLog>()
         .init_resource::<crate::sound::MessageSounds>()
         .insert_resource(NetCommands(tx));
-    let script = UiScript::new().unwrap();
+    let mut script = UiScript::new().unwrap();
     // Only the two strings the log line needs; the red line's own text is `cast_fail`'s business
     // and has its own tests.
     script
@@ -561,7 +561,7 @@ fn a_pets_refused_cast_writes_no_combat_log_line() {
 fn a_tame_failure_composes_the_reason_string_into_err_tame_failed() {
     let (mut app, _rx) = app_with_food_on_the_bar();
     {
-        let script = app.world_mut().non_send_resource_mut::<UiScript>();
+        let mut script = app.world_mut().non_send_resource_mut::<UiScript>();
         // The two strings verbatim from 1.12's `GlobalStrings.lua`, plus a recorder for the
         // event the sink fires — this test is about the composition, not the frame.
         script

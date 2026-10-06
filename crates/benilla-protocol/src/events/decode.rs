@@ -264,6 +264,17 @@ pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
         ServerPacket::SpellFailedOther { caster, spell_id } => {
             vec![SessionEvent::SpellFailedOther { caster, spell_id }]
         }
+        ServerPacket::SpellFailure {
+            caster,
+            spell_id,
+            reason,
+        } => {
+            vec![SessionEvent::SpellFailure {
+                caster,
+                spell_id,
+                reason,
+            }]
+        }
         ServerPacket::CancelAutoRepeat => vec![SessionEvent::CancelAutoRepeat],
         ServerPacket::SpellCooldownList { caster, cooldowns } => {
             vec![SessionEvent::SpellCooldowns { caster, cooldowns }]

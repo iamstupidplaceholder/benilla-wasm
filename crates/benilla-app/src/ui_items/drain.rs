@@ -191,7 +191,8 @@ pub(super) fn drain_bag_autostores(
 /// through the shared use fork (`super::item_use_command`): the reference's doll click lands in
 /// the same `CGItem::Use` a bag click does (`0x4c7af0`), quest fork included — one of the five
 /// equippable quest-starters, worn and right-clicked, offers its quest instead of casting nothing.
-/// Ids outside 1..=19 (ammo, the bag icons) are a no-op — the engine's own queue never receives
+/// Ammo (0) removes the selected ammo entry; other ids outside 1..=19 are a no-op.
+/// The engine's own ordinary item-use queue never receives
 /// them from the shipped XML (only the 19 named slot buttons wire `UseInventoryItem` this slice),
 /// but a stray Lua call is still refused rather than sent as nonsense.
 pub(super) fn drain_inventory_uses(
@@ -206,6 +207,15 @@ pub(super) fn drain_inventory_uses(
         return;
     };
     for id in script.take_inventory_uses() {
+        if id == 0 {
+            // MaNGOS HandleSetAmmoOpcode explicitly removes the selection for
+            // entry 0. Never fabricate an equipped ammo GUID or move/destroy a
+            // bag stack; the server publishes PLAYER_AMMO_ID afterwards.
+            if self_q.iter().next().is_some() {
+                let _ = ladder.commands.0.send(ClientCommand::SetAmmo { entry: 0 });
+            }
+            continue;
+        }
         if !(1..=19).contains(&id) {
             debug!("ui_items: UseInventoryItem({id}) out of range — ignored");
             continue;
@@ -938,7 +948,7 @@ mod tests {
             }),
         );
 
-        let script = UiScript::new().unwrap();
+        let mut script = UiScript::new().unwrap();
         script.run("UseContainerItem(0, 1)").unwrap();
         app.insert_non_send_resource(script);
         app.world_mut()
@@ -999,7 +1009,7 @@ mod tests {
             }),
         );
         {
-            let script = app.world().non_send_resource::<UiScript>();
+            let mut script = app.world().non_send_resource::<UiScript>();
             script.run("UseContainerItem(0, 1)").unwrap();
         }
         app.world_mut()
@@ -1604,7 +1614,7 @@ mod bind_confirm_tests {
         }
         // Re-run the place now that the item is out of reach.
         {
-            let s = app.world_mut().non_send_resource_mut::<UiScript>();
+            let mut s = app.world_mut().non_send_resource_mut::<UiScript>();
             s.run("PickupContainerItem(0, 1)").unwrap();
             s.run("PickupInventoryItem(16)").unwrap();
         }

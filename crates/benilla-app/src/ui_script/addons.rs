@@ -20,6 +20,10 @@
 //! we do not read for addons at all — plus whatever the machine's owner has put there. Nothing was
 //! being gained by searching it.
 //!
+//! Browser host exception: its single loose root is the gateway's configured
+//! AddOns tree, delivered as a validated catalog and complete resident bytes.
+//! It does not merge that tree with the native config folder or use wasm fs IO.
+//!
 //! ## Two kinds of file in a manifest
 //!
 //! A `.toc` lists `.lua` **and** `.xml`, and they load differently: Lua is executed as a chunk in
@@ -58,7 +62,6 @@ use benilla_ui::toc::Toc;
 use super::content;
 
 /// The folder name under each root, and the reference's own spelling.
-const ADDONS_DIR: &str = "AddOns";
 
 /// The world-entry load's VM instruction bound, per addon (decision 1306) — and the addon
 /// harness's survey bound, one number for both so the measurement stays shared. MEASURED, not
@@ -83,6 +86,9 @@ pub(super) enum Source {
     /// `BagBrother/core/core.xml` it includes are both expressible — which is the point, since a
     /// shared library addon exists to be reached from its dependents.
     Dir(PathBuf),
+    /// Browser-admitted loose addon bytes in the same install-relative namespace.
+    #[cfg(target_arch = "wasm32")]
+    Browser,
     /// **The player's own installed patch chain** — the reference FrameXML this client sources
     /// rather than shipping a copy of (decision 1751, [`super::reference_ui`]). Paths are full
     /// chain-internal paths (`Interface\FrameXML\ContainerFrame.xml`), so the prefix is empty and
@@ -159,6 +165,8 @@ impl Addon {
             }
             Source::Dir(root) => read_addon_file(root, req),
             Source::Chain => super::reference_ui::read(req),
+            #[cfg(target_arch = "wasm32")]
+            Source::Browser => benilla_interface_files::read(req),
         }
     }
 
@@ -180,6 +188,8 @@ impl Addon {
         match &self.source {
             Source::Builtin | Source::Chain => String::new(),
             Source::Dir(_) => format!("{ADDONS_PREFIX}{}", self.name),
+            #[cfg(target_arch = "wasm32")]
+            Source::Browser => format!("{ADDONS_PREFIX}{}", self.name),
         }
     }
 
@@ -204,6 +214,8 @@ impl Addon {
         match &self.source {
             Source::Builtin => benilla_ui::script::addon_chunk_name(&self.name, file),
             Source::Dir(_) | Source::Chain => format!("@{}", path.replace('/', "\\")),
+            #[cfg(target_arch = "wasm32")]
+            Source::Browser => format!("@{}", path.replace('/', "\\")),
         }
     }
 
@@ -213,7 +225,7 @@ impl Addon {
     /// Errors are logged as they happen *and* returned: the app ignores the value (it has already
     /// been logged) while the tests assert it empty, which is the shape 1178 step 1 established
     /// for the builtin and the reason a broken entry can no longer reach a run behind a log line.
-    fn load(&self, script: &UiScript) -> Vec<String> {
+    fn load(&self, script: &mut UiScript) -> Vec<String> {
         self.load_files(script, &self.toc.files)
     }
 
@@ -225,7 +237,7 @@ impl Addon {
     /// materialized. 1184 sent every entry through the XML parser, which was invisible only
     /// because `benilla.toc` happens to list nothing but `.xml`: the reference's own `FrameXML.toc`
     /// opens with `GlobalStrings.lua`, and a bare Lua file is not a document.
-    pub(super) fn load_files(&self, script: &UiScript, files: &[String]) -> Vec<String> {
+    pub(super) fn load_files(&self, script: &mut UiScript, files: &[String]) -> Vec<String> {
         let mut failures = Vec::new();
         // The `<Include>` / `<Script file=>` seam. The loader hands us paths it has already
         // resolved against the including file's directory (1186), so this only reads — and the
@@ -250,6 +262,8 @@ impl Addon {
                     // thing, warned once by `reference_ui::chain`.)
                     Source::Builtin | Source::Chain => error!("ui_script: {e}"),
                     Source::Dir(_) => warn!("ui_script: {e}"),
+                    #[cfg(target_arch = "wasm32")]
+                    Source::Browser => warn!("ui_script: {e}"),
                 }
                 // Retained where the player can read it (1495). This is the single commonest way
                 // an addon "doesn't work" with nothing on screen — the director's own AtlasLoot
@@ -324,6 +338,8 @@ impl Addon {
                 match self.source {
                     Source::Builtin | Source::Chain => error!("ui_script: {e}"),
                     Source::Dir(_) => warn!("ui_script: {e}"),
+                    #[cfg(target_arch = "wasm32")]
+                    Source::Browser => warn!("ui_script: {e}"),
                 }
                 script.report_load_failure(&e);
                 failures.push(e);
@@ -345,6 +361,12 @@ impl Addon {
         }
         failures
     }
+}
+
+/// Host prefetch discovery uses the identical embedded provider as execution.
+#[cfg(any(target_arch = "wasm32", feature = "port-gates"))]
+pub(crate) fn read_builtin_file(req: &str) -> Option<Vec<u8>> {
+    Addon::builtin().read(req)
 }
 
 /// Is this manifest entry a Lua chunk rather than a FrameXML document?
@@ -429,44 +451,15 @@ fn under_addons(req: &str) -> Option<&str> {
 /// ([`Addon::prefix`]). `/`-separated, because that is [`benilla_ui::loader::join_ref`]'s space.
 const ADDONS_PREFIX: &str = "Interface/AddOns/";
 
-/// **The** addon folder — `<benilla-config>/AddOns/` — or `None` when there is none to read.
-///
-/// **One root, never two** (decision 1185, the director's call). 1184 searched the WoW install's
-/// `Interface/AddOns/` as well and merged the results. Two roots means an addon's identity depends
-/// on which folder won, a name can be shadowed, and "where is this addon loaded from" stops having
-/// one answer. If the install's folder ever becomes reachable it will be *instead of* this one and
-/// by explicit choice, not alongside it.
-///
-/// It is ours for the same reason 1180 moved our state out of the install: benilla reads a WoW
-/// install, it does not live in one. Resolved through [`crate::local_state`], the only module
-/// allowed to compute that path (0954) — which is already `None` under `$WOW_CAPTURE`, so a
-/// deterministic baseline cannot depend on what somebody has installed (0008).
-///
-/// `pub(crate)` since 1322: every asset an addon ships needs the same folder — the sprite
-/// decoder's `Interface\AddOns\` loose-file resolve, the `SetTexture` probe, and (2103) the font
-/// engine's face loader plus the `SetFont` probe all map that virtual prefix onto this root, so
-/// there is exactly one answer to "where do addons live" however the question is asked. The first
-/// three are wired in one place (`ui_script::lifecycle::install_addon_asset_resolvers`); the face
-/// loader reads it here directly, at engine construction, because it is not a VM concern.
-pub(crate) fn root() -> Option<PathBuf> {
-    root_from(crate::local_state::home())
-}
-
-/// [`root`] with its one environment fact passed in, so it is testable without touching the
-/// process environment.
-///
-/// Not tidiness: `install::candidates_from` exists for exactly this reason (1175's own flake — a
-/// test that *sets* an env var poisons every other test running concurrently in the same process,
-/// and the failure then moves around with scheduling).
-fn root_from(home: Option<PathBuf>) -> Option<PathBuf> {
-    home.map(|h| h.join(ADDONS_DIR))
-}
+/// Re-exported from [`crate::addon_root`] (its home); kept so existing
+/// `addons::root()` call sites keep their path.
+pub(crate) use crate::addon_root::root;
 
 /// The reference's own LoadOnDemand addons, as its `Interface\\AddOns\\` folder names them — the
 /// twelve `Blizzard_*` folders on a 1.12 install, each a `.pub` decoy on disk with the real files
 /// inside the archive (the InspectUI header in the manifest). Probed against the chain, so a
 /// chain without one simply has no such addon.
-const BLIZZARD_ADDONS: [&str; 12] = [
+pub(crate) const BLIZZARD_ADDONS: [&str; 12] = [
     "Blizzard_AuctionUI",
     "Blizzard_BattlefieldMinimap",
     "Blizzard_BindingUI",
@@ -614,6 +607,7 @@ fn upcase_unit(c: char) -> char {
 
 /// The player's own addons — every folder under the AddOns root with a `<Name>.toc`, in
 /// [`sort_by_directory_order`].
+#[cfg(not(target_arch = "wasm32"))]
 fn discover_folder() -> Vec<Addon> {
     let Some(root) = root() else {
         return Vec::new();
@@ -640,6 +634,27 @@ fn discover_folder() -> Vec<Addon> {
                 // The ROOT, not `dir` — every path this addon resolves is relative to the AddOns
                 // folder so a sibling library addon is reachable (1186).
                 source: Source::Dir(root.clone()),
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn discover_folder() -> Vec<Addon> {
+    let manifests: HashMap<String, String> = benilla_interface_files::installed_addons()
+        .into_iter()
+        .collect();
+    let mut names: Vec<_> = manifests.keys().cloned().collect();
+    sort_by_directory_order(&mut names);
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let path = &manifests[&name];
+            let bytes = benilla_interface_files::read(path)?;
+            Some(Addon {
+                name,
+                toc: Toc::parse(&benilla_ui::source::decode(&bytes)),
+                source: Source::Browser,
             })
         })
         .collect()
@@ -756,6 +771,17 @@ fn render_enable_state(states: &[(String, bool)]) -> String {
 pub(crate) fn enable_state_path(identity: Option<&(String, String)>) -> Option<PathBuf> {
     let (realm, character) = identity?;
     crate::local_state::addons_state_path(realm, character)
+}
+
+fn read_state(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    match benilla_settings::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            warn!("addons: cannot read {}: {error}", path.display());
+            Err(error)
+        }
+    }
 }
 
 /// One installed addon as the **AddOns screens** need it — no VM, no load (decision 1197).
@@ -883,7 +909,7 @@ impl EnableStore {
             .map(|character| {
                 let id = (realm.to_string(), character.clone());
                 let rows = enable_state_path(Some(&id))
-                    .and_then(|p| std::fs::read(p).ok())
+                    .and_then(|p| read_state(&p).ok().flatten())
                     .map(|b| parse_enable_state(&benilla_ui::source::decode(&b)))
                     .unwrap_or_default();
                 let hash = rows
@@ -995,8 +1021,11 @@ pub(crate) fn write_enable_state(identity: Option<&(String, String)>, states: &[
     let Some(path) = enable_state_path(identity) else {
         return; // no character picked, or no state folder — nothing to write to
     };
-    let mut merged: Vec<(String, bool)> = std::fs::read(&path)
-        .ok()
+    // Do not overwrite an unreadable existing state with an incomplete registry.
+    let Ok(previous) = read_state(&path) else {
+        return;
+    };
+    let mut merged: Vec<(String, bool)> = previous
         .map(|b| parse_enable_state(&benilla_ui::source::decode(&b)))
         .unwrap_or_default();
     for (name, on) in states {
@@ -1096,6 +1125,8 @@ pub(super) fn load_third_party(
     let mut infos: Vec<_> = addons.iter().map(info_for).collect();
     // The chain-sourced rows read through the reference's own store (1957).
     script.set_addon_chain_reader(Box::new(super::reference_ui::read));
+    #[cfg(target_arch = "wasm32")]
+    script.set_addon_loose_reader(Box::new(benilla_interface_files::read));
     // Every addon's enable bit, through the reference's own query (decision 2311): this
     // character's explicit `AddOns.txt` row when they have one, else what the realm's other
     // characters agree on, else the manifest's `## DefaultState`. Reading an absent row as a
@@ -1697,8 +1728,8 @@ mod tests {
             source: Source::Dir(root),
         };
 
-        let script = UiScript::new().unwrap();
-        let failures = addon.load(&script);
+        let mut script = UiScript::new().unwrap();
+        let failures = addon.load(&mut script);
         assert!(
             failures.is_empty(),
             "a listed Bindings.xml costs log lines, not script errors: {failures:?}"
@@ -1754,11 +1785,11 @@ mod tests {
             source: Source::Dir(root),
         };
 
-        let script = UiScript::new().unwrap();
-        assert!(addon.load(&script).is_empty());
+        let mut script = UiScript::new().unwrap();
+        assert!(addon.load(&mut script).is_empty());
 
         // The exact pattern the libraries run, on each file's own traceback.
-        let folder = |global: &str| -> Option<String> {
+        let mut folder = |global: &str| -> Option<String> {
             script
                 .eval::<Option<String>>(&format!(
                     "local _,_,f = string.find({global} or \"\", \"\\\\AddOns\\\\(.-)\\\\\") return f"
@@ -1893,7 +1924,7 @@ mod tests {
         };
         let mut script = UiScript::new().unwrap();
         script.set_screen_size(1024.0, 768.0);
-        let failures = addon.load(&script);
+        let failures = addon.load(&mut script);
         assert!(failures.is_empty(), "addon load errors: {failures:#?}");
 
         assert_eq!(
@@ -2018,10 +2049,14 @@ mod tests {
     #[test]
     fn there_is_one_addon_root_and_it_is_ours() {
         assert_eq!(
-            root_from(Some(PathBuf::from("/state"))),
+            crate::addon_root::root_from(Some(PathBuf::from("/state"))),
             Some(PathBuf::from("/state/AddOns"))
         );
-        assert_eq!(root_from(None), None, "a capture run has no addon root");
+        assert_eq!(
+            crate::addon_root::root_from(None),
+            None,
+            "a capture run has no addon root"
+        );
     }
 
     /// A manifest's `.lua` entries run as chunks; everything else is FrameXML.
@@ -2079,9 +2114,9 @@ mod tests {
     }
 
     /// Read the witness back as a `Vec<String>`.
-    fn event_log(script: &UiScript) -> Vec<String> {
+    fn event_log(script: &mut UiScript) -> Vec<String> {
         script
-            .eval::<Vec<String>>("return EventLog")
+            .eval_sequence::<String>("return EventLog")
             .expect("EventLog")
     }
 
@@ -2125,7 +2160,7 @@ mod tests {
         assert!(w.failures.is_empty(), "load errors: {:?}", w.failures);
 
         assert_eq!(
-            event_log(&script),
+            event_log(&mut script),
             vec!["files-ran", "ADDON_LOADED:EventProbe"],
             "the addon's own files run first, THEN ADDON_LOADED with its own folder name as arg1 \
              (`AddOn_Load 0x51f240`: files 0x51f3fa, event 0x51f5ad)"
@@ -2171,9 +2206,9 @@ mod tests {
         let _ = w.load(&mut script, &all, "EventProbe");
         // The builtin, loaded the way production loads it — through its own manifest, not the walk.
         let builtin = Addon::builtin();
-        let _ = builtin.load_files(&script, builtin.toc.files.get(..1).unwrap_or_default());
+        let _ = builtin.load_files(&mut script, builtin.toc.files.get(..1).unwrap_or_default());
 
-        let log = event_log(&script);
+        let log = event_log(&mut script);
         assert!(
             !log.iter().any(|e| e.contains("benilla")),
             "benilla must never appear in an ADDON_LOADED: {log:?}"
@@ -2231,7 +2266,7 @@ mod tests {
         crate::ui_script::finish_ui_load(&mut script);
 
         assert_eq!(
-            event_log(&script),
+            event_log(&mut script),
             vec![
                 "ADDON_LOADED:EventProbe",
                 "VARIABLES_LOADED:nil",
@@ -2528,7 +2563,7 @@ mod tests {
         assert_eq!(script.eval::<i64>("return GetNumAddOns()").ok(), Some(1));
         assert_eq!(
             script
-                .eval::<Vec<String>>(
+                .eval_sequence::<String>(
                     "local n,t,no,e,l,r,s,extra = GetAddOnInfo(1) \
                      return { n, t, no, tostring(e), tostring(l), tostring(r), s, \
                               tostring(extra) }"
@@ -2639,7 +2674,7 @@ mod tests {
         // And the API agrees with the loader about what happened.
         assert_eq!(
             script
-                .eval::<Vec<String>>(
+                .eval_sequence::<String>(
                     "local _,_,_,_,l,r = GetAddOnInfo('Off') return { tostring(l), tostring(r) }"
                 )
                 .ok(),
@@ -2708,7 +2743,7 @@ mod tests {
         // ...then loads synchronously, from Lua, and is usable on the very next statement.
         assert_eq!(
             script
-                .eval::<Vec<String>>(
+                .eval_sequence::<String>(
                     "local loaded, reason = LoadAddOn('Demand') \
                      return { tostring(loaded), tostring(reason), tostring(DemandRan), \
                               tostring(getglobal('DemandFrame') ~= nil) }"
@@ -2791,7 +2826,7 @@ mod tests {
         // `UIParentLoadAddOn`'s own two lines, in order: load, then use what it created.
         assert_eq!(
             script
-                .eval::<Vec<String>>(
+                .eval_sequence::<String>(
                     "local loaded, reason = LoadAddOn('BaseOptions') \
                      return { tostring(loaded), tostring(reason), tostring(OptsRan), \
                               tostring(IsAddOnLoaded('BaseOptions')) }"
@@ -2832,7 +2867,7 @@ mod tests {
 
         assert_eq!(
             script
-                .eval::<Vec<String>>(
+                .eval_sequence::<String>(
                     "local loaded, reason = LoadAddOn('Holey') \
                      return { tostring(loaded), tostring(reason), tostring(HoleyRan), \
                               tostring(IsAddOnLoaded('Holey')) }"
@@ -3397,7 +3432,7 @@ mod tests {
         // The call that used to abort the process.
         assert_eq!(
             script
-                .eval::<Vec<String>>(
+                .eval_sequence::<String>(
                     "local loaded, reason = LoadAddOn('Ping') \
                      return { tostring(loaded), tostring(reason) }"
                 )

@@ -51,7 +51,7 @@
 //! play: the window would repaint off a stale snapshot on every drag and skip the repaint on every
 //! click.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
 use super::Model;
 
@@ -282,121 +282,87 @@ fn drag_verb(from: u8, to: u8, state: &StableState) -> Option<StableIntent> {
 }
 
 /// Register the stable globals.
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // GetStablePetInfo(i) → icon, name, level, family, loyalty — **5 values on every reachable
     // exit** (`0x4cb280`: `eax = 5` at both returns). A miss pushes `nil, nil, 0.0, nil, nil`, NOT
     // nothing: the reference both tests the call for truthiness and destructures all five, and a
     // bare nil would make `level` nil where the client answers 0.
-    g.set(
-        "GetStablePetInfo",
-        lua.create_function(|lua, i: i64| {
-            let pet = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                slot_index(i).and_then(|i| model.stable.state.as_ref()?.slots[i].clone())
-            };
-            let Some(pet) = pet else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Number(0.0),
-                    Value::Nil,
-                    Value::Nil,
-                ]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                match &pet.icon {
-                    Some(t) => Value::String(lua.create_string(t)?),
-                    None => Value::Nil,
-                },
-                Value::String(lua.create_string(&pet.name)?),
-                Value::Number(f64::from(pet.level)),
-                match &pet.family {
-                    Some(f) => Value::String(lua.create_string(f)?),
-                    None => Value::Nil,
-                },
-                match &pet.loyalty {
-                    Some(l) => Value::String(lua.create_string(l)?),
-                    None => Value::Nil,
-                },
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetStablePetInfo", |lua, i: i64| {
+        let pet = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            slot_index(i).and_then(|i| model.stable.state.as_ref()?.slots[i].clone())
+        };
+        let Some(pet) = pet else {
+            return Ok(MultiValue::from(vec![
+                Value::Nil,
+                Value::Nil,
+                Value::Number(0.0),
+                Value::Nil,
+                Value::Nil,
+            ]));
+        };
+        Ok(MultiValue::from(vec![
+            pet.icon.map_or(Value::Nil, Value::from),
+            Value::from(pet.name),
+            Value::Number(f64::from(pet.level)),
+            pet.family.map_or(Value::Nil, Value::from),
+            pet.loyalty.map_or(Value::Nil, Value::from),
+        ]))
+    })?;
 
     // GetStablePetFoodTypes(i) → the localized diet names, one return each (the reference feeds the
     // lot to BuildListString). Nothing at all for an empty slot or a pet whose family has no diet —
     // the reference guards with `if ( GetStablePetFoodTypes(i) )` before formatting the tooltip.
-    g.set(
-        "GetStablePetFoodTypes",
-        lua.create_function(|lua, i: i64| {
-            let diet = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                slot_index(i)
-                    .and_then(|i| {
-                        Some(model.stable.state.as_ref()?.slots[i].as_ref()?.diet.clone())
-                    })
-                    .unwrap_or_default()
-            };
-            let mut out = Vec::with_capacity(diet.len());
-            for d in &diet {
-                out.push(Value::String(lua.create_string(d)?));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?,
-    )?;
+    lua.register_function("GetStablePetFoodTypes", |lua, i: i64| {
+        let diet = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            slot_index(i)
+                .and_then(|i| Some(model.stable.state.as_ref()?.slots[i].as_ref()?.diet.clone()))
+                .unwrap_or_default()
+        };
+        let out = diet.into_iter().map(Value::from).collect::<Vec<Value>>();
+        Ok(MultiValue::from(out))
+    })?;
 
     // GetNumStableSlots() → slots PURCHASED (0..=2). The reference both enables buttons `i <= n`
     // and hides the purchase row at `n == NUM_PET_STABLE_SLOTS` off this one number.
-    g.set(
-        "GetNumStableSlots",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(
-                model
-                    .stable
-                    .state
-                    .as_ref()
-                    .map_or(0, |s| s.num_stable_slots),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetNumStableSlots", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(
+            model
+                .stable
+                .state
+                .as_ref()
+                .map_or(0, |s| s.num_stable_slots),
+        ))
+    })?;
 
     // GetNumStablePets() → how many of the three slots hold a pet.
-    g.set(
-        "GetNumStablePets",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(
-                model.stable.state.as_ref().map_or(0, StableState::num_pets),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetNumStablePets", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(
+            model.stable.state.as_ref().map_or(0, StableState::num_pets),
+        ))
+    })?;
 
     // GetNextStableSlotCost() → the next slot's price in copper (the app read it from
     // StableSlotPrices.dbc). 0 with no stable open, and 0 past the table — where the reference has
     // already hidden the row that would show it.
-    g.set(
-        "GetNextStableSlotCost",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(
-                model.stable.state.as_ref().map_or(0, |s| s.next_slot_cost),
-            ))
-        })?,
-    )?;
+    lua.register_function("GetNextStableSlotCost", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(
+            model.stable.state.as_ref().map_or(0, |s| s.next_slot_cost),
+        ))
+    })?;
 
     // GetSelectedStablePet() → the selected slot, or -1. The sentinel is the API: the reference
     // tests `selectedPet == -1` to decide whether to pick a slot for the player.
-    g.set(
-        "GetSelectedStablePet",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            // NOT the raw field: the model holds the client's petNumber encoding, and this binding
-            // is its translation to slot indices (`selected_slot`).
-            Ok(i64::from(selected_slot(&model.stable)))
-        })?,
-    )?;
+    lua.register_function("GetSelectedStablePet", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        // NOT the raw field: the model holds the client's petNumber encoding, and this binding
+        // is its translation to slot indices (`selected_slot`).
+        Ok(i64::from(selected_slot(&model.stable)))
+    })?;
 
     // ClickStablePet(i) → **exactly one value, always**, and which one is keyed SOLELY on whether
     // the cursor held a pet — never on whether a packet went out (§6.2).
@@ -408,168 +374,147 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // server's next list. The first build had this inverted (true on a committed drag, false on a
     // no-op) — invisible to a packet-only test, and in play a window that repaints off a stale
     // snapshot on every drag and skips the repaint on every click.
-    g.set(
-        "ClickStablePet",
-        lua.create_function(|lua, i: i64| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let Some(to) = slot_index(i) else {
-                // Out of range still takes the select leg's "nothing" arm below.
-                if !matches!(
-                    model.cursor,
-                    Some(super::cursor::CursorPayload::StablePet(_))
-                ) {
-                    model.stable.selected = 0;
-                    return Ok(Value::Number(1.0));
-                }
-                super::cursor::clear_cursor(&mut model);
-                return Ok(Value::Nil);
-            };
-            let to = to as u8;
-
-            // Regime B — a drop.
-            if let Some(super::cursor::CursorPayload::StablePet(held)) = model.cursor.clone() {
-                let from = held.slot;
-                let intent = model
-                    .stable
-                    .state
-                    .as_ref()
-                    .and_then(|state| drag_verb(from, to, state));
-                super::cursor::clear_cursor(&mut model);
-                if let Some(intent) = intent {
-                    model.stable.intents.push(intent);
-                }
-                return Ok(Value::Nil);
+    lua.register_function("ClickStablePet", |lua, i: i64| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let Some(to) = slot_index(i) else {
+            // Out of range still takes the select leg's "nothing" arm below.
+            if !matches!(
+                model.cursor,
+                Some(super::cursor::CursorPayload::StablePet(_))
+            ) {
+                model.stable.selected = 0;
+                return Ok(Value::Number(1.0));
             }
+            super::cursor::clear_cursor(&mut model);
+            return Ok(Value::Nil);
+        };
+        let to = to as u8;
 
-            // Regime A — a plain click: pure select, always truthy.
-            let pet_number = model
+        // Regime B — a drop.
+        if let Some(super::cursor::CursorPayload::StablePet(held)) = model.cursor.clone() {
+            let from = held.slot;
+            let intent = model
                 .stable
                 .state
                 .as_ref()
-                .and_then(|s| s.slots[usize::from(to)].as_ref())
-                .map(|p| p.pet_number);
-            model.stable.selected = match (to, pet_number) {
-                // Slot 0 selects the summoned pet by its own sentinel, not by a petNumber.
-                (0, _) => -1,
-                (_, Some(n)) => n as i32,
-                // An empty (or unowned) slot selects NOTHING, rather than the slot itself.
-                (_, None) => 0,
-            };
-            Ok(Value::Number(1.0))
-        })?,
-    )?;
+                .and_then(|state| drag_verb(from, to, state));
+            super::cursor::clear_cursor(&mut model);
+            if let Some(intent) = intent {
+                model.stable.intents.push(intent);
+            }
+            return Ok(Value::Nil);
+        }
+
+        // Regime A — a plain click: pure select, always truthy.
+        let pet_number = model
+            .stable
+            .state
+            .as_ref()
+            .and_then(|s| s.slots[usize::from(to)].as_ref())
+            .map(|p| p.pet_number);
+        model.stable.selected = match (to, pet_number) {
+            // Slot 0 selects the summoned pet by its own sentinel, not by a petNumber.
+            (0, _) => -1,
+            (_, Some(n)) => n as i32,
+            // An empty (or unowned) slot selects NOTHING, rather than the slot itself.
+            (_, None) => 0,
+        };
+        Ok(Value::Number(1.0))
+    })?;
 
     // PickupStablePet(i) — the mode-10 grab. **0 Lua values, always.**
     //
     // The client's gate is the family ICON path, not occupancy (`0x495010`: resolve the record,
     // require a non-empty `CreatureFamily` icon, then set the payload). Ours is the resolved icon,
     // which is the same test one step later: no icon, no grab.
-    g.set(
-        "PickupStablePet",
-        lua.create_function(|lua, i: i64| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let texture = slot_index(i)
-                .and_then(|i| model.stable.state.as_ref()?.slots[i].as_ref())
-                .and_then(|p| p.icon.clone());
-            if let Some(texture) = texture {
-                model.cursor = Some(super::cursor::CursorPayload::StablePet(
-                    super::cursor::CursorStablePet {
-                        slot: i as u8,
-                        texture,
-                    },
-                ));
-                super::cursor::queue_cursor_update(&mut model);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("PickupStablePet", |lua, i: i64| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let texture = slot_index(i)
+            .and_then(|i| model.stable.state.as_ref()?.slots[i].as_ref())
+            .and_then(|p| p.icon.clone());
+        if let Some(texture) = texture {
+            model.cursor = Some(super::cursor::CursorPayload::StablePet(
+                super::cursor::CursorStablePet {
+                    slot: i as u8,
+                    texture,
+                },
+            ));
+            super::cursor::queue_cursor_update(&mut model);
+        }
+        Ok(())
+    })?;
 
     // StablePet() — 0 args, and it makes no Lua call at all in the reference: its only gate is a
     // stable master being open, which for us is the snapshot's existence. Not called by the shipped
     // FrameXML (the drag path sends this verb); it exists because the binding does.
-    g.set(
-        "StablePet",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if model.stable.state.is_some() {
-                model.stable.intents.push(StableIntent::Stable);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("StablePet", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if model.stable.state.is_some() {
+            model.stable.intents.push(StableIntent::Stable);
+        }
+        Ok(())
+    })?;
 
     // UnstablePet(i) — carries a gate the drag path does NOT (§7.1): it requires no charmed unit
     // and **no pet out**, and bails SILENTLY otherwise, with no packet and no error. Its unsigned
     // bound also rejects index 0 outright, where the drag path treats 0 as the summoned pet.
-    g.set(
-        "UnstablePet",
-        lua.create_function(|lua, i: i64| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let pet_number = model
+    lua.register_function("UnstablePet", |lua, i: i64| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let pet_number = model
+            .stable
+            .state
+            .as_ref()
+            .filter(|s| !s.has_live_pet)
+            .and_then(|s| {
+                slot_index(i)
+                    .filter(|&i| i != 0)
+                    .and_then(|i| s.slots[i].as_ref())
+            })
+            .map(|p| p.pet_number);
+        if let Some(pet_number) = pet_number {
+            model
                 .stable
-                .state
-                .as_ref()
-                .filter(|s| !s.has_live_pet)
-                .and_then(|s| {
-                    slot_index(i)
-                        .filter(|&i| i != 0)
-                        .and_then(|i| s.slots[i].as_ref())
-                })
-                .map(|p| p.pet_number);
-            if let Some(pet_number) = pet_number {
-                model
-                    .stable
-                    .intents
-                    .push(StableIntent::Unstable(pet_number));
-            }
-            Ok(())
-        })?,
-    )?;
+                .intents
+                .push(StableIntent::Unstable(pet_number));
+        }
+        Ok(())
+    })?;
 
     // SetPetStablePaperdoll(model) — inert here, deliberately, and this is the same divergence
     // PetPaperDollFrame.xml records for `PetModelFrame:SetUnit("pet")`: benilla's model panes are
     // app-side booths that follow the selection every frame, so there is no VM-side unit to point.
     // The binding still exists because the reference calls it (four sites) and an addon may.
-    g.set(
-        "SetPetStablePaperdoll",
-        lua.create_function(|_, _model: Value| Ok(()))?,
-    )?;
+    lua.register_function("SetPetStablePaperdoll", |_, _model: Value| Ok(()))?;
 
     // BuyStableSlot() — 0 args, with the client's own **silent** local gates in order (§7.1): a
     // stable master open · the hard cap `slots != 2` · a price row exists · **affordability**.
     // None of them shows a message; the reference disables the button instead. Applying them here
     // rather than trusting the button matters because an addon can call the binding directly, and
     // the server's refusal for the cap is the same indistinguishable ERR_STABLE as everything else.
-    g.set(
-        "BuyStableSlot",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // Affordability reads the VM's own purse — the same `model.money` the reference's
-            // `GetMoney()` returns and its own button-state ladder compares (`PetStable.lua:203`),
-            // rather than a second copy of the number in the stable snapshot.
-            let money = model.money;
-            let allowed = model.stable.state.as_ref().is_some_and(|s| {
-                s.num_stable_slots as usize != NUM_STABLE_SLOTS - 1
-                    && s.next_slot_cost != 0
-                    && u64::from(s.next_slot_cost) <= money
-            });
-            if allowed {
-                model.stable.intents.push(StableIntent::BuySlot);
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("BuyStableSlot", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        // Affordability reads the VM's own purse — the same `model.money` the reference's
+        // `GetMoney()` returns and its own button-state ladder compares (`PetStable.lua:203`),
+        // rather than a second copy of the number in the stable snapshot.
+        let money = model.money;
+        let allowed = model.stable.state.as_ref().is_some_and(|s| {
+            s.num_stable_slots as usize != NUM_STABLE_SLOTS - 1
+                && s.next_slot_cost != 0
+                && u64::from(s.next_slot_cost) <= money
+        });
+        if allowed {
+            model.stable.intents.push(StableIntent::BuySlot);
+        }
+        Ok(())
+    })?;
 
     // ClosePetStables() — client-side close, no packet exists (vmangos has no close opcode): flag
     // the app to clear its session.
-    g.set(
-        "ClosePetStables",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.stable.close = true;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("ClosePetStables", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.stable.close = true;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -882,7 +827,7 @@ mod tests {
     /// `SetPetStablePaperdoll` exists and is harmless — the reference calls it at four sites.
     #[test]
     fn the_paperdoll_setter_is_callable() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         s.eval::<()>("SetPetStablePaperdoll(nil)").unwrap();
     }
 }

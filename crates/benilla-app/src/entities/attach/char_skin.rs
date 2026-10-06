@@ -14,7 +14,7 @@ use crate::net::{NetEntity, ObjectStore};
 use benilla_assets::materials::WowModelMaterial;
 use benilla_assets::{repeat_texture_authored, LockRecover, WorldAssets};
 
-use super::super::{DisplayModel, EntityPart, SkinKey, SkinSections};
+use super::super::{DisplayModel, EntityPart, SkinComposites, SkinKey, SkinSections};
 
 /// The resolved character appearance for one entity that renders as a character-model body — either a
 /// **player** (appearance decoded from the wire) or a **character-model NPC** (from its display's
@@ -265,9 +265,15 @@ pub(super) type CharSkinMaterials = (
 );
 
 /// The `WOW_PROBE_SHARED_SKIN` pricing lever (see its use in [`build_char_skin_materials`]).
+#[cfg(not(target_arch = "wasm32"))]
 fn shared_skin_probe() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("WOW_PROBE_SHARED_SKIN").is_some())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn shared_skin_probe() -> bool {
+    false
 }
 
 /// Build a character body's per-appearance materials — the **body** atlas (as a (single-sided,
@@ -300,7 +306,7 @@ pub(super) fn build_char_skin_materials(
     world_assets: Option<&WorldAssets>,
     parts: &[EntityPart],
     images: &mut Assets<Image>,
-    skin_cache: &mut benilla_assets::SpatialCache<SkinKey, Handle<Image>>,
+    skin_cache: &mut SkinComposites,
     asset_server: &AssetServer,
     mats: &mut benilla_world::model_render::M2BatchMaterials,
 ) -> CharSkinMaterials {
@@ -326,7 +332,7 @@ pub(super) fn build_char_skin_materials(
     // the shared chain (like the WDL/clutter main-thread loads) — fine behind the cache (once per look).
     let body_tex: Option<Handle<Image>> = match &look.body {
         BodySkin::Baked(name) => Some(asset_server.load::<Image>(baked_npc_url(name))),
-        BodySkin::Composite { face } => world_assets.and_then(|world| {
+        BodySkin::Composite { face } => {
             let mut key = SkinKey {
                 race: look.race,
                 sex: look.sex,
@@ -357,9 +363,14 @@ pub(super) fn build_char_skin_materials(
                     tabard_preview: false,
                 };
             }
-            match skin_cache.fetch(&key) {
+            if world_assets.is_none() && skin_cache.0.fetch(&key).is_none() {
+                skin_cache.1.insert(key);
+            }
+            match skin_cache.0.fetch(&key) {
+                // Browser and native producers meet at this cache. The browser fills it after its
+                // async prefetch; native falls through to the synchronous MPQ chain below.
                 Some(handle) => Some(handle),
-                None => {
+                None => world_assets.and_then(|world| {
                     // The worn ItemDisplayInfo rows whose region textures dress the atlas
                     // (decision 0074); an unknown/zero display id contributes nothing.
                     let catalog = displays.map(|d| &d.catalog);
@@ -371,11 +382,11 @@ pub(super) fn build_char_skin_materials(
                             }
                         }
                     }
-                    let chain = &mut world.chain.lock_recover();
+                    let mut chain = world.chain.lock_recover();
                     let composed = sections
                         .0
                         .composite_body(
-                            chain,
+                            &mut *chain,
                             key.race,
                             key.sex,
                             key.skin,
@@ -396,11 +407,11 @@ pub(super) fn build_char_skin_materials(
                         benilla_assets::for_upload(composed),
                         (true, true),
                     ));
-                    skin_cache.insert(key, handle.clone());
+                    skin_cache.0.insert(key, handle.clone());
                     Some(handle)
-                }
+                }),
             }
-        }),
+        }
     };
     // Body atlas: a (single-sided, two-sided) quint pair, chosen per body batch at the swap. The
     // naked body is a closed single-sided mesh (the approved decision-0044 look), but body-slot

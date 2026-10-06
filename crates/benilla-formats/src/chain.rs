@@ -15,10 +15,19 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use benilla_mpq::Archive;
 
 use crate::VANILLA_BASE_ORDER;
+
+/// The small read surface used by table/catalog decoders.
+///
+/// Native builds implement it with the mounted MPQ [`Chain`]. Browser builds can implement the
+/// same surface over DBC bytes which arrived asynchronously through Bevy's `AssetServer`; the
+/// parsers do not need to know where those bytes came from.
+pub trait FileSource {
+    fn read_file(&mut self, name: &str) -> Result<Vec<u8>>;
+}
 
 /// One entry from a chain listing: an internal path and its uncompressed size.
 pub struct ChainEntry {
@@ -27,6 +36,7 @@ pub struct ChainEntry {
 }
 
 /// A priority-ordered patch chain of MPQ archives (`Send + Sync`; reads are `&self` and lock-free).
+#[derive(Clone)]
 pub struct Chain {
     /// Ascending priority — later archives win. `resolve` scans back-to-front.
     archives: Vec<Archive>,
@@ -75,6 +85,13 @@ fn mount_order(dir_names: &[String]) -> Vec<String> {
 }
 
 impl Chain {
+    /// Append a separately mounted original patch tree at higher priority.
+    /// Archive lookup, deletion markers and decompression remain the same code.
+    pub fn with_overlay(&self, overlay: Self) -> Self {
+        let mut archives = self.archives.clone();
+        archives.extend(overlay.archives);
+        Self { archives }
+    }
     /// Open a chain from a vanilla `Data` directory (every archive [`mount_order`] finds in it,
     /// lowest priority first) or a single `.MPQ` file (just that archive).
     ///
@@ -124,13 +141,35 @@ impl Chain {
     /// Whether the chain holds `name` as a **readable** file (accepts `/` or `\`; case-insensitive).
     /// A path whose winning entry is a delete-marker is *not* present — the client deleted it (0246).
     pub fn contains(&self, name: &str) -> bool {
-        self.resolve(name)
-            .is_some_and(|a| !a.is_delete_marker(name))
+        crate::presence::readable_winner(
+            self.archives
+                .iter()
+                .rev()
+                .map(|a| a.contains(name).then(|| !a.is_delete_marker(name))),
+        )
+    }
+
+    /// Exact by-name metadata including paths missing from all listfiles.
+    pub fn presence_index(&self) -> crate::ChainPresenceIndex {
+        crate::ChainPresenceIndex {
+            archives: self.archives.iter().map(Archive::presence_index).collect(),
+        }
     }
 
     /// The path of the archive `name` resolves to (the winning override) — for debugging / extract.
     pub fn find_file_archive(&self, name: &str) -> Option<&Path> {
         self.resolve(name).map(|a| a.path())
+    }
+
+    /// Uncompressed size of the winning readable entry. Returns `None` for a missing path or when
+    /// the winning patch entry is a delete-marker. Gateways use this before decompression so a
+    /// request cannot allocate an unbounded buffer first and discover the limit afterwards.
+    pub fn file_size(&self, name: &str) -> Option<u64> {
+        let archive = self.resolve(name)?;
+        if archive.is_delete_marker(name) {
+            return None;
+        }
+        archive.file_size(name).map(u64::from)
     }
 
     /// Read a file by internal path (accepts `/` or `\`), from its winning archive. `&self`: safe to
@@ -191,6 +230,12 @@ impl Chain {
             }
         }
         Ok(out)
+    }
+}
+
+impl FileSource for Chain {
+    fn read_file(&mut self, name: &str) -> Result<Vec<u8>> {
+        self.read(name)
     }
 }
 

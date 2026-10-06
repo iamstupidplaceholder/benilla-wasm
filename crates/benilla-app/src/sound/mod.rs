@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 
 use crate::net::Embodied;
-use crate::player::{head_height, CameraPivot, Player};
+use crate::player::{CameraPivot, Player};
 use benilla_world::schedule::WorldStage;
 use benilla_world::view::WorldCamera;
 
@@ -18,6 +18,7 @@ mod anim_events;
 mod cinematic;
 mod combat;
 mod creature;
+mod cvars;
 mod death_thud;
 mod emitter_pool;
 mod emote;
@@ -29,14 +30,18 @@ pub(crate) mod interior;
 mod kit;
 mod limiter;
 mod liquid_loop;
+mod listener_pose;
 mod math;
 mod message;
 mod meter;
 mod missile;
 mod mix_tap;
 mod mixer;
+mod mixer_params;
 mod money;
 mod mount;
+mod selection;
+mod voice_slot;
 // Crate-visible for one reader: the dev-only stall watchdog asks `output::device_open` before
 // it suspends the process (decision 1857). Dev may see anything; nothing here knows dev exists.
 pub(crate) mod output;
@@ -275,15 +280,7 @@ pub(crate) struct SoundConfig {
 impl SoundConfig {
     /// The category slider a channel multiplies in (`0x7a5dc0`'s category pick).
     pub(crate) fn category_amp(&self, cat: kit::SoundCategory) -> f32 {
-        if !self.enabled {
-            return 0.0;
-        }
-        match cat {
-            kit::SoundCategory::Sfx => self.sfx,
-            kit::SoundCategory::Music if self.music_enabled => self.music,
-            kit::SoundCategory::Ambience if self.ambience_enabled => self.ambience,
-            _ => 0.0,
-        }
+        cvars::category_amp(self, cat)
     }
 }
 
@@ -318,14 +315,8 @@ impl Default for SoundConfig {
 /// harmless: the raise frame is the snap frame, and the leaks this closes — units streaming in,
 /// footsteps, the fall grunt, the zone beds — all fire on later frames. The lag also keeps the
 /// enter-world button's own click audible: it plays on the raise frame, before the bit flips.
-fn feed_world_hold(
-    mut config: ResMut<SoundConfig>,
-    screen: Res<crate::loading_screen::LoadingScreen>,
-) {
-    let hold = screen.covering();
-    if config.world_hold != hold {
-        config.world_hold = hold;
-    }
+fn feed_world_hold(config: ResMut<SoundConfig>, screen: Res<crate::loading_screen::LoadingScreen>) {
+    cvars::feed_world_hold(config, screen);
 }
 
 /// The **focus gate** (decision 1847): shut the output while the window is in the background,
@@ -433,7 +424,7 @@ impl SoundOutput {
 ///
 /// The client's `SoundListenerAtCharacter` default is `"1"` (wow-re benilla-pins B14): the listener
 /// sits at the **character**, not the camera — so 3D volume and pan are independent of zoom and
-/// camera orbit. `pos` = the self-avatar's head (feet + [`head_height`]); `rot` = the character's
+/// camera orbit. `pos` = the self-avatar's head (feet + [`crate::player::head_height`]); `rot` = the character's
 /// *facing* about world-up (`Quat::from_rotation_y(face_yaw)`), so panning tracks where the body
 /// faces, NOT where the camera looks. The camera eye + basis are the fallback (the client's
 /// `=0` path): pre-login, in free-fly (`detached`), or before the body attaches.
@@ -449,7 +440,7 @@ fn load_materials(mut commands: Commands, assets: Option<Res<benilla_assets::Wor
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_material_catalog(&mut chain)
+        benilla_formats::load_material_catalog(&mut *chain)
     };
     match loaded {
         Ok(cat) => {
@@ -482,10 +473,7 @@ pub(super) fn worn_chest_material(
     net: &crate::net::NetCommands,
 ) -> Option<u32> {
     /// Index 4 of the inv-slot array — `0x62fa50`/`0x62fb86` read the fifth 8-byte guid.
-    const EQUIPMENT_SLOT_CHEST: u8 = 4;
-    let guid = store?.0.player_inv_slot(EQUIPMENT_SLOT_CHEST)?;
-    let entry = items.object(guid)?.object_entry()?;
-    Some(items.held(entry, net)?.material)
+    listener_pose::worn_chest_material(store, items, net)
 }
 
 #[derive(Resource)]
@@ -528,26 +516,7 @@ pub(crate) struct SoundPlugin;
 /// are the client's int-parse + `!= 0` — `SoundReverb`'s own parse is literally that
 /// (`0x4574d0`: `setne al`). Writes only the arm it matched, so a `SoundConfig` change is a
 /// sound setting moving and nothing else.
-pub(crate) fn on_cvar(ev: On<crate::cvars::CvarChanged>, mut sound: ResMut<SoundConfig>) {
-    let v = ev.num();
-    match ev.key().as_str() {
-        "mastervolume" => sound.master = v.clamp(0.0, 1.0),
-        "soundvolume" => sound.sfx = v.clamp(0.0, 1.0),
-        "musicvolume" => sound.music = v.clamp(0.0, 1.0),
-        "ambiencevolume" => sound.ambience = v.clamp(0.0, 1.0),
-        "mastersoundeffects" => sound.enabled = v != 0.0,
-        "enablemusic" => sound.music_enabled = v != 0.0,
-        "enableambience" => sound.ambience_enabled = v != 0.0,
-        "enableerrorspeech" => sound.error_speech = v != 0.0,
-        "sound_enablesoundwhengameisinbg" => sound.background_sound = v != 0.0,
-        "soundreverb" => sound.reverb = v != 0.0,
-        "soundoutputlimiter" => sound.limiter = v != 0.0,
-        "soundlisteneratcharacter" => sound.listener_at_character = v != 0.0,
-        "emotesounds" => sound.emote_sounds = v != 0.0,
-        "soundzonemusicnodelay" => sound.zone_music_no_delay = v != 0.0,
-        _ => {}
-    }
-}
+pub(crate) use cvars::on_cvar;
 
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
@@ -684,27 +653,15 @@ fn update_audio_listener(
     //
     // The narration itself is 2D, so what this actually moves is every *other* 3D sound during a
     // fly-by that can travel 1741 yards from the body.
-    let flying = cinematic
-        .as_deref()
-        .is_some_and(crate::cinematic::Cinematic::is_playing);
-    // At-character (the default). `player.pos` is the feet; the head offset is the shared
-    // model-derived pivot height, and the facing is the aim yaw about world-up (world +Y).
-    if config.listener_at_character && player.active && !player.detached && !flying {
-        if let Ok((t, pivot)) = self_av.single() {
-            listener.pos = player.pos + Vec3::Y * head_height(pivot, t.scale.x);
-            listener.rot = Quat::from_rotation_y(player.facing());
-            if let Some(mixer) = out.mixer.as_mut() {
-                mixer.set_listener(listener.pos, listener.rot);
-            }
-            return;
-        }
-    }
-    // At-camera: the `SoundListenerAtCharacter=0` path, the cinematic override above, and the
-    // no-character cases the reference also has (it simply does not update the listener that
-    // frame; we seat it on the camera, which is where the view is).
-    if let Ok(t) = cam.single() {
-        listener.pos = t.translation;
-        listener.rot = t.rotation;
+    if let Some((pos, rot)) = listener_pose::pose(
+        config.listener_at_character,
+        &player,
+        cinematic.as_deref(),
+        self_av.single().ok(),
+        cam.single().ok(),
+    ) {
+        listener.pos = pos;
+        listener.rot = rot;
         if let Some(mixer) = out.mixer.as_mut() {
             mixer.set_listener(listener.pos, listener.rot);
         }
@@ -746,7 +703,7 @@ fn apply_master_volume(
 /// How long a window of missed deadlines is summarised into one line. Long enough that a sustained
 /// problem reports steadily instead of flooding, short enough to still correlate with what the
 /// director was doing when they heard it.
-const MIX_HEALTH_REPORT: std::time::Duration = std::time::Duration::from_secs(5);
+const MIX_HEALTH_REPORT: benilla_time::Duration = benilla_time::Duration::from_secs(5);
 
 /// Drain the backend's mix-health queues and report deadline misses (decision 1026).
 ///
@@ -767,7 +724,7 @@ fn poll_mix_health(
     mut out: NonSendMut<SoundOutput>,
     time: Res<Time>,
     mut exit: MessageReader<bevy::app::AppExit>,
-    mut since_report: Local<std::time::Duration>,
+    mut since_report: Local<benilla_time::Duration>,
     mut last_refused: Local<u64>,
     mut peak_voices: Local<usize>,
 ) {
@@ -792,7 +749,7 @@ fn poll_mix_health(
     if *since_report < MIX_HEALTH_REPORT && !exiting {
         return;
     }
-    *since_report = std::time::Duration::ZERO;
+    *since_report = benilla_time::Duration::ZERO;
     let peak = mixer.take_health_peak();
     let level = mixer.take_level();
     let rate = mixer.sample_rate();

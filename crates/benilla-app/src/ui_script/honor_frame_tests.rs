@@ -279,7 +279,7 @@ fn a_gm_flagged_player_keeps_his_rank_title_and_loses_only_the_faction_group() {
 #[test]
 fn the_bar_takes_the_fraction_and_the_faction_colour() {
     let _data = benilla_formats::wow_data_or_skip!();
-    let s = shown_honor_page();
+    let mut s = shown_honor_page();
     // Against the binding's own arithmetic, not against `191/255`. The client MULTIPLIES by the
     // f32 nearest 1/255 (`0x3B808081`, wow-re `honor-panel-law.md` `0x51aace`) rather than
     // dividing, and the two answers differ in the eighth decimal — a tolerance loose enough to
@@ -455,7 +455,7 @@ fn shown_inspect_honor_page() -> UiScript {
         "Interface\\FrameXML\\ItemButtonTemplate.xml",
         "Interface\\FrameXML\\HonorFrame.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     // The window is a LoadOnDemand addon, reached the way the app reaches it: seated off the
     // chain as a registry row (1957) and loaded by the reference's own `InspectFrame_LoadUI`

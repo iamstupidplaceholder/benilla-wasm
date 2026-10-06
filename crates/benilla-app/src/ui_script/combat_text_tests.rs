@@ -18,10 +18,10 @@ use super::test_ui::load_ui as load_xml;
 fn load_combat_text() -> UiScript {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua"); // ENTERING_COMBAT & co.
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml"); // TEXT()
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua"); // ENTERING_COMBAT & co.
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml"); // TEXT()
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
     // The reference's own addon, LoadOnDemand off the chain, loaded the way the options window
     // loads it (1964).
     super::test_ui::seat_chain_addon(&mut s, "Blizzard_CombatText");
@@ -344,17 +344,17 @@ fn combat_text_master_toggle_unregisters() {
 fn the_damage_text_font_is_read_from_the_lua_global() {
     let data = benilla_formats::wow_data_or_skip!();
     let _ = data;
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
 
     // Before anything assigns it, there is nothing to bind — the reference's `0x704350` failure
     // block leaves `0x703bf0`'s pre-seeded `""`, and an empty name is what the font factory's own
     // guard rejects.
-    assert_eq!(crate::combat_text::read_damage_text_font(&s).0, None);
+    assert_eq!(crate::combat_text::read_damage_text_font(&mut s).0, None);
 
     // Stock FrameXML, off the player's own chain: `Fonts.xml:6`.
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     assert_eq!(
-        crate::combat_text::read_damage_text_font(&s).0.as_deref(),
+        crate::combat_text::read_damage_text_font(&mut s).0.as_deref(),
         Some("Fonts\\FRIZQT__.TTF"),
     );
 
@@ -362,7 +362,7 @@ fn the_damage_text_font_is_read_from_the_lua_global() {
     s.run(r#"DAMAGE_TEXT_FONT = "Interface\\AddOns\\MSBT\\Fonts\\Adventure.ttf""#)
         .expect("the assignment runs");
     assert_eq!(
-        crate::combat_text::read_damage_text_font(&s).0.as_deref(),
+        crate::combat_text::read_damage_text_font(&mut s).0.as_deref(),
         Some("Interface\\AddOns\\MSBT\\Fonts\\Adventure.ttf"),
         "the addon's face, not Friz"
     );

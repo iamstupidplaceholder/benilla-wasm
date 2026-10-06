@@ -151,7 +151,7 @@ fn feed_bank(
     let lines: Vec<_> = errors
         .0
         .drain(..)
-        .filter_map(|result| crate::ui_action::keyed_line(&script, bank_slot_error_key(result)?))
+        .filter_map(|result| crate::ui_action::keyed_line(&mut script, bank_slot_error_key(result)?))
         .collect();
     crate::ui_action::show_messages(&mut script, &mut sink, "ui_bank", lines);
     let store = self_q.iter().next();

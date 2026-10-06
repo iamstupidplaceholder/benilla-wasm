@@ -24,28 +24,28 @@ fn harness() -> UiScript {
     // The window's title is `text="QUEST_TIMERS"`, resolved against the global at load — without
     // the player's own strings it draws the KEY, which is exactly what a `text=` attribute does
     // with an unknown name.
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
     // `SecondsToTime`, which the reference's `QuestTimerFrame_Update` formats every row with, and
     // `UIParent_ManageFramePositions`, which its OnShow/OnHide call.
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
     // `MAX_QUESTS`, the loop bound the reference's repaint hides its spare rows with. 1.12
     // declares it on QuestLogFrame.lua:2 and so do we (1751 window 16) — a nil there is
     // `'for' limit must be a number` on the first repaint, not a missing row.
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "ScrollTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestLogFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\QuestTimerFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "ScrollTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ItemButtonTemplate.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MainMenuBarMicroButtons.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestLogFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\QuestTimerFrame.xml");
     s
 }
 
@@ -74,12 +74,12 @@ fn log(entries: Vec<QuestLogEntryView>) -> QuestLogState {
     }
 }
 
-fn shown(s: &UiScript, frame: &str) -> bool {
+fn shown(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsShown()"))
         .unwrap()
 }
 
-fn row_text(s: &UiScript, i: u32) -> String {
+fn row_text(s: &mut UiScript, i: u32) -> String {
     s.eval::<String>(&format!("return QuestTimer{i}Text:GetText()"))
         .unwrap()
 }
@@ -96,7 +96,7 @@ fn the_window_follows_the_timed_quests() {
     s.set_quest_log(log(vec![quest(783, "A Threat Within", 0)]));
     s.set_server_unix_time(1_000_000.0);
     s.fire_event("QUEST_LOG_UPDATE", vec![]);
-    assert!(!shown(&s, "QuestTimerFrame"), "no timed quest, no window");
+    assert!(!shown(&mut s, "QuestTimerFrame"), "no timed quest, no window");
 
     // Two timed quests either side of an untimed one. 14:20 and 45 s out.
     s.set_quest_log(log(vec![
@@ -106,14 +106,14 @@ fn the_window_follows_the_timed_quests() {
     ]));
     s.fire_event("QUEST_LOG_UPDATE", vec![]);
 
-    assert!(shown(&s, "QuestTimerFrame"));
-    assert!(shown(&s, "QuestTimer1") && shown(&s, "QuestTimer2"));
-    assert!(!shown(&s, "QuestTimer3"), "only two timers are live");
+    assert!(shown(&mut s, "QuestTimerFrame"));
+    assert!(shown(&mut s, "QuestTimer1") && shown(&mut s, "QuestTimer2"));
+    assert!(!shown(&mut s, "QuestTimer3"), "only two timers are live");
     // SecondsToTime's shipped spelling, plural rule and trailing space, all of it (ref
     // UIParent.lua:1004-1031) — over the reference's own `−1` (decision 1154), so a 860-second
     // gap reads 859 and a 45-second one 44.
-    assert_eq!(row_text(&s, 1), "14 Mins 19 Secs ");
-    assert_eq!(row_text(&s, 2), "44 Secs ");
+    assert_eq!(row_text(&mut s, 1), "14 Mins 19 Secs ");
+    assert_eq!(row_text(&mut s, 2), "44 Secs ");
     assert_eq!(
         s.eval::<f64>("return QuestTimerFrame:GetHeight()").unwrap(),
         45.0 + 16.0 * 2.0
@@ -126,12 +126,12 @@ fn the_window_follows_the_timed_quests() {
     // point of the engine owning the subtraction.
     s.set_server_unix_time(1_000_030.0);
     s.tick(0.2);
-    assert_eq!(row_text(&s, 2), "14 Secs ");
+    assert_eq!(row_text(&mut s, 2), "14 Secs ");
 
     // The last timer expires out of the list: the window goes with it.
     s.set_quest_log(log(vec![quest(2, "A Threat Within", 0)]));
     s.fire_event("QUEST_LOG_UPDATE", vec![]);
-    assert!(!shown(&s, "QuestTimerFrame"));
+    assert!(!shown(&mut s, "QuestTimerFrame"));
 }
 
 /// The countdown must actually reach the screen. The state test above passes just as happily for a
@@ -175,10 +175,10 @@ fn a_world_entry_paints_a_quest_already_running() {
     s.set_quest_log(log(vec![quest(1, "Deliver the Message", 1_000_090)]));
     s.set_server_unix_time(1_000_000.0);
     s.fire_event("PLAYER_ENTERING_WORLD", vec![ScriptValue::Bool(true)]);
-    assert!(shown(&s, "QuestTimerFrame"));
+    assert!(shown(&mut s, "QuestTimerFrame"));
     // Singular at exactly one minute — SecondsToTime's `_P1` plural rule, the ref's own; 90 s of
     // gap reads 89 through the `−1`.
-    assert_eq!(row_text(&s, 1), "1 Min 29 Secs ");
+    assert_eq!(row_text(&mut s, 1), "1 Min 29 Secs ");
 }
 
 /// **The reference file is the test oracle** (decision 0675). Scrapes both this window and the

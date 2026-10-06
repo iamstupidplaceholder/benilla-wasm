@@ -22,31 +22,19 @@
 //! by erroring rather than guessing a blend. The wrapper is installed as both `string.format` and
 //! the bare global `format`.
 
-use mlua::{Lua, Value, Variadic};
-
-/// The Lua-level message inside an mlua error — mlua decorates its `Display` with a category
-/// word (`syntax error: `, `runtime error: `) that the reference's own `lua_pushstring` leg never
-/// adds. `loadstring`'s second return is that message verbatim, so the decoration is stripped.
-pub(super) fn lua_message(e: &mlua::Error) -> String {
-    match e {
-        mlua::Error::SyntaxError { message, .. } => message.clone(),
-        mlua::Error::RuntimeError(m) => m.clone(),
-        other => other.to_string(),
-    }
-}
+use benilla_lua::{Function, LuaString, Value, Variadic, Vm};
 
 /// Sandbox the VM: strip filesystem/OS/native reach, keep a `debugstack` stub, and make chunk
 /// loading text-only.
-pub(super) fn sandbox(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
-    // Remove the dangerous surface. (Some may already be absent under mlua's safe stdlib; setting
-    // nil is idempotent and makes the guarantee explicit rather than mlua-version-dependent.)
+pub(super) fn sandbox(vm: &mut Vm) -> benilla_lua::Result<()> {
+    // Remove the dangerous surface. (Some may already be absent under the safe stdlib set;
+    // setting nil is idempotent and makes the guarantee explicit rather than
+    // version-dependent.)
     for name in [
         "io", "os", "package", "require", "dofile", "loadfile", "load", "module", "newproxy",
         "debug",
     ] {
-        g.set(name, Value::Nil)?;
+        vm.set_global(name, Value::Nil)?;
     }
 
     // `debugstack([start [, count1 [, count2]]])` — the client's own traceback, **frames only**.
@@ -89,20 +77,18 @@ pub(super) fn sandbox(lua: &Lua) -> mlua::Result<()> {
     // `FuBarPlugin-2.0.lua:752` passes `debugstack(6, 1, 0)` and reads the capture with a GREEDY
     // `"\\AddOns\\(.*)\\"` — extra frames would hand it the LAST addon on the stack instead
     // of its own.
-    g.set(
-        "debugstack",
-        lua.create_function(|lua, args: Variadic<Value>| {
-            let num = |v: Option<&Value>, default: usize| match v {
-                Some(Value::Integer(i)) => usize::try_from(*i).unwrap_or(0),
-                Some(Value::Number(n)) if *n >= 0.0 => *n as usize,
-                _ => default,
-            };
-            let start = num(args.first(), 1);
-            let count1 = num(args.get(1), 12);
-            let count2 = num(args.get(2), 10);
-            Ok(traceback_frames(lua, start, count1, count2))
-        })?,
-    )?;
+    let debugstack = vm.create_function("debugstack", |lua, args: Variadic<Value>| {
+        let num = |v: Option<&Value>, default: usize| match v {
+            Some(Value::Integer(i)) => usize::try_from(*i).unwrap_or(0),
+            Some(Value::Number(n)) if *n >= 0.0 => *n as usize,
+            _ => default,
+        };
+        let start = num(args.first(), 1);
+        let count1 = num(args.get(1), 12);
+        let count2 = num(args.get(2), 10);
+        Ok(traceback_frames(&lua.debug_frames(), start, count1, count2))
+    })?;
+    vm.set_global_function("debugstack", &debugstack)?;
 
     // Text-only `loadstring`: compile a *source* string (never bytecode). Returns `function` on
     // success or `(nil, errmsg)` on failure — the stock `loadstring` contract. `set_mode(Text)`
@@ -110,10 +96,11 @@ pub(super) fn sandbox(lua: &Lua) -> mlua::Result<()> {
     // rejected" guarantee.
     // The BOM strip and the `#`-line skip ride along, because in the reference they live *inside*
     // `luaL_loadbuffer`/`luaX_setinput` — the same door `loadstring` goes through (decision 1193).
-    let loadstring = lua.create_function(
-        |lua, (src, chunkname): (mlua::String, Option<mlua::String>)| {
+    let loadstring = vm.create_function(
+        "loadstring",
+        |lua, (src, chunkname): (LuaString, Option<LuaString>)| {
             let raw = src.as_bytes();
-            let bytes = crate::source::chunk(&raw).to_vec();
+            let bytes = crate::source::chunk(raw).to_vec();
             // **The chunk name is the caller's string VERBATIM, and it defaults to the SOURCE.**
             // `luaB_loadstring 0x703280` is stock 5.0: `0x70329a` pushes `edi` — the pointer
             // `luaL_checklstring` just returned — as `luaL_optlstring`'s `def`, so a nameless
@@ -132,63 +119,63 @@ pub(super) fn sandbox(lua: &Lua) -> mlua::Result<()> {
             // before that, so a BOM'd source compiles without its BOM while its chunk name still
             // begins with one.
             let name = match &chunkname {
-                Some(n) => String::from_utf8_lossy(&n.as_bytes()).into_owned(),
-                None => String::from_utf8_lossy(&raw).into_owned(),
+                Some(n) => String::from_utf8_lossy(n.as_bytes()).into_owned(),
+                None => String::from_utf8_lossy(raw).into_owned(),
             };
-            let chunk = lua
-                .load(bytes)
-                .set_name(name)
-                .set_mode(mlua::ChunkMode::Text);
-            match chunk.into_function() {
+            match lua.load_function(&bytes, &name) {
                 Ok(f) => Ok((Value::Function(f), Value::Nil)),
                 // `load_aux`'s failure leg pushes Lua's own message unchanged (`0x7032c6` nil,
-                // `0x7032d2` insert, `mov eax,2`). mlua's `Display` prefixes it with
-                // `syntax error: `, which is mlua's word and not the image's — an addon that shows
-                // the second return to a player would show that prefix too.
-                Err(e) => Ok((
-                    Value::Nil,
-                    Value::String(lua.create_string(lua_message(&e))?),
-                )),
+                // `0x7032d2` insert, `mov eax,2`). Either backend's message is already
+                // undecorated here — the native boundary strips mlua's category word, and the
+                // browser VM never adds one — so it passes through verbatim.
+                Err(e) => Ok((Value::Nil, Value::String(e.as_str().into()))),
             }
         },
     )?;
-    g.set("loadstring", loadstring)?;
+    vm.set_global_function("loadstring", &loadstring)?;
 
     Ok(())
 }
 
 /// Install the WoW stdlib layer (the bare-global aliases, positional `format`, …).
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+pub(super) fn install(vm: &mut Vm) -> benilla_lua::Result<()> {
     // The default `geterrorhandler()` reports into the same channel a failed handler uses, so an
     // addon's `geterrorhandler()(msg)` surfaces where every other script error does rather than
     // vanishing (decision 1195). Named with the `__benilla_` prefix because it is host plumbing,
     // not a 1.12 global — the reference's default handler is FrameXML's `_ERRORMESSAGE`.
-    lua.globals().set(
-        "__benilla_script_error",
-        lua.create_function(|lua, msg: mlua::Value| {
-            let text = match &msg {
-                mlua::Value::String(s) => s.to_string_lossy(),
-                other => format!("{other:?}"),
-            };
-            lua.app_data_mut::<super::Model>()
-                .expect("model app_data")
-                .errors
-                .push(text);
-            Ok(())
-        })?,
-    )?;
+    let script_error = vm.create_function("__benilla_script_error", |lua, msg: Value| {
+        let text = match &msg {
+            Value::String(s) => s.to_string_lossy().into_owned(),
+            other => format!("{other:?}"),
+        };
+        lua.app_data_mut::<super::Model>()
+            .expect("model app_data")
+            .errors
+            .push(text);
+        Ok(())
+    })?;
+    vm.set_global_function("__benilla_script_error", &script_error)?;
 
-    install_time(lua)?;
-    lua.load(WOW_STDLIB)
-        .set_name("=[benilla wow stdlib]")
-        .set_mode(mlua::ChunkMode::Text)
-        .exec()?;
+    install_time(vm)?;
+    vm.exec_named_text(WOW_STDLIB.as_bytes(), "=[benilla wow stdlib]")?;
     // Remember the default handler BY IDENTITY, right after installing it — the engine-side
     // dispatch (decision 1305) skips it (it reports into the host channel, where every dispatched
     // message already is) and fires only a handler somebody *chose*: FrameXML's `_ERRORMESSAGE`
     // or an addon's own.
-    let default: mlua::Function = lua.load("return geterrorhandler()").eval()?;
-    lua.set_named_registry_value(super::REG_DEFAULT_ERRORHANDLER, default)?;
+    let get_handler =
+        vm.load_function(b"return geterrorhandler()", "@benilla_default_errorhandler")?;
+    let default: Function = vm
+        .call_function(&get_handler, Vec::new())?
+        .into_iter()
+        .next()
+        .and_then(|v| match v {
+            Value::Function(f) => Some(f),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            benilla_lua::Error::runtime("geterrorhandler() did not answer a function")
+        })?;
+    vm.set_named_registry_value(super::REG_DEFAULT_ERRORHANDLER, &default)?;
     Ok(())
 }
 
@@ -312,8 +299,7 @@ end
 function getglobal(name) return _G[name] end
 function setglobal(name, value) _G[name] = value end
 
--- ── GetLocale: benilla ships/reads enUS data only (the 5875 MPQs + Spell.dbc enUS column) ──────
-function GetLocale() return "enUS" end
+-- GetLocale is registered by the engine and reads the host-selected locale.
 
 -- ── GetTime: the FrameXML session clock (seconds, monotonic, arbitrary epoch — like the real
 -- client's uptime-based GetTime). `__benilla_now` is advanced by `UiScript::tick` in the same
@@ -461,55 +447,48 @@ end
 /// (deliberately — the format crates here are all in-repo). The corpus's uses are a debug
 /// timestamp, a "last scanned" string, and `%M:%S` over a DURATION; only the first two shift, and
 /// they shift by a constant. Fixing it means a tz source, not a different algorithm.
-fn install_time(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-    g.set(
-        "time",
-        lua.create_function(|_, ()| Ok(crate::civil::unix_seconds()))?,
-    )?;
-    g.set(
-        "date",
-        lua.create_function(|lua, (fmt, when): (Option<String>, Option<i64>)| {
-            // Bare `date()` is `%c`, as in Lua — `Recap.lua:2690` calls it with no arguments.
-            let fmt = fmt.unwrap_or_else(|| "%c".to_string());
-            let secs = when.unwrap_or_else(crate::civil::unix_seconds);
-            // A leading `!` selects UTC. Every timestamp this engine holds is already UTC — there
-            // is no local-time conversion anywhere here — so the flag only has to be CONSUMED, not
-            // acted on. Left in the format string it would print as a literal `!`.
-            let body = fmt.strip_prefix('!').unwrap_or(&fmt);
-            // `date("*t")` returns a TABLE, not a string, and leaving it unimplemented was not a
-            // missing feature — it was a HANG. `Accountant_WeekStart` walks a day at a time until
-            // the weekday matches its stored `weekstart`:
-            //
-            //     dt = date("*t", ct); thisDay = dt["wday"]
-            //     while thisDay ~= …weekstart do ct = ct - 86400; … end
-            //
-            // Against a string return, `dt["wday"]` is nil, `nil ~= 3` forever, and the addon spins
-            // the client — which is exactly what it did to the survey the moment a separate fix let
-            // Accountant reach this function at all.
-            if body == "*t" {
-                let c = crate::civil::from_unix(secs);
-                let t = lua.create_table()?;
-                t.set("year", c.year)?;
-                t.set("month", c.month)?;
-                t.set("day", c.day)?;
-                t.set("hour", c.hour)?;
-                t.set("min", c.min)?;
-                t.set("sec", c.sec)?;
-                // Lua counts weekdays 1..7 from SUNDAY; ours is the 0-based index into `DAYS`.
-                t.set("wday", c.weekday + 1)?;
-                // `yday` is already 1-based out of the conversion, which is Lua's convention too.
-                t.set("yday", c.yearday)?;
-                // No timezone and no DST rules here, and `false` is the honest answer rather than
-                // the nil an absent field would give: this clock never observes daylight saving.
-                t.set("isdst", false)?;
-                return Ok(mlua::Value::Table(t));
-            }
-            Ok(mlua::Value::String(
-                lua.create_string(format_epoch(secs, body))?,
-            ))
-        })?,
-    )?;
+fn install_time(vm: &mut Vm) -> benilla_lua::Result<()> {
+    let time = vm.create_function("time", |_, ()| Ok(crate::civil::unix_seconds()))?;
+    vm.set_global_function("time", &time)?;
+    let date = vm.create_function("date", |lua, (fmt, when): (Option<String>, Option<i64>)| {
+        // Bare `date()` is `%c`, as in Lua — `Recap.lua:2690` calls it with no arguments.
+        let fmt = fmt.unwrap_or_else(|| "%c".to_string());
+        let secs = when.unwrap_or_else(crate::civil::unix_seconds);
+        // A leading `!` selects UTC. Every timestamp this engine holds is already UTC — there
+        // is no local-time conversion anywhere here — so the flag only has to be CONSUMED, not
+        // acted on. Left in the format string it would print as a literal `!`.
+        let body = fmt.strip_prefix('!').unwrap_or(&fmt);
+        // `date("*t")` returns a TABLE, not a string, and leaving it unimplemented was not a
+        // missing feature — it was a HANG. `Accountant_WeekStart` walks a day at a time until
+        // the weekday matches its stored `weekstart`:
+        //
+        //     dt = date("*t", ct); thisDay = dt["wday"]
+        //     while thisDay ~= …weekstart do ct = ct - 86400; … end
+        //
+        // Against a string return, `dt["wday"]` is nil, `nil ~= 3` forever, and the addon spins
+        // the client — which is exactly what it did to the survey the moment a separate fix let
+        // Accountant reach this function at all.
+        if body == "*t" {
+            let c = crate::civil::from_unix(secs);
+            let t = lua.create_table()?;
+            lua.table_set(&t, "year", c.year)?;
+            lua.table_set(&t, "month", c.month)?;
+            lua.table_set(&t, "day", c.day)?;
+            lua.table_set(&t, "hour", c.hour)?;
+            lua.table_set(&t, "min", c.min)?;
+            lua.table_set(&t, "sec", c.sec)?;
+            // Lua counts weekdays 1..7 from SUNDAY; ours is the 0-based index into `DAYS`.
+            lua.table_set(&t, "wday", c.weekday + 1)?;
+            // `yday` is already 1-based out of the conversion, which is Lua's convention too.
+            lua.table_set(&t, "yday", c.yearday)?;
+            // No timezone and no DST rules here, and `false` is the honest answer rather than
+            // the nil an absent field would give: this clock never observes daylight saving.
+            lua.table_set(&t, "isdst", false)?;
+            return Ok(Value::Table(t));
+        }
+        Ok(Value::String(format_epoch(secs, body).as_str().into()))
+    })?;
+    vm.set_global_function("date", &date)?;
     Ok(())
 }
 
@@ -659,39 +638,44 @@ const STRING_CHUNK_OVERHEAD: usize = 17;
 /// `AceLibrary.lua:139`'s `"([`<].-['>])"` needs and what 5.4's `'%s'` cannot satisfy — and
 /// otherwise the `*what` arms decide: `m` → `" in main chunk"` (`0x872c88`), `C` or `t` → `" ?"`
 /// (`0x872c6c`), else `" in function <%s:%d>"` (`0x872c70`).
-fn traceback_frame(d: &mlua::Debug) -> String {
-    let src = d.source();
-    let names = d.names();
-    let short = src
+fn traceback_frame(frame: &benilla_lua::DebugFrame) -> String {
+    use benilla_lua::DebugWhat;
+    let short = frame
         .source
         .as_deref()
         .map(chunk_id)
-        .or_else(|| src.short_src.as_deref().map(str::to_owned))
+        .or_else(|| frame.short_src.clone())
         .unwrap_or_else(|| "?".to_string());
     let mut line = String::with_capacity(short.len() + 32);
     line.push_str(&short);
     line.push(':');
-    if let Some(n) = d.current_line() {
+    if let Some(n) = frame.current_line {
         line.push_str(&n.to_string());
         line.push(':');
     }
     // A tail call has no calling instruction to name it from. 5.0 gave that frame `what == "tail"`
     // and the `" ?"` arm; 5.4 hands us a `(tail call)` pseudo-frame instead, which lands in the
-    // same arm by the same rule.
-    let tail_call = src.what == "t" || short == "(tail call)";
-    match names.name.as_deref() {
+    // same arm by the same rule. Neither backend below reports tail frames today, so only the
+    // pseudo-frame arm can fire.
+    let tail_call = short == "(tail call)";
+    match frame.name.as_deref() {
         Some(name) if !name.is_empty() && !tail_call => {
             line.push_str(" in function `");
             line.push_str(name);
             line.push('\'');
         }
-        _ if src.what == "main" => line.push_str(" in main chunk"),
-        _ if src.what == "C" || tail_call => line.push_str(" ?"),
+        _ if frame.what == DebugWhat::Main => line.push_str(" in main chunk"),
+        _ if frame.what == DebugWhat::C || tail_call => line.push_str(" ?"),
         _ => {
             line.push_str(" in function <");
             line.push_str(&short);
             line.push(':');
-            line.push_str(&src.line_defined.unwrap_or(0).to_string());
+            line.push_str(
+                &frame
+                    .line_defined
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            );
             line.push('>');
         }
     }
@@ -710,28 +694,36 @@ fn traceback_frame(d: &mlua::Debug) -> String {
 /// `count1` instead would diverge from the reference at exactly `depth == count1 + 1` — which is
 /// `FuBarPlugin-2.0.lua:752`'s `debugstack(6, 1, 0)`, whose greedy `"\\AddOns\\(.*)\\"` reads the
 /// LAST path in the string. wow-re `debugstack-return-shape.md` maps the whole regime.
-fn traceback_frames(lua: &Lua, start: usize, count1: usize, count2: usize) -> String {
+///
+/// Levels index the innermost-first frame list, exactly as the stack walk did.
+fn traceback_frames(
+    frames: &[benilla_lua::DebugFrame],
+    start: usize,
+    count1: usize,
+    count2: usize,
+) -> String {
     let mut out = String::new();
     let mut level = start;
     let mut first_part = true;
-    while lua.inspect_stack(level, |_| ()).is_some() {
+    while level < frames.len() {
         level += 1;
         if level > start + count1 && first_part {
             first_part = false;
-            if lua.inspect_stack(level + count2, |_| ()).is_none() {
+            if level + count2 >= frames.len() {
                 level -= 1; // the probe found nothing to elide — print this level after all
             } else {
                 out.push_str("...\n");
-                while lua.inspect_stack(level + count2, |_| ()).is_some() {
+                while level + count2 < frames.len() {
                     level += 1;
                 }
             }
             continue;
         }
-        if let Some(f) = lua.inspect_stack(level - 1, traceback_frame) {
-            out.push_str(&f);
-            out.push('\n');
+        if level == 0 || level - 1 >= frames.len() {
+            break;
         }
+        out.push_str(&traceback_frame(&frames[level - 1]));
+        out.push('\n');
     }
     out
 }
@@ -746,7 +738,7 @@ mod date_table_tests {
     /// `nil ~= 3` never becomes false, and the loop never ends.
     #[test]
     fn date_star_t_answers_a_table_that_walks_with_its_argument() {
-        let s = UiScript::new().unwrap();
+        let mut s = UiScript::new().unwrap();
         // 2026-08-12 00:00:00 UTC is a Wednesday. Lua counts wday from SUNDAY = 1, so Wednesday
         // is 4 — the off-by-one a 0-based weekday index would get wrong.
         let t: i64 = 1_786_492_800;

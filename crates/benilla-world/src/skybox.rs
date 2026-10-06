@@ -103,6 +103,7 @@ use crate::view::WorldCamera;
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_assets::materials::WowModelMaterial;
 use benilla_assets::WmoModel;
+#[cfg(not(target_arch = "wasm32"))]
 use benilla_assets::{LockRecover, WorldAssets};
 
 /// MOGP/MOGI group flag **SHOW_SKYBOX** — this group draws its root's MOSB model as the sky (see the
@@ -191,6 +192,21 @@ struct SkyboxSpin {
 #[derive(Resource, Default)]
 struct BuiltSkyboxes(HashSet<String>);
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource, Default)]
+struct DrawableSkyboxes(HashSet<String>);
+
+#[cfg(target_arch = "wasm32")]
+fn gate_pending_skybox(
+    want: Res<CameraSkybox>,
+    drawable: Res<DrawableSkyboxes>,
+    mut weight: ResMut<SkyboxWeight>,
+) {
+    if want.0.as_ref().is_some_and(|p| !drawable.0.contains(p)) {
+        weight.set_if_neq(SkyboxWeight(0.0));
+    }
+}
+
 /// Ordering handle: [`CameraSkybox`] is settled for the frame after this set. `crate::sky`'s dome
 /// gate hangs off it, because the two backdrops must agree *within* a frame — one reading a stale
 /// resource is a frame with both drawn or neither.
@@ -203,6 +219,9 @@ pub(crate) struct SkyboxPlugin;
 
 impl Plugin for SkyboxPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(target_arch = "wasm32")]
+        app.init_resource::<crate::sky_assets::Inputs>()
+            .init_resource::<DrawableSkyboxes>();
         // No `MaterialPlugin` of its own any more: a skybox batch is a `WowModelMaterial` like every
         // other model batch, and that plugin is already loaded.
         app.init_resource::<CameraSkybox>()
@@ -210,7 +229,13 @@ impl Plugin for SkyboxPlugin {
             .init_resource::<BuiltSkyboxes>()
             .add_systems(
                 Update,
-                (resolve_camera_skybox, build_skybox, apply_skybox_visibility)
+                (
+                    resolve_camera_skybox,
+                    build_skybox,
+                    #[cfg(target_arch = "wasm32")]
+                    gate_pending_skybox,
+                    apply_skybox_visibility,
+                )
                     .chain()
                     // The claim we read is written by the PVS pass in this same schedule. Unordered,
                     // this reads whichever side of it the executor happened to pick — so a camera
@@ -328,7 +353,9 @@ fn build_skybox(
     mut commands: Commands,
     want: Res<CameraSkybox>,
     mut built: ResMut<BuiltSkyboxes>,
-    world_assets: Option<ResMut<WorldAssets>>,
+    #[cfg(not(target_arch = "wasm32"))] world_assets: Option<ResMut<WorldAssets>>,
+    #[cfg(target_arch = "wasm32")] mut host: crate::sky_assets::Host,
+    #[cfg(target_arch = "wasm32")] mut drawable: ResMut<DrawableSkyboxes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut mats: M2BatchMaterials,
@@ -345,19 +372,33 @@ fn build_skybox(
     if !mats.ready() {
         return;
     }
-    let Some(mut world_assets) = world_assets else {
+    #[cfg(not(target_arch = "wasm32"))]
+    let Some(mut world_assets) = world_assets
+    else {
         return; // assetless dev run — the gradient dome stays the backdrop
     };
     // The model's rigid spins, keyed by bone — empty for `StratholmeSkybox` and for a capture
     // (`deterministic_run`), which keeps every animated lane on its bind pose so world baselines stay
     // comparable across runs and branches, exactly as the doodad host's own arm does.
+    #[cfg(not(target_arch = "wasm32"))]
     let spins = if crate::dev_state::deterministic_run() {
         Default::default()
     } else {
         benilla_formats::load_m2_bone_spins(&mut world_assets.chain.lock_recover(), path)
             .unwrap_or_default()
     };
+    #[cfg(not(target_arch = "wasm32"))]
     let subs = benilla_formats::load_m2_mesh(&mut world_assets.chain.lock_recover(), path);
+    #[cfg(target_arch = "wasm32")]
+    let (subs, spins) = match host.model(path, &images) {
+        Ok(Some(model)) => (Ok::<_, String>(model.subs), model.spins),
+        Ok(None) => return,
+        Err(error) => {
+            warn!("skybox '{path}' unavailable, keeping the gradient dome: {error}");
+            built.0.insert(path.to_owned());
+            return;
+        }
+    };
     let subs = match subs {
         Ok(subs) if !subs.is_empty() => subs,
         Ok(_) => {
@@ -396,10 +437,23 @@ fn build_skybox(
         mesh.insert_indices(Indices::U32(sub.indices.clone()));
         // The batch's own authored address mode (decision 0763) — a skybox's UVs sit inside 0..1 for
         // the cube faces, but Caverns of Time's asteroid belts tile theirs over ±21 wraps.
+        #[cfg(not(target_arch = "wasm32"))]
         let texture = sub
             .texture
             .as_deref()
             .and_then(|t| world_assets.texture(t, (sub.wrap_x, sub.wrap_y), &mut images));
+        #[cfg(target_arch = "wasm32")]
+        let texture = match sub.texture.as_deref() {
+            Some(texture) => match host.texture(texture, (sub.wrap_x, sub.wrap_y), &images) {
+                Ok(Some(image)) => Some(image),
+                Ok(None) => return,
+                Err(error) => {
+                    warn!("skybox '{path}' texture failed: {error}");
+                    return;
+                }
+            },
+            None => None,
+        };
         // `i + 1` is the authored-batch-order convention (`0` = unordered): the transparent half of
         // a skybox is camera-anchored, so every one of its batches shares a sort distance and the
         // order is the only thing keeping the layers from re-flipping every frame.
@@ -431,6 +485,8 @@ fn build_skybox(
         }
     }
     built.0.insert(path.to_string());
+    #[cfg(target_arch = "wasm32")]
+    drawable.0.insert(path.to_string());
 }
 
 /// The bone this batch is **wholly** weighted to, if any — the caller's half of

@@ -22,9 +22,9 @@
 //!
 //! Every raise is the reference's own `Usage:` (§3.1); `SetBattlefieldScoreFaction` never raises.
 
-use mlua::{Lua, MultiValue, Value};
+use benilla_lua::{MultiValue, Value, Vm};
 
-use super::binding_abi::number_arg;
+use super::binding_abi::neutral_number_arg;
 use super::Model;
 
 /// One scoreboard row as the app resolved it (wire order, see the module doc).
@@ -160,7 +160,7 @@ fn number_of(v: &Value) -> Option<i32> {
         Value::Integer(i) => Some(*i as i32),
         Value::Number(n) => Some(n.trunc() as i64 as i32),
         Value::String(s) => s
-            .to_str()
+            .as_str()
             .ok()
             .and_then(|t| t.trim().parse::<f64>().ok())
             .map(|n| n.trunc() as i64 as i32),
@@ -168,79 +168,63 @@ fn number_of(v: &Value) -> Option<i32> {
     }
 }
 
-pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
-    let g = lua.globals();
-
+pub(super) fn install(lua: &mut Vm) -> benilla_lua::Result<()> {
     // `GetNumBattlefieldScores()` — the FILTERED count `[0xb6ebc4]`.
-    g.set(
-        "GetNumBattlefieldScores",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.battlefield_board.filtered as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumBattlefieldScores", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.battlefield_board.filtered as i64)
+    })?;
 
     // `GetBattlefieldScore(index)` — nine values on every leg (§3.7): name, killingBlows,
     // honorableKills, deaths, honorGained, faction, rank, race, class; the fail leg is
     // `nil, 0,0,0,0,0,0, nil, nil`. Bounded by the wire count over the sorted order.
-    g.set(
-        "GetBattlefieldScore",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: GetBattlefieldScore(index)")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(r) = model.battlefield_board.row(index) else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                    Value::Nil,
-                    Value::Nil,
-                ]));
-            };
-            let s = |v: &Option<String>| -> mlua::Result<Value> {
-                Ok(match v {
-                    Some(t) => Value::String(lua.create_string(t)?),
-                    None => Value::Nil,
-                })
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&r.name)?),
-                Value::Integer(i64::from(r.killing_blows)),
-                Value::Integer(i64::from(r.honorable_kills)),
-                Value::Integer(i64::from(r.deaths)),
-                Value::Integer(i64::from(r.honor_gained)),
-                Value::Integer(i64::from(r.faction)),
-                Value::Integer(i64::from(r.rank)),
-                s(&r.race)?,
-                s(&r.class)?,
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldScore", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: GetBattlefieldScore(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(r) = model.battlefield_board.row(index) else {
+            return Ok(MultiValue::from([
+                Value::Nil,
+                Value::Number(0.0),
+                Value::Number(0.0),
+                Value::Number(0.0),
+                Value::Number(0.0),
+                Value::Number(0.0),
+                Value::Number(0.0),
+                Value::Nil,
+                Value::Nil,
+            ]));
+        };
+        let string = |value: &Option<String>| value.clone().map_or(Value::Nil, Value::from);
+        Ok(MultiValue::from([
+            Value::from(r.name.clone()),
+            Value::Integer(i64::from(r.killing_blows)),
+            Value::Integer(i64::from(r.honorable_kills)),
+            Value::Integer(i64::from(r.deaths)),
+            Value::Integer(i64::from(r.honor_gained)),
+            Value::Integer(i64::from(r.faction)),
+            Value::Integer(i64::from(r.rank)),
+            string(&r.race),
+            string(&r.class),
+        ]))
+    })?;
 
     // `GetBattlefieldWinner()` — nil until the "ended" byte, then the winner (0 Horde, 1 Alliance).
-    g.set(
-        "GetBattlefieldWinner",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let b = &model.battlefield_board.scores;
-            Ok(if b.ended {
-                Value::Integer(i64::from(b.winner))
-            } else {
-                Value::Nil
-            })
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldWinner", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let b = &model.battlefield_board.scores;
+        Ok(if b.ended {
+            Value::Integer(i64::from(b.winner))
+        } else {
+            Value::Nil
+        })
+    })?;
 
     // `SetBattlefieldScoreFaction([faction])` — never raises: a non-number means -1; only
     // {-1, 0, 1} store, and a stored value recounts, re-sorts and fires UPDATE_BATTLEFIELD_SCORE
     // (§3.8) — here on the deferred lane, the next dispatch.
-    g.set(
+    lua.register_function(
         "SetBattlefieldScoreFaction",
-        lua.create_function(|lua, faction: Option<Value>| {
+        |lua, faction: Option<Value>| {
             let f = faction.as_ref().and_then(number_of).unwrap_or(-1);
             if !(-1..=1).contains(&f) {
                 return Ok(());
@@ -252,54 +236,44 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .pending_events
                 .push(("UPDATE_BATTLEFIELD_SCORE".to_string(), Vec::new()));
             Ok(())
-        })?,
+        },
     )?;
 
     // `GetNumBattlefieldStats()` — the column count, no gate.
-    g.set(
-        "GetNumBattlefieldStats",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.battlefield_board.scores.columns.len() as i64)
-        })?,
-    )?;
+    lua.register_function("GetNumBattlefieldStats", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(model.battlefield_board.scores.columns.len() as i64)
+    })?;
 
     // `GetBattlefieldStatInfo(index)` — three values: text (raw), icon, tooltip; three nils
     // for a column the map has not (the reference falls into its lookup with row id 0 and
     // finds no row).
-    g.set(
-        "GetBattlefieldStatInfo",
-        lua.create_function(|lua, index: Value| {
-            let index = number_arg(lua, index, "Usage: GetBattlefieldStatInfo(index)")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let col = usize::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_sub(1))
-                .and_then(|i| model.battlefield_board.scores.columns.get(i));
-            let Some(c) = col else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                ]));
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&c.text)?),
-                Value::String(lua.create_string(&c.icon)?),
-                Value::String(lua.create_string(&c.tooltip)?),
-            ]))
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldStatInfo", |lua, index: Value| {
+        let index = neutral_number_arg(index, "Usage: GetBattlefieldStatInfo(index)")?;
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let col = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| model.battlefield_board.scores.columns.get(i));
+        let Some(c) = col else {
+            return Ok(MultiValue::from([Value::Nil, Value::Nil, Value::Nil]));
+        };
+        Ok(MultiValue::from([
+            Value::from(c.text.clone()),
+            Value::from(c.icon.clone()),
+            Value::from(c.tooltip.clone()),
+        ]))
+    })?;
 
     // `GetBattlefieldStatData(playerIndex, statIndex)` — both required numbers; one number on
     // every leg: the row's stat, or 0 for a bad row or a stat index outside 1..=8 (the reference
     // admits 9 and reads one dword past its block, §3.9's anomaly — ours answers 0 there).
-    g.set(
+    lua.register_function(
         "GetBattlefieldStatData",
-        lua.create_function(|lua, (player, stat): (Value, Value)| {
+        |lua, (player, stat): (Value, Value)| {
             let usage = "Usage: GetBattlefieldStatData(playerIndex, statIndex)";
-            let player = number_arg(lua, player, usage)?;
-            let stat = number_arg(lua, stat, usage)?;
+            let player = neutral_number_arg(player, usage)?;
+            let stat = neutral_number_arg(stat, usage)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let v = model
                 .battlefield_board
@@ -308,43 +282,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .and_then(|(r, s)| r.stats.get(s).copied())
                 .unwrap_or(0);
             Ok(i64::from(v))
-        })?,
+        },
     )?;
 
     // `RequestBattlefieldScoreData()` — 0 args, 0 returns; the app sends `MSG_PVP_LOG_DATA` empty
     // under the client's 5000 ms throttle (§5.1).
-    g.set(
-        "RequestBattlefieldScoreData",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            model.battlefield_score_requests += 1;
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("RequestBattlefieldScoreData", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.battlefield_score_requests += 1;
+        Ok(())
+    })?;
 
     // `LeaveBattlefield()` — a gate, then a payload (§5.3): nothing at all until the scoreboard's
     // "ended" byte has arrived; then `CMSG_LEAVE_BATTLEFIELD` with the active slot's map (the
     // app's, which holds the queue).
-    g.set(
-        "LeaveBattlefield",
-        lua.create_function(|lua, ()| {
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            if model.battlefield_board.scores.ended {
-                model.battlefield_leave_requests += 1;
-            }
-            Ok(())
-        })?,
-    )?;
+    lua.register_function("LeaveBattlefield", |lua, ()| {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if model.battlefield_board.scores.ended {
+            model.battlefield_leave_requests += 1;
+        }
+        Ok(())
+    })?;
 
     // `GetBattlefieldInstanceRunTime()` — 0 args, one number: ms since the instance's stamp
     // (`now − [0xb6ebbc]`, no sign guard; 0 with no stamp). The app keeps the clock.
-    g.set(
-        "GetBattlefieldInstanceRunTime",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.battlefield_run_time_ms))
-        })?,
-    )?;
+    lua.register_function("GetBattlefieldInstanceRunTime", |lua, ()| {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        Ok(i64::from(model.battlefield_run_time_ms))
+    })?;
 
     Ok(())
 }
@@ -393,12 +358,12 @@ mod tests {
     /// a filter puts its team first and shrinks the count without compacting the array (§6.3).
     #[test]
     fn the_board_sorts_like_the_client_and_the_filter_is_a_sort() {
-        let s = board();
+        let mut s = board();
         assert_eq!(
             s.eval::<i64>("return GetNumBattlefieldScores()").unwrap(),
             4
         );
-        let names = |s: &UiScript| -> Vec<String> {
+        let names = |s: &mut UiScript| -> Vec<String> {
             (1..=4)
                 .map(|i| {
                     s.eval::<String>(&format!("return (GetBattlefieldScore({i}))"))
@@ -406,14 +371,14 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(names(&s), ["Dana", "Carl", "Alice", "Bob"]);
+        assert_eq!(names(&mut s), ["Dana", "Carl", "Alice", "Bob"]);
         s.run("SetBattlefieldScoreFaction(1)").unwrap();
         assert_eq!(
             s.eval::<i64>("return GetNumBattlefieldScores()").unwrap(),
             2
         );
         assert_eq!(
-            names(&s),
+            names(&mut s),
             ["Carl", "Alice", "Dana", "Bob"],
             "the filter's team first, the rest still reachable"
         );

@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
-use crate::Chain;
+use crate::FileSource;
 
 /// One animation's policy row.
 #[derive(Clone, Copy)]
@@ -107,7 +107,7 @@ fn schema() -> Schema {
 }
 
 /// Read `AnimationData.dbc` off the patch chain.
-pub fn load_anim_data_catalog(chain: &mut Chain) -> Result<AnimDataCatalog> {
+pub fn load_anim_data_catalog(chain: &mut impl FileSource) -> Result<AnimDataCatalog> {
     let bytes = chain
         .read_file("DBFilesClient\\AnimationData.dbc")
         .context("reading AnimationData.dbc")?;

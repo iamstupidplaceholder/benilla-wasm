@@ -25,7 +25,7 @@ use bevy::prelude::*;
 use crate::model_render::{model_material, MaterialCache, ShadeSel};
 use benilla_assets::materials::WowModelMaterial;
 
-use super::{ChildDraw, ParticleEmitter};
+use super::{buffer::EffectLightOverride, ChildDraw, ParticleEmitter};
 
 /// A hard cap on one emitter's instance pool — far above any authored steady state
 /// (rate ≤ ~25/s × life ≤ 3 s across the corpus); particles past it simply aren't drawn.
@@ -47,8 +47,8 @@ pub(super) fn update_model_particles(
     mut forms: ResMut<crate::model_forms::ModelForms>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<WowModelMaterial>>,
-    light: Res<crate::lighting::SharedLightBuffer>,
-    mut emitters: Query<&mut ParticleEmitter>,
+    light: Option<Res<crate::model_render::SharedModelLight>>,
+    mut emitters: Query<(&mut ParticleEmitter, Option<&EffectLightOverride>)>,
     mut draws: Query<
         (
             &mut Transform,
@@ -59,8 +59,18 @@ pub(super) fn update_model_particles(
         With<ChildDraw>,
     >,
 ) {
-    for mut emitter in &mut emitters {
+    for (mut emitter, light_override) in &mut emitters {
         let Some(geometry) = emitter.geometry.clone() else {
+            continue;
+        };
+        // Off-world stages own a scene-local light table, carried by the emitter just like the
+        // quad lane's bind group override. A streamed world falls back to its shared table. If a
+        // future host supplies neither, only geometry-model particles are withheld; ordinary
+        // quad emitters still use the shared production simulator and renderer.
+        let Some(light) = light_override
+            .map(|override_light| &override_light.0)
+            .or_else(|| light.as_deref().map(|shared| &shared.0))
+        else {
             continue;
         };
         // A GATED emitter's pool is frozen and the sim already edge-hid its instances
@@ -116,7 +126,7 @@ pub(super) fn update_model_particles(
                         None,
                         false,
                         false, // an effect model is never a skybox
-                        &light.0,
+                        light,
                         None, // a shard's material is shared by the whole emitter
                     );
                     // Realized at once: the over-life ramp writes this material through

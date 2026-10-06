@@ -270,7 +270,7 @@ fn a_minimap_is_born_with_nine_model_children_and_the_ninth_is_the_player_arrow(
 /// is how its square minimap becomes square.
 #[test]
 fn set_mask_texture_is_state_and_empty_restores_the_default() {
-    let s = script();
+    let mut s = script();
     s.run(r#"m = CreateFrame("Minimap", "TestMinimap")"#)
         .unwrap();
     assert_eq!(s.minimap_mask_texture(), None, "fresh = the engine default");
@@ -299,7 +299,7 @@ fn set_mask_texture_is_state_and_empty_restores_the_default() {
 /// effective alpha while effectively visible.
 #[test]
 fn frame_effective_alpha_reads_the_shown_frames_alpha() {
-    let s = UiScript::new().unwrap();
+    let mut s = UiScript::new().unwrap();
     s.run(
         r#"p = CreateFrame("Frame", "PingParent")
            f = CreateFrame("Model", "PingModel", p) f:SetAlpha(0.5) f:Hide()"#,

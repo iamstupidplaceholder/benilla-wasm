@@ -890,6 +890,12 @@ pub enum SessionEvent {
     /// An observed cast was interrupted/cancelled (`SMSG_SPELL_FAILED_OTHER`) — ends the caster's
     /// `Casting` state seam the same as a [`Self::SpellGo`].
     SpellFailedOther { caster: u64, spell_id: u32 },
+    /// Direct interruption packet sent by MaNGOS Zero to the caster.
+    SpellFailure {
+        caster: u64,
+        spell_id: u32,
+        reason: u8,
+    },
     /// Our own cast was pushed back by damage (`SMSG_SPELL_DELAYED`) — the cast bar slides its
     /// window out by `delay_ms` instead of finishing early (decision 0256).
     SpellDelayed { caster: u64, delay_ms: u32 },

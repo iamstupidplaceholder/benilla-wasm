@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 
+use benilla_assets::gpu_table::{write_gpu_table, GpuTable};
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::renderer::RenderQueue;
@@ -69,9 +70,7 @@ pub(crate) fn region_bytes() -> u64 {
 /// a bake stands in for a world instance whose animated materials keep the world's rows, and the
 /// studio buffers' zeroed region is the seed pose those bakes were built to show.
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct MatAnimMirrors(
-    pub std::collections::HashMap<&'static str, bevy::render::render_resource::Buffer>,
-);
+pub struct MatAnimMirrors(pub std::collections::HashMap<&'static str, GpuTable>);
 
 /// The live delta table. `Arc`-shared so the render-world extract is a pointer bump, and
 /// generation-stamped so a scene with nothing animated in view uploads nothing at all
@@ -178,8 +177,11 @@ fn upload_mat_anim(
     }
     *last = Some(gate);
     let rows = bytemuck::cast_slice(table.rows.as_slice());
-    for buffer in shared.iter().map(|s| &s.0).chain(mirrors.iter()) {
-        queue.write_buffer(buffer, region_offset(), rows);
+    for buffer in shared.iter().map(|s| &s.0) {
+        write_gpu_table(&queue, buffer, region_offset(), rows);
+    }
+    for buffer in &mirrors {
+        write_gpu_table(&queue, buffer, region_offset(), rows);
     }
 }
 

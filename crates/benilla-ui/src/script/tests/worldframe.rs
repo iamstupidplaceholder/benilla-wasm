@@ -18,7 +18,7 @@ fn vm() -> UiScript {
 /// never becomes an identity.
 #[test]
 fn the_world_frame_is_a_frame_to_lua() {
-    let s = vm();
+    let mut s = vm();
     assert_eq!(
         s.eval::<String>("return WorldFrame:GetObjectType()")
             .unwrap(),
@@ -35,7 +35,7 @@ fn the_world_frame_is_a_frame_to_lua() {
 /// The registry record is destroyed on the first instantiation: a second one is an unknown type.
 #[test]
 fn a_second_world_frame_is_an_unknown_type() {
-    let s = vm();
+    let mut s = vm();
     let err = s
         .run(r#"CreateFrame("WorldFrame", "Another")"#)
         .unwrap_err()
@@ -48,7 +48,7 @@ fn a_second_world_frame_is_an_unknown_type() {
 /// name that stratum for another frame.
 #[test]
 fn the_world_frame_is_born_in_stratum_world_with_the_mouse_and_wheel() {
-    let s = vm();
+    let mut s = vm();
     assert_eq!(
         s.eval::<String>("return WorldFrame:GetFrameStrata()")
             .unwrap(),

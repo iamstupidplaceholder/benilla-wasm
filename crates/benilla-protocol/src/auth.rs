@@ -8,11 +8,11 @@
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 
-use crate::wire::{read_array, read_cstring, read_f32_le, read_u16_le, read_u32_le, read_u8};
 use crate::RealmInfo;
+use crate::wire::{read_array, read_cstring, read_f32_le, read_u8, read_u16_le, read_u32_le};
 
 const CMD_AUTH_LOGON_CHALLENGE: u8 = 0x00;
 const CMD_AUTH_LOGON_PROOF: u8 = 0x01;
@@ -21,10 +21,10 @@ const CMD_REALM_LIST: u8 = 0x10;
 const PROTOCOL_VERSION_THREE: u8 = 3;
 const GAME_NAME_WOW: u32 = 0x0057_6f57; // "WoW\0" little-endian
 const PLATFORM_X86: u32 = 0x0078_3836; // "x86\0"
-                                       // The OS/platform tags ride the wire *reversed*: the real client stores them as little-endian u32s,
-                                       // so `0x0057696e` writes the bytes `n i W \0`, and realmd reverses them back (`AuthSocket.cpp`:
-                                       // `std::reverse(m_os.begin(), m_os.end())`). vmangos accepts exactly "Win" and "OSX"
-                                       // (`WorldSocket::HandleAuthSession`) and fails the session on anything else.
+// The OS/platform tags ride the wire *reversed*: the real client stores them as little-endian u32s,
+// so `0x0057696e` writes the bytes `n i W \0`, and realmd reverses them back (`AuthSocket.cpp`:
+// `std::reverse(m_os.begin(), m_os.end())`). vmangos accepts exactly "Win" and "OSX"
+// (`WorldSocket::HandleAuthSession`) and fails the session on anything else.
 const OS_WINDOWS: u32 = 0x0057_696e; // "Win\0"
 const OS_MACOS: u32 = 0x004F_5358; // "OSX\0"
 
@@ -40,7 +40,6 @@ const fn client_os() -> u32 {
         OS_WINDOWS
     }
 }
-const LOCALE_EN_US: u32 = 0x656e_5553; // "enUS"
 
 /// A non-success auth result byte from the server (challenge or proof stage), typed so the app can
 /// map the code to the client's own `AUTH_*` glue string (decision 0539). Rides [`crate::logon`]'s
@@ -79,6 +78,28 @@ pub fn write_logon_challenge(
     account_name: &str,
     build: u16,
 ) -> std::io::Result<()> {
+    write_logon_challenge_locale(w, account_name, build, "enUS")
+}
+
+/// Same original encoder with a host-selected four-byte WoW locale tag.
+pub fn write_logon_challenge_locale(
+    w: &mut impl Write,
+    account_name: &str,
+    build: u16,
+    locale: &str,
+) -> std::io::Result<()> {
+    let tag: [u8; 4] = locale.as_bytes().try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "locale must have four ASCII letters",
+        )
+    })?;
+    if !tag.iter().all(u8::is_ascii_alphabetic) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid locale tag",
+        ));
+    }
     // Everything after the 2-byte size field, assembled first so we can prefix its length.
     let mut body = Vec::with_capacity(34 + account_name.len());
     body.extend_from_slice(&GAME_NAME_WOW.to_le_bytes());
@@ -88,7 +109,7 @@ pub fn write_logon_challenge(
     body.extend_from_slice(&build.to_le_bytes());
     body.extend_from_slice(&PLATFORM_X86.to_le_bytes());
     body.extend_from_slice(&client_os().to_le_bytes());
-    body.extend_from_slice(&LOCALE_EN_US.to_le_bytes());
+    body.extend_from_slice(&u32::from_be_bytes(tag).to_le_bytes());
     body.extend_from_slice(&0u32.to_le_bytes()); // utc_timezone_offset
     body.extend_from_slice(&Ipv4Addr::LOCALHOST.octets()); // client_ip_address (network order)
     body.push(account_name.len() as u8);

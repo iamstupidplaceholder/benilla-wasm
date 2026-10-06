@@ -35,9 +35,13 @@ use bevy::prelude::*;
 use benilla_formats::GameObjectSounds;
 use benilla_protocol::EntityKind;
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::go_anim::GoStateDispatch;
 use crate::net::NetEntity;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 use benilla_world::schedule::WorldStage;
 
 use super::emitter_pool::AmbientEmitterPool;
@@ -46,13 +50,14 @@ use super::{AudioListener, SoundConfig, SoundOutput};
 
 /// The display→sound-slots table (only displays with any non-zero slot; ~a third of the 1638).
 #[derive(Resource)]
-pub(super) struct GoSounds(GameObjectSounds);
+pub(super) struct GoSounds(pub(super) GameObjectSounds);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_go_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_gameobject_sounds(&mut chain)
+        benilla_formats::load_gameobject_sounds(&mut *chain)
     };
     match loaded {
         Ok(s) => {
@@ -185,7 +190,9 @@ pub(super) fn go_display_sounds(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, load_go_sounds.after(AssetSet::Open))
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_go_sounds.after(AssetSet::Open));
+    app
         // In `Present`, with the GO scanner that feeds it and the state machine that dispatches.
         .add_systems(Update, go_display_sounds.in_set(WorldStage::Present));
 }

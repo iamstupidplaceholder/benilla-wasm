@@ -33,10 +33,14 @@ use bevy::prelude::*;
 use benilla_formats::{ItemGesture, ItemGroupSoundsCatalog};
 use benilla_ui::script::{CursorPayload, SoundRequest, UiScript};
 
+#[cfg(target_arch = "wasm32")]
+use super::HostAssets as WorldAssets;
 use crate::entities::ItemDisplays;
 use crate::items::Items;
 use crate::net::NetCommands;
-use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_assets::WorldAssets;
+use benilla_assets::{AssetSet, LockRecover};
 
 use super::kit::{self, KitRef, SoundKits};
 use super::{SoundConfig, SoundOutput};
@@ -104,14 +108,15 @@ fn drain_ui_sounds(
 /// The `ItemGroupSounds.dbc` catalog — the pickup/put-down/use kit per item sound group. Optional
 /// resource (absent ⇒ item drags are silent), the usual graceful-absence posture.
 #[derive(Resource)]
-struct ItemSounds(ItemGroupSoundsCatalog);
+pub(super) struct ItemSounds(pub(super) ItemGroupSoundsCatalog);
 
 /// Startup: load `ItemGroupSounds.dbc` off the chain (the same shape as `load_sound_kits`).
+#[cfg(not(target_arch = "wasm32"))]
 fn load_item_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();
-        benilla_formats::load_item_group_sounds(&mut chain)
+        benilla_formats::load_item_group_sounds(&mut *chain)
     };
     match loaded {
         Ok(catalog) => {
@@ -154,7 +159,7 @@ enum CursorGesture {
 /// client's own silent return, never an error. The previous payload is tracked here (a `Local`),
 /// not in the VM — the engine-free model owns the state, the app owns the sound.
 fn play_item_gesture_sounds(
-    script: Option<NonSend<UiScript>>,
+    script: Option<NonSendMut<UiScript>>,
     mut prev: Local<crate::ui_script::VmMemo<Option<CursorPayload>>>,
     items: Res<Items>,
     displays: Option<Res<ItemDisplays>>,
@@ -396,13 +401,14 @@ fn play_auto_equip_sounds(
 
 /// Registration hook for [`super::SoundPlugin`].
 pub(super) fn plugin(app: &mut App) {
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(Startup, load_item_sounds.after(AssetSet::Open))
+        .add_systems(Update, drain_ui_sounds.after(crate::ui_script::UiInput));
     app.add_message::<LootPickupSound>()
         .add_message::<AutoEquipSound>()
-        .add_systems(Startup, load_item_sounds.after(AssetSet::Open))
         .add_systems(
             Update,
             (
-                drain_ui_sounds,
                 play_item_gesture_sounds,
                 play_loot_pickup_sounds,
                 play_auto_equip_sounds,

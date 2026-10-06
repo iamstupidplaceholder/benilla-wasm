@@ -77,18 +77,18 @@ pub(super) fn feed_social(
 
     // Everything that reads the VM's own string table, resolved under one borrow of it.
     let (owed, friends, display_order) = {
-        let get = |key: &str| script.lua().globals().get::<String>(key).ok();
+        let mut get = |key: &str| script.global_string(key);
         // Each owed line carries a catalog key, so the surface AND the sound come from its row —
         // `ERR_FRIEND_ONLINE_SS`'s is `FRIENDJOINGAME`, which a straight chat push could not play.
         let owed: Vec<Shown> = drain_result_lines(&mut social, &names, &commands)
             .iter()
             .filter_map(|e| {
-                crate::ui_action::ui_error_text(e, &get).map(|text| Shown::keyed(e.key, text))
+                crate::ui_action::ui_error_text(e, &mut get).map(|text| Shown::keyed(e.key, text))
             })
             .collect();
         // The row's away tag, through `CHAT_FLAG_AFK`/`_DND` — the chat frame's own pair.
-        let away = |status: u8| status_flag_key(status).and_then(&get).unwrap_or_default();
-        let (friends, display_order) = friend_rows(&social, &names, &commands, areas, &away);
+        let mut away = |status: u8| status_flag_key(status).and_then(&mut get).unwrap_or_default();
+        let (friends, display_order) = friend_rows(&social, &names, &commands, areas, &mut away);
         (owed, friends, display_order)
     };
 
@@ -146,10 +146,10 @@ pub(super) fn feed_social(
             // call per record) and the `qsort` at `0x5ae0e2` sits past the loop's back-edge, so
             // it reorders only the array `GetWhoInfo` reads, never these lines.
             let printed = {
-                let get = |key: &str| script.lua().globals().get::<String>(key).ok();
+                let mut get = |key: &str| script.global_string(key);
                 let wire_order: Vec<WhoInfo> =
                     social.who.iter().map(|e| who_row(e, areas)).collect();
-                who_lines(&wire_order, social.who_total, &get)
+                who_lines(&wire_order, social.who_total, &mut get)
             };
             crate::ui_action::show_messages(&mut script, &mut sink, "ui_social", printed);
         }
@@ -206,7 +206,7 @@ fn drain_result_lines(
 /// The order is the parser's, not a presentation choice: `0x5ae0a1` composes a record's line
 /// inside the loop that reads it, and the summary block `0x5ae0f1`–`0x5ae12a` sits after the
 /// loop's back-edge (wow-re `who-list-sort-law.md` §11.4).
-fn who_lines(rows: &[WhoInfo], total: u32, get: &dyn Fn(&str) -> Option<String>) -> Vec<Shown> {
+fn who_lines(rows: &[WhoInfo], total: u32, get: &mut dyn FnMut(&str) -> Option<String>) -> Vec<Shown> {
     use benilla_ui::strings::{fill, Arg};
 
     let chat = |text: String| {
@@ -254,7 +254,7 @@ fn friend_rows(
     names: &NameCache,
     commands: &NetCommands,
     areas: Option<&AreaTableCatalog>,
-    away: &dyn Fn(u8) -> String,
+    away: &mut dyn FnMut(u8) -> String,
 ) -> (Vec<FriendInfo>, Vec<u64>) {
     let mut rows: Vec<(u64, FriendInfo)> = social
         .friends
@@ -591,10 +591,12 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let vm = benilla_ui::script::UiScript::new().expect("VM");
+        let mut vm = benilla_ui::script::UiScript::new().expect("VM");
         vm.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let lines: Vec<String> = who_lines(&wire, social.who_total, &|key| {
-            vm.lua().globals().get::<String>(key).ok()
+        let mut vm = benilla_ui::script::UiScript::new().expect("VM");
+        vm.run(&String::from_utf8_lossy(&src)).expect("runs clean");
+        let lines: Vec<String> = who_lines(&wire, social.who_total, &mut |key| {
+            vm.global_string(key)
         })
         .iter()
         .map(|s| s.text().to_string())
@@ -673,10 +675,9 @@ mod tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let vm = benilla_ui::script::UiScript::new().expect("VM");
+        let mut vm = benilla_ui::script::UiScript::new().expect("VM");
         vm.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let get = |key: &str| vm.lua().globals().get::<String>(key).ok();
-
+        let mut get = |key: &str| vm.global_string(key);
         let row =
             |name: &str, level: u32, guild: &str, race: &str, class: &str, zone: &str| WhoInfo {
                 name: name.into(),
@@ -692,7 +693,7 @@ mod tests {
                 row("Solo", 5, "", "Dwarf", "Priest", "Coldridge Valley"),
             ],
             2,
-            &get,
+            &mut get,
         )
         .iter()
         .map(|s| s.text().to_string())

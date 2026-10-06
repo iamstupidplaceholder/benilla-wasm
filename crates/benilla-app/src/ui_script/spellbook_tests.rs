@@ -64,7 +64,7 @@ fn book() -> SpellBookState {
 
 /// The centre of a laid-out frame, for a real mouse click through the hit-test — the file's own
 /// idiom, lifted out of `shipped_spellbook_drives_end_to_end` so the pet test shares it.
-fn center(s: &UiScript, name: &str) -> (f32, f32) {
+fn center(s: &mut UiScript, name: &str) -> (f32, f32) {
     let l: f32 = s.eval(&format!("return {name}:GetLeft()")).unwrap();
     let r: f32 = s.eval(&format!("return {name}:GetRight()")).unwrap();
     let t: f32 = s.eval(&format!("return {name}:GetTop()")).unwrap();
@@ -117,7 +117,7 @@ pub(super) fn spellbook_ui(w: f32, h: f32) -> UiScript {
         "Interface\\FrameXML\\SpellBookFrame.xml",
         "SpellBookAdapters.xml",
     ] {
-        load_xml(&s, f);
+        load_xml(&mut s, f);
     }
     s
 }
@@ -127,24 +127,24 @@ pub(super) fn spellbook_ui(w: f32, h: f32) -> UiScript {
 /// AutoCast Model child) + 8 skill-line tabs + the 3 Spell/Pet toggle tabs + the tab flash frame.
 #[test]
 fn shipped_spellbook_loads_clean() {
-    let s = UiScript::new().unwrap();
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
+    let mut s = UiScript::new().unwrap();
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
     // The reference's own file, off the chain, with the one adapter it needs from this engine.
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    let frames = load_xml(&s, "Interface\\FrameXML\\SpellBookFrame.xml");
-    load_xml(&s, "SpellBookAdapters.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    let frames = load_xml(&mut s, "Interface\\FrameXML\\SpellBookFrame.xml");
+    load_xml(&mut s, "SpellBookAdapters.xml");
     assert!(s.errors().is_empty(), "loader errors: {:?}", s.errors());
     assert_eq!(
         frames, 52,
@@ -204,7 +204,7 @@ fn shipped_spellbook_drives_end_to_end() {
     );
 
     s.resolve();
-    let (x1, y1) = center(&s, "SpellButton1");
+    let (x1, y1) = center(&mut s, "SpellButton1");
 
     // A plain click CASTS (drains the intent) — never picks up.
     s.mouse_button(x1, y1, "LeftButton", true);
@@ -241,7 +241,7 @@ fn shipped_spellbook_drives_end_to_end() {
         s.eval::<bool>("return ActionButton1:IsVisible()").unwrap(),
         "the held spell opened the empty well"
     );
-    let (ax, ay) = center(&s, "ActionButton1");
+    let (ax, ay) = center(&mut s, "ActionButton1");
     s.mouse_button(ax, ay, "LeftButton", true);
     s.mouse_button(ax, ay, "LeftButton", false);
     assert!(s.errors().is_empty(), "place errors: {:?}", s.errors());
@@ -737,7 +737,7 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
         "Interface\\FrameXML\\SpellBookFrame.xml",
         "SpellBookAdapters.xml",
     ] {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     // The window is a LoadOnDemand addon, reached the way the app reaches it: seated off the
     // chain as a registry row (1957) and loaded by the reference's own `MacroFrame_LoadUI`
@@ -772,12 +772,12 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
     s.run("ToggleSpellBook(BOOKTYPE_SPELL)").unwrap();
     assert!(s.errors().is_empty(), "open errors: {:?}", s.errors());
     let body =
-        |s: &UiScript| -> String { s.eval::<String>("return MacroFrameText:GetText()").unwrap() };
+        |s: &mut UiScript| -> String { s.eval::<String>("return MacroFrameText:GetText()").unwrap() };
     assert!(
         s.eval::<bool>("return MacroFrameText:IsVisible()").unwrap(),
         "the editor's body box is up — the ref's own `MacroFrame_AddMacroLine` gate"
     );
-    assert_eq!(body(&s), "");
+    assert_eq!(body(&mut s), "");
 
     // ── B248's reported gesture: a plain RIGHT click still CASTS, and writes nothing ──────────
     click(&mut s, "SpellButton1", "RightButton");
@@ -788,7 +788,7 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
     );
     assert_eq!(s.take_spell_casts(), vec![133], "a right-click casts");
     assert_eq!(
-        body(&s),
+        body(&mut s),
         "",
         "B248: an UNSHIFTED click must never reach the macro editor (ref l.271 tests shift first)"
     );
@@ -797,7 +797,7 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
     // …and so does a plain left click, the other half of the same arm.
     click(&mut s, "SpellButton1", "LeftButton");
     assert_eq!(s.take_spell_casts(), vec![133]);
-    assert_eq!(body(&s), "");
+    assert_eq!(body(&mut s), "");
 
     // ── The reference gesture: shift-click APPENDS a whole `/cast` line, and never casts ──────
     s.set_modifiers(true, false, false);
@@ -808,7 +808,7 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
         s.errors()
     );
     assert_eq!(
-        body(&s),
+        body(&mut s),
         "/cast Fireball(Rank 1)",
         "ref l.276: SLASH_CAST1 + name + the rank in parens"
     );
@@ -834,7 +834,7 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
     // DO NOT "fix" this into a newline join.
     click(&mut s, "SpellButton3", "RightButton"); // shift outranks the button — ref l.271 vs l.284
     assert_eq!(
-        body(&s),
+        body(&mut s),
         "/cast Fireball(Rank 1)/cast Fire Blast(Rank 1)",
         "ref MacroFrame.lua:95 — appended, unseparated"
     );
@@ -842,9 +842,9 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
 
     // A PASSIVE writes nothing at all — and does not fall through to a pickup either (ref l.274's
     // guard sits INSIDE the macro-frame arm).
-    let before = body(&s);
+    let before = body(&mut s);
     click(&mut s, "SpellButton5", "LeftButton");
-    assert_eq!(body(&s), before, "a passive is not a castable line");
+    assert_eq!(body(&mut s), before, "a passive is not a castable line");
     assert!(s.cursor_payload().is_none());
 
     // The name/icon popup hides the body box; the ref's AddMacroLine gates on exactly that.
@@ -855,7 +855,7 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
     assert!(s.cursor_payload().is_none(), "still not a pickup");
     s.run("MacroPopupFrame:Hide()").unwrap();
     s.run("MacroFrame_Update()").unwrap();
-    assert_eq!(body(&s), before, "nothing landed while the popup was up");
+    assert_eq!(body(&mut s), before, "nothing landed while the popup was up");
 
     // ── Editor hidden: the shift-click is a PICKUP again (ref l.281-282's else) ───────────────
     s.run("HideUIPanel(MacroFrame)").unwrap();

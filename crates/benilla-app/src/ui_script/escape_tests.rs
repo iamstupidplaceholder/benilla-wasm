@@ -64,7 +64,7 @@ fn escape_closes_bag_and_panel_releases_loot_and_clears_cursor() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     // The loot window is the reference's own since 1751, and its dependency list grew with the
     // swap — `LOOT_UI` carries the why for each entry. Loaded whole rather than cherry-picked:
@@ -74,14 +74,14 @@ fn escape_closes_bag_and_panel_releases_loot_and_clears_cursor() {
         if BAG_UI.contains(file) {
             continue; // a file loads once — the bag chain above carried it
         }
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "Interface\\FrameXML\\LootFrame.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\LootFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
     // The reference's own `ContainerFrameItemButton_OnClick` reads `MerchantFrame:IsShown()`
     // on the bag-slot click below; the coin rig this line used to name is gone (1937/1962).
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
     s.set_container(0, Some(one_item_backpack()));
 
@@ -160,21 +160,21 @@ fn escape_is_consumed_by_a_focused_editbox_and_leaves_windows_open() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml"); // the kit the chat menus build from
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml"); // the kit the chat menus build from
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
     s.set_money(0);
     s.set_container(0, Some(one_item_backpack()));
 
@@ -205,22 +205,22 @@ fn escape_is_consumed_by_a_focused_editbox_and_leaves_windows_open() {
 fn escape_closes_the_options_window_before_opening_the_menu() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "Interface\\FrameXML\\GameTooltip.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // the Keybindings page's faux-scroll kit (1008)
-    load_xml(&s, "KeyBindingsPage.xml");
-    load_xml(&s, "OptionsFrame.xml");
-    load_xml(&s, "GameMenuFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\GameTooltip.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // the Keybindings page's faux-scroll kit (1008)
+    load_xml(&mut s, "KeyBindingsPage.xml");
+    load_xml(&mut s, "OptionsFrame.xml");
+    load_xml(&mut s, "GameMenuFrame.xml");
 
     s.run("ShowUIPanel(BenillaOptionsFrame)").unwrap();
     assert!(s
@@ -268,21 +268,21 @@ fn escape_closes_an_open_stack_split_frame() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml"); // ContainerFrameItemButton_OnClick reads MerchantFrame
-    load_xml(&s, "Interface\\FrameXML\\GlobalStrings.lua");
-    load_xml(&s, "Interface\\FrameXML\\BasicControls.xml");
-    load_xml(&s, "Interface\\FrameXML\\UIMenu.xml");
-    load_xml(&s, "Interface\\FrameXML\\ChatFrame.xml"); // …and ChatFrameEditBox, the shift fork's first test
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.lua");
-    load_xml(&s, "Interface\\FrameXML\\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, "Interface\\FrameXML\\FloatingChatFrame.xml");
-    load_xml(&s, "Interface\\FrameXML\\StackSplitFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml"); // ContainerFrameItemButton_OnClick reads MerchantFrame
+    load_xml(&mut s, "Interface\\FrameXML\\GlobalStrings.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\BasicControls.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIMenu.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\ChatFrame.xml"); // …and ChatFrameEditBox, the shift fork's first test
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, "Interface\\FrameXML\\FloatingChatFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\StackSplitFrame.xml");
     s.set_money(0);
 
     let mut slots = std::collections::HashMap::new();
@@ -322,7 +322,7 @@ fn escape_closes_an_open_stack_split_frame() {
     // Open the spinner with a real SHIFT + left-click on the button holding slot 1 — asked of the
     // buttons' own `GetID()`, never by index (`ContainerFrame_GenerateFrame` numbers them
     // backwards). The click goes through the engine because the reference's handler reads `this`.
-    let slot1 = bag_slot_button(&s, 0, 1);
+    let slot1 = bag_slot_button(&mut s, 0, 1);
     s.set_modifiers(true, false, false);
     click(&mut s, &slot1, "LeftButton");
     s.set_modifiers(false, false, false);
@@ -355,14 +355,14 @@ fn escape_ladder_cast_then_windows_then_target_one_eater_per_press() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
     // GameTooltip.xml (BAG_UI's, for the bag slots' tooltips) also carries TOOLTIP_DEFAULT_COLOR,
     // which the dropdown backdrop's OnLoad reads — so the kit can load straight after it.
-    load_xml(&s, "Interface\\FrameXML\\UIDropDownMenu.xml");
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\UIDropDownMenu.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
     s.set_container(0, Some(one_item_backpack()));
     s.run("MainMenuBarBackpackButton:Click()").unwrap();
@@ -461,11 +461,11 @@ fn escape_ladder_targeting_rung_after_cast_before_windows() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
     for file in BAG_UI {
-        load_xml(&s, file);
+        load_xml(&mut s, file);
     }
-    load_xml(&s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
-    load_xml(&s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
-    load_xml(&s, "Interface\\FrameXML\\MerchantFrame.xml");
+    load_xml(&mut s, "ScrollTemplates.xml"); // our scroll kit + the placeholder icon
+    load_xml(&mut s, "Interface\\FrameXML\\CharacterFrameTemplates.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\MerchantFrame.xml");
     s.set_money(0);
     s.set_container(0, Some(one_item_backpack()));
     s.run("MainMenuBarBackpackButton:Click()").unwrap();
@@ -528,17 +528,17 @@ fn escape_ladder_targeting_rung_after_cast_before_windows() {
 fn an_addon_frame_registered_in_uispecialframes_closes_on_escape() {
     let mut s = UiScript::new().unwrap();
     s.set_screen_size(1024.0, 768.0);
-    load_xml(&s, "Interface\\FrameXML\\Fonts.xml");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.lua");
-    load_xml(&s, r"Interface\FrameXML\MoneyFrame.xml");
-    load_xml(&s, r"Interface\FrameXML\UIParent.xml");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.lua");
-    load_xml(&s, r"Interface\FrameXML\UIPanelTemplates.xml");
-    load_xml(&s, r"Interface\FrameXML\GlobalStrings.lua");
-    load_xml(&s, r"Interface\FrameXML\BasicControls.xml");
-    load_xml(&s, r"Interface\FrameXML\LocaleProperties.lua");
-    load_xml(&s, r"Interface\FrameXML\StaticPopup.xml");
-    load_xml(&s, "GameMenuFrame.xml");
+    load_xml(&mut s, "Interface\\FrameXML\\Fonts.xml");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.lua");
+    load_xml(&mut s, r"Interface\FrameXML\MoneyFrame.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIParent.xml");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.lua");
+    load_xml(&mut s, r"Interface\FrameXML\UIPanelTemplates.xml");
+    load_xml(&mut s, r"Interface\FrameXML\GlobalStrings.lua");
+    load_xml(&mut s, r"Interface\FrameXML\BasicControls.xml");
+    load_xml(&mut s, r"Interface\FrameXML\LocaleProperties.lua");
+    load_xml(&mut s, r"Interface\FrameXML\StaticPopup.xml");
+    load_xml(&mut s, "GameMenuFrame.xml");
 
     // The addon's three lines, verbatim in shape.
     s.run(

@@ -18,7 +18,7 @@ use super::common::script;
 /// `for _, lang in self.langs do … end`, with no `pairs` and no iterator function.
 #[test]
 fn a_table_generator_iterates_like_lua_50() {
-    let s = script();
+    let mut s = script();
     let seen: i64 = s
         .eval(
             r#"
@@ -53,7 +53,7 @@ fn a_table_generator_iterates_like_lua_50() {
 /// `tryfuncTM`), so the `__call` is never consulted and the table is iterated.
 #[test]
 fn a_table_with_a_call_metamethod_is_still_iterated_not_called() {
-    let s = script();
+    let mut s = script();
     let out: String = s
         .eval(
             r#"
@@ -79,7 +79,7 @@ fn a_table_with_a_call_metamethod_is_still_iterated_not_called() {
 /// changes every later generic-for in the session. Reproduced rather than improved on.
 #[test]
 fn the_substituted_generator_is_the_live_global_next() {
-    let s = script();
+    let mut s = script();
     let out: String = s
         .eval(
             r#"
@@ -105,7 +105,7 @@ fn the_substituted_generator_is_the_live_global_next() {
 /// the client's tag mismatch falls through to the normal call path.
 #[test]
 fn only_a_table_is_substituted_and_other_types_still_raise() {
-    let s = script();
+    let mut s = script();
 
     // The ordinary iterator form is completely unaffected.
     let via_pairs: i64 = s
@@ -154,7 +154,7 @@ fn only_a_table_is_substituted_and_other_types_still_raise() {
 /// returns nil, and the loop's own continue test is unchanged by the substitution.
 #[test]
 fn an_empty_table_generator_terminates() {
-    let s = script();
+    let mut s = script();
     let n: i64 = s
         .eval("local n = 0 for k, v in {} do n = n + 1 end return n")
         .unwrap();
@@ -166,7 +166,7 @@ fn an_empty_table_generator_terminates() {
 /// substitute twice (the registers are reloaded from the expression each entry).
 #[test]
 fn nested_and_repeated_loops_each_substitute_independently() {
-    let s = script();
+    let mut s = script();
     let out: i64 = s
         .eval(
             r#"
@@ -208,7 +208,7 @@ fn nested_and_repeated_loops_each_substitute_independently() {
 /// not a patch to the lexer: the code path was already there and already correct.
 #[test]
 fn a_nested_long_string_parses_as_lua_50_does() {
-    let s = crate::script::UiScript::new().unwrap();
+    let mut s = crate::script::UiScript::new().unwrap();
     // The shape an addon writes: a long comment containing a long string.
     s.run("--[[ outer [[ inner ]] still comment ]]\nNESTED_OK = 1")
         .unwrap();
@@ -232,7 +232,7 @@ fn a_nested_long_string_parses_as_lua_50_does() {
 /// 5.1 answered "unexpected symbol near ';'" and the addon's registry global never existed (B266).
 #[test]
 fn a_double_semicolon_inside_a_constructor_parses_as_lua_50_does() {
-    let s = script();
+    let mut s = script();
 
     // The exact corpus shape: a record field, its `;` separator, and the compat extra.
     let out: String = s
@@ -263,7 +263,7 @@ fn a_double_semicolon_inside_a_constructor_parses_as_lua_50_does() {
 /// in the client's `luaL_loadbuffer` first (`system/ui/scratch/lua-dialect.md`).
 #[test]
 fn the_compat_semicolon_is_one_wide_and_statement_level_stays_rejected() {
-    let s = script();
+    let mut s = script();
 
     let err = s
         .eval::<i64>("local t = { 1;;; 2 } return t[1]")

@@ -16,8 +16,9 @@
 //! argument: the producers state values, and nothing outside this module states a row index.
 
 use bevy::prelude::*;
-use bevy::render::render_resource::{Buffer, BufferDescriptor, BufferUsages};
 use bevy::render::renderer::{RenderDevice, RenderQueue};
+
+use benilla_assets::gpu_table::{create_gpu_table, write_gpu_table, GpuTable};
 
 use super::global_light::{
     commit_raw, light_blob_bytes, pack_model_core_rows, LIGHT_HEADER_ROWS, MAX_POINT_LIGHTS,
@@ -138,24 +139,20 @@ impl LightBlob {
     /// Sized to the **full** layout, never to what was written: `wow_model.wgsl` declares the
     /// whole struct and wgpu validates the bound size against it at every draw. wgpu zeroes the
     /// rest, so an unwritten table reads as empty.
-    pub fn create(&self, device: &RenderDevice, label: &'static str) -> Buffer {
-        device.create_buffer(&BufferDescriptor {
-            label: Some(label),
-            size: light_blob_bytes(),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+    pub fn create(&self, device: &RenderDevice, label: &'static str) -> GpuTable {
+        create_gpu_table(device, light_blob_bytes(), label)
     }
 
     /// Write the blob into `buffer`. Header rows and the point table are contiguous, so they go in
     /// one write; the probe region sits past the per-frame prefix and gets its own.
-    pub fn write(&self, queue: &RenderQueue, buffer: &Buffer) {
+    pub fn write(&self, queue: &RenderQueue, buffer: &GpuTable) {
         let mut head = self.rows.to_vec();
         head.extend_from_slice(&self.points);
-        queue.write_buffer(buffer, 0, bytemuck::cast_slice(&head));
+        write_gpu_table(queue, buffer, 0, bytemuck::cast_slice(&head));
         if let Some(probe) = self.probe {
             let rows: [[f32; 4]; 7] = probe.map(|v| v.to_array());
-            queue.write_buffer(
+            write_gpu_table(
+                queue,
                 buffer,
                 prop_probe_region_offset(),
                 bytemuck::cast_slice(&rows),

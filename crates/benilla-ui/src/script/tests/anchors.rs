@@ -67,7 +67,7 @@ fn setpoint_resolve_size_and_rect() {
 
 #[test]
 fn getwidth_falls_back_to_explicit_size_before_resolve() {
-    let s = script();
+    let mut s = script();
     // No SetPoint ⇒ unresolvable; GetWidth returns the explicit SetWidth value.
     let w: f32 = s
         .eval(r#"local f = CreateFrame("Frame"); f:SetWidth(123); return f:GetWidth()"#)
@@ -148,7 +148,7 @@ fn setpoint_unresolved_name_raises() {
 ///   point with an absent `relativeTo` answers Usage, not "Unknown region point".
 #[test]
 fn the_other_setpoint_raises() {
-    let s = script();
+    let mut s = script();
     s.run(r#"f = CreateFrame("Frame", "Ladder")"#).unwrap();
 
     let e = s
@@ -186,7 +186,7 @@ fn the_other_setpoint_raises() {
 /// and not a tuple padded or trimmed on the way in.
 #[test]
 fn a_trailing_nil_relative_to_is_present_where_an_absent_one_is_not() {
-    let s = script();
+    let mut s = script();
     s.run(r#"f = CreateFrame("Frame", "Trail")"#).unwrap();
     // Present-and-nil: legal, the screen root, no offsets.
     s.run(r#"Trail:SetPoint("CENTER", nil)"#).unwrap();

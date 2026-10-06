@@ -62,7 +62,7 @@ fn session() -> UiScript {
             ..Default::default()
         }),
     );
-    let failures = super::load_default_ui(&s);
+    let failures = super::load_default_ui(&mut s);
     assert!(failures.is_empty(), "manifest load errors: {failures:#?}");
     super::test_ui::seat_chain_addon(&mut s, "Blizzard_BattlefieldMinimap");
     s.resolve();
@@ -207,12 +207,12 @@ fn arrow_centre(s: &mut UiScript) -> (f32, f32) {
     ((x * eff) as f32, (y * eff) as f32)
 }
 
-fn shown(s: &UiScript, frame: &str) -> bool {
+fn shown(s: &mut UiScript, frame: &str) -> bool {
     s.eval::<bool>(&format!("return {frame}:IsShown()"))
         .unwrap_or_else(|e| panic!("{frame}:IsShown() — {e}"))
 }
 
-fn num(s: &UiScript, expr: &str) -> f64 {
+fn num(s: &mut UiScript, expr: &str) -> f64 {
     s.eval::<f64>(&format!("return {expr}"))
         .unwrap_or_else(|e| panic!("{expr} — {e}"))
 }
@@ -250,7 +250,7 @@ fn the_addon_loads_on_demand_through_uiparents_own_road() {
         "the demand load ran"
     );
     assert!(
-        !shown(&s, "BattlefieldMinimap"),
+        !shown(&mut s, "BattlefieldMinimap"),
         "…and a battle map does not open outside a battle: no active queue, no world-state rows"
     );
     assert_eq!(
@@ -321,14 +321,14 @@ fn the_addon_loads_on_demand_through_uiparents_own_road() {
     assert_eq!(
         (x, y),
         (
-            -225.0 - num(&s, "CONTAINER_OFFSET_X"),
-            num(&s, "BATTLEFIELD_TAB_OFFSET_Y")
+            -225.0 - num(&mut s, "CONTAINER_OFFSET_X"),
+            num(&mut s, "BATTLEFIELD_TAB_OFFSET_Y")
         )
     );
     // …and `BattlefieldMinimap_SetOpacity()` ran off the seeded slider value, so the window is
     // already wearing the default 0.7 opacity (its alpha is `1 - value`) before it is ever shown.
     assert!(
-        (num(&s, "BattlefieldMinimapBackground:GetAlpha()") - 0.3).abs() < 1e-6,
+        (num(&mut s, "BattlefieldMinimapBackground:GetAlpha()") - 0.3).abs() < 1e-6,
         "the load-time opacity pass reached the border texture"
     );
 
@@ -339,7 +339,7 @@ fn the_addon_loads_on_demand_through_uiparents_own_road() {
         "1"
     );
     assert!(
-        shown(&s, "BattlefieldMinimapTab"),
+        shown(&mut s, "BattlefieldMinimapTab"),
         "the tab comes up with it"
     );
     quiet(&s);
@@ -387,7 +387,7 @@ fn the_overlay_textures_are_cut_from_the_revealed_overlays() {
 
     // The reference reads back `(ULx, ULy, LLx, LLy, URx, URy, LRx, LRy)` since 1840; the old
     // `(left, right, top, bottom)` rect is positions 1, 5, 2, 4.
-    let tex_rect = |s: &UiScript, n: u32| -> (f64, f64, f64, f64) {
+    let tex_rect = |s: &mut UiScript, n: u32| -> (f64, f64, f64, f64) {
         let (l, t, _, b, r, ..): (f64, f64, f64, f64, f64, f64, f64, f64) = s
             .eval(&format!(
                 "return BattlefieldMinimapOverlay{n}:GetTexCoord()"
@@ -395,7 +395,7 @@ fn the_overlay_textures_are_cut_from_the_revealed_overlays() {
             .unwrap();
         (l, r, t, b)
     };
-    let seat = |s: &UiScript, n: u32| -> (String, String, f64, f64) {
+    let seat = |s: &mut UiScript, n: u32| -> (String, String, f64, f64) {
         s.eval(&format!(
             "local p, r, rp, x, y = BattlefieldMinimapOverlay{n}:GetPoint(1) return p, rp, x, y"
         ))
@@ -412,14 +412,14 @@ fn the_overlay_textures_are_cut_from_the_revealed_overlays() {
     );
     assert_eq!(
         (
-            num(&s, "BattlefieldMinimapOverlay1:GetWidth()"),
-            num(&s, "BattlefieldMinimapOverlay1:GetHeight()")
+            num(&mut s, "BattlefieldMinimapOverlay1:GetWidth()"),
+            num(&mut s, "BattlefieldMinimapOverlay1:GetHeight()")
         ),
         (256.0 * SCALE, 200.0 * SCALE)
     );
-    assert_eq!(tex_rect(&s, 1), (0.0, 1.0, 0.0, 200.0 / 256.0));
+    assert_eq!(tex_rect(&mut s, 1), (0.0, 1.0, 0.0, 200.0 / 256.0));
     assert_eq!(
-        seat(&s, 1),
+        seat(&mut s, 1),
         (
             "TOPLEFT".into(),
             "TOPLEFT".into(),
@@ -436,12 +436,12 @@ fn the_overlay_textures_are_cut_from_the_revealed_overlays() {
         "Interface\\WorldMap\\WarsongGulch\\SilverwingHold2"
     );
     assert_eq!(
-        num(&s, "BattlefieldMinimapOverlay2:GetWidth()"),
+        num(&mut s, "BattlefieldMinimapOverlay2:GetWidth()"),
         44.0 * SCALE
     );
-    assert_eq!(tex_rect(&s, 2), (0.0, 44.0 / 64.0, 0.0, 200.0 / 256.0));
+    assert_eq!(tex_rect(&mut s, 2), (0.0, 44.0 / 64.0, 0.0, 200.0 / 256.0));
     assert_eq!(
-        seat(&s, 2),
+        seat(&mut s, 2),
         (
             "TOPLEFT".into(),
             "TOPLEFT".into(),
@@ -460,15 +460,15 @@ fn the_overlay_textures_are_cut_from_the_revealed_overlays() {
     );
     assert_eq!(
         (
-            num(&s, "BattlefieldMinimapOverlay3:GetWidth()"),
-            num(&s, "BattlefieldMinimapOverlay3:GetHeight()")
+            num(&mut s, "BattlefieldMinimapOverlay3:GetWidth()"),
+            num(&mut s, "BattlefieldMinimapOverlay3:GetHeight()")
         ),
         (56.0, 56.0)
     );
-    assert_eq!(tex_rect(&s, 3), (0.0, 1.0, 0.0, 1.0));
+    assert_eq!(tex_rect(&mut s, 3), (0.0, 1.0, 0.0, 1.0));
     for n in 1..=3 {
         assert!(
-            shown(&s, &format!("BattlefieldMinimapOverlay{n}")),
+            shown(&mut s, &format!("BattlefieldMinimapOverlay{n}")),
             "overlay tile {n} is lit"
         );
     }
@@ -478,9 +478,9 @@ fn the_overlay_textures_are_cut_from_the_revealed_overlays() {
     s.set_world_map_explored(vec![0b010; 64]);
     s.tick(0.0); // the push queues WORLD_MAP_UPDATE, the addon's own repaint event
     assert_eq!(s.eval::<i64>("return GetNumMapOverlays()").unwrap(), 1);
-    assert!(shown(&s, "BattlefieldMinimapOverlay1") && shown(&s, "BattlefieldMinimapOverlay2"));
+    assert!(shown(&mut s, "BattlefieldMinimapOverlay1") && shown(&mut s, "BattlefieldMinimapOverlay2"));
     assert!(
-        !shown(&s, "BattlefieldMinimapOverlay3"),
+        !shown(&mut s, "BattlefieldMinimapOverlay3"),
         "the tail parks hidden rather than being destroyed"
     );
     assert_eq!(
@@ -521,9 +521,9 @@ fn the_poi_pool_grows_from_the_landmarks_and_parks_its_tail() {
     s.tick(0.0);
 
     assert_eq!(s.eval::<i64>("return NUM_BATTLEFIELDMAP_POIS").unwrap(), 2);
-    assert!(shown(&s, "BattlefieldMinimapPOI1") && shown(&s, "BattlefieldMinimapPOI2"));
+    assert!(shown(&mut s, "BattlefieldMinimapPOI1") && shown(&mut s, "BattlefieldMinimapPOI2"));
     // Cell 6 = column 6, row 0; cell 9 = column 1, row 1. `coordIncrement` is 16/128 = 0.125.
-    let cell = |s: &UiScript, n: u32| -> (f64, f64) {
+    let cell = |s: &mut UiScript, n: u32| -> (f64, f64) {
         let (l, t, ..): (f64, f64, f64, f64, f64, f64, f64, f64) = s
             .eval(&format!(
                 "return BattlefieldMinimapPOI{n}Texture:GetTexCoord()"
@@ -531,8 +531,8 @@ fn the_poi_pool_grows_from_the_landmarks_and_parks_its_tail() {
             .unwrap();
         (l, t)
     };
-    assert_eq!(cell(&s, 1), (0.75, 0.0));
-    assert_eq!(cell(&s, 2), (0.125, 0.125));
+    assert_eq!(cell(&mut s, 1), (0.75, 0.0));
+    assert_eq!(cell(&mut s, 2), (0.125, 0.125));
     // Seated CENTER against the window's TOPLEFT, x × its width and y × MINUS its height — v runs
     // down the sheet where frame y runs up, and the sign is what mirrors every icon if it is wrong.
     assert_eq!(
@@ -549,15 +549,15 @@ fn the_poi_pool_grows_from_the_landmarks_and_parks_its_tail() {
         )
     );
     // The default scale leaves the icon at `DEFAULT_POI_ICON_SIZE`.
-    assert_eq!(num(&s, "BattlefieldMinimapPOI1:GetWidth()"), 12.0);
+    assert_eq!(num(&mut s, "BattlefieldMinimapPOI1:GetWidth()"), 12.0);
 
     // A battleground whose map row carries a bigger `MinimapIconScale` grows every icon by it.
     s.set_battlefield_positions(Vec::new(), None, 1.5);
     s.run("BattlefieldMinimap_Update()").unwrap();
     assert_eq!(
         (
-            num(&s, "BattlefieldMinimapPOI1:GetWidth()"),
-            num(&s, "BattlefieldMinimapPOI1:GetHeight()")
+            num(&mut s, "BattlefieldMinimapPOI1:GetWidth()"),
+            num(&mut s, "BattlefieldMinimapPOI1:GetHeight()")
         ),
         (18.0, 18.0),
         "DEFAULT_POI_ICON_SIZE × GetBattlefieldMapIconScale()"
@@ -571,13 +571,13 @@ fn the_poi_pool_grows_from_the_landmarks_and_parks_its_tail() {
         2,
         "the pool never shrinks"
     );
-    assert!(shown(&s, "BattlefieldMinimapPOI1"));
+    assert!(shown(&mut s, "BattlefieldMinimapPOI1"));
     assert_eq!(
-        cell(&s, 1),
+        cell(&mut s, 1),
         (0.125, 0.125),
         "slot 1 was re-seated on the surviving landmark, not left on the stale one"
     );
-    assert!(!shown(&s, "BattlefieldMinimapPOI2"), "slot 2 parked hidden");
+    assert!(!shown(&mut s, "BattlefieldMinimapPOI2"), "slot 2 parked hidden");
     quiet(&s);
 }
 
@@ -623,7 +623,7 @@ fn the_battleground_blips_and_the_flag_follow_the_position_family() {
     update(&mut s, 0.1);
 
     assert!(
-        shown(&s, "BattlefieldMinimapRaid1"),
+        shown(&mut s, "BattlefieldMinimapRaid1"),
         "the placed teammate shows"
     );
     assert_eq!(
@@ -645,16 +645,16 @@ fn the_battleground_blips_and_the_flag_follow_the_position_family() {
         )
     );
     assert!(
-        !shown(&s, "BattlefieldMinimapRaid2"),
+        !shown(&mut s, "BattlefieldMinimapRaid2"),
         "the (0,0) teammate hides"
     );
     assert!(
-        !shown(&s, "BattlefieldMinimapRaid40"),
+        !shown(&mut s, "BattlefieldMinimapRaid40"),
         "…and so does every slot past the roster"
     );
 
     // The party arm reads `GetPlayerMapPosition("party"..i)`, the world map's own feed.
-    assert!(shown(&s, "BattlefieldMinimapParty1"));
+    assert!(shown(&mut s, "BattlefieldMinimapParty1"));
     assert_eq!(
         s.eval::<(f64, f64)>(
             "local _, _, _, x, y = BattlefieldMinimapParty1:GetPoint(1) return x, y"
@@ -663,18 +663,18 @@ fn the_battleground_blips_and_the_flag_follow_the_position_family() {
         (0.1 * 225.0, -0.2 * 150.0)
     );
     assert!(
-        !shown(&s, "BattlefieldMinimapParty2"),
+        !shown(&mut s, "BattlefieldMinimapParty2"),
         "a slot with no position hides"
     );
 
     // The carrier takes flag frame 1, wearing the token's own art; the second frame stays parked.
-    assert!(shown(&s, "BattlefieldMinimapFlag1"));
+    assert!(shown(&mut s, "BattlefieldMinimapFlag1"));
     assert_eq!(
         s.eval::<String>("return BattlefieldMinimapFlag1Texture:GetTexture()")
             .unwrap(),
         "Interface\\WorldStateFrame\\HordeFlag"
     );
-    assert!(!shown(&s, "BattlefieldMinimapFlag2"));
+    assert!(!shown(&mut s, "BattlefieldMinimapFlag2"));
 
     // Hovering a teammate's blip names them — `BattlefieldMinimapUnit_OnEnter` prefers the row's
     // own `name` over `UnitName(unit)`, which is the only way a non-group teammate gets a label.
@@ -703,10 +703,10 @@ fn the_battleground_blips_and_the_flag_follow_the_position_family() {
         .unwrap();
     update(&mut s, 0.1);
     for f in ["BattlefieldMinimapRaid1", "BattlefieldMinimapParty1"] {
-        assert!(!shown(&s, f), "{f} hides while teammates are switched off");
+        assert!(!shown(&mut s, f), "{f} hides while teammates are switched off");
     }
     assert!(
-        shown(&s, "BattlefieldMinimapFlag1"),
+        shown(&mut s, "BattlefieldMinimapFlag1"),
         "…but the carrier's flag is not in that arm's two loops, so it stays up"
     );
 
@@ -714,11 +714,11 @@ fn the_battleground_blips_and_the_flag_follow_the_position_family() {
     s.run("BattlefieldMinimapOptions.showPlayers = true")
         .unwrap();
     update(&mut s, 0.1);
-    assert!(shown(&s, "BattlefieldMinimapRaid1"));
+    assert!(shown(&mut s, "BattlefieldMinimapRaid1"));
     s.set_battlefield_positions(Vec::new(), None, 1.0);
     update(&mut s, 0.1);
     assert!(
-        !shown(&s, "BattlefieldMinimapRaid1") && !shown(&s, "BattlefieldMinimapFlag1"),
+        !shown(&mut s, "BattlefieldMinimapRaid1") && !shown(&mut s, "BattlefieldMinimapFlag1"),
         "leaving the battleground takes the blips with it"
     );
     quiet(&s);
@@ -860,7 +860,7 @@ fn the_tab_follows_the_window_fades_in_on_hover_and_gates_its_drag_on_the_lock()
         "the tab wears BATTLEFIELD_MINIMAP, resized by PanelTemplates_TabResize in the OnShow"
     );
     assert_eq!(
-        num(&s, "BattlefieldMinimapTab:GetAlpha()"),
+        num(&mut s, "BattlefieldMinimapTab:GetAlpha()"),
         0.0,
         "…and starts invisible: the OnLoad's own SetAlpha(0)"
     );
@@ -879,7 +879,7 @@ fn the_tab_follows_the_window_fades_in_on_hover_and_gates_its_drag_on_the_lock()
     );
     update(&mut s, 0.3);
     assert_eq!(
-        num(&s, "BattlefieldMinimap.hoverTime"),
+        num(&mut s, "BattlefieldMinimap.hoverTime"),
         0.0,
         "frame 2 misses the nil oldX and RESTARTS the clock"
     );
@@ -895,13 +895,13 @@ fn the_tab_follows_the_window_fades_in_on_hover_and_gates_its_drag_on_the_lock()
     // `UIFrameFadeIn` runs on the fade manager's own update, from 0 to DEFAULT_BATTLEFIELD_TAB_ALPHA
     // over BATTLEFIELD_TAB_FADE_TIME.
     s.tick(0.05);
-    let part_way = num(&s, "BattlefieldMinimapTab:GetAlpha()");
+    let part_way = num(&mut s, "BattlefieldMinimapTab:GetAlpha()");
     assert!(
         part_way > 0.0 && part_way < 0.75,
         "part way through the 0.15 s fade, got {part_way}"
     );
     s.tick(0.2);
-    assert_eq!(num(&s, "BattlefieldMinimapTab:GetAlpha()"), 0.75);
+    assert_eq!(num(&mut s, "BattlefieldMinimapTab:GetAlpha()"), 0.75);
 
     // The cursor leaves: the else arm fades it back to the alpha it was remembered at.
     s.mouse_move(5.0, 5.0);
@@ -913,7 +913,7 @@ fn the_tab_follows_the_window_fades_in_on_hover_and_gates_its_drag_on_the_lock()
         "the hover state is cleared on the way out"
     );
     s.tick(0.2);
-    assert_eq!(num(&s, "BattlefieldMinimapTab:GetAlpha()"), 0.0);
+    assert_eq!(num(&mut s, "BattlefieldMinimapTab:GetAlpha()"), 0.0);
 
     // The lock. A left click on a locked tab returns before `StartMoving`, and `StartMoving` is
     // what stamps the userPlaced bit (2193), so the bit is the observable in both directions.
@@ -965,7 +965,7 @@ fn the_tab_follows_the_window_fades_in_on_hover_and_gates_its_drag_on_the_lock()
 
     // The second toggle closes it, and the tab goes with it through the window's own OnHide.
     s.run("ToggleBattlefieldMinimap()").unwrap();
-    assert!(!shown(&s, "BattlefieldMinimap") && !shown(&s, "BattlefieldMinimapTab"));
+    assert!(!shown(&mut s, "BattlefieldMinimap") && !shown(&mut s, "BattlefieldMinimapTab"));
     assert_eq!(
         s.eval::<String>("return SHOW_BATTLEFIELD_MINIMAP").unwrap(),
         "0"
@@ -974,12 +974,12 @@ fn the_tab_follows_the_window_fades_in_on_hover_and_gates_its_drag_on_the_lock()
     // And leaving the battleground closes it on the client's own event, not on a toggle: the
     // `PLAYER_ENTERING_WORLD` arm hides a battle map with no battle behind it.
     s.run("ToggleBattlefieldMinimap()").unwrap();
-    assert!(shown(&s, "BattlefieldMinimap"));
+    assert!(shown(&mut s, "BattlefieldMinimap"));
     s.set_world_state_ui(Vec::new());
     s.tick(0.0);
     s.fire_event("PLAYER_ENTERING_WORLD", vec![]);
     assert!(
-        !shown(&s, "BattlefieldMinimap"),
+        !shown(&mut s, "BattlefieldMinimap"),
         "no world-state rows and no active queue: the window hides itself"
     );
     quiet(&s);
@@ -1010,8 +1010,8 @@ fn the_dropdown_and_the_opacity_slider_drive_the_saved_options() {
     // first arm opens the menu on the tab's own anchor.
     s.run("BattlefieldMinimapTab:Click(\"RightButton\")")
         .unwrap();
-    assert!(shown(&s, "DropDownList1"), "the menu opened");
-    let row = |s: &UiScript, n: u32| -> (String, bool) {
+    assert!(shown(&mut s, "DropDownList1"), "the menu opened");
+    let row = |s: &mut UiScript, n: u32| -> (String, bool) {
         (
             s.eval(&format!("return DropDownList1Button{n}:GetText()"))
                 .unwrap(),
@@ -1021,9 +1021,9 @@ fn the_dropdown_and_the_opacity_slider_drive_the_saved_options() {
     };
     // Both toggles come up checked off `BattlefieldMinimapDefaults`; the opacity row is an action,
     // so it carries no check.
-    assert_eq!(row(&s, 1), ("Show Teammates".into(), true));
-    assert_eq!(row(&s, 2), ("Lock Battle Map".into(), true));
-    assert_eq!(row(&s, 3), ("Change Opacity".into(), false));
+    assert_eq!(row(&mut s, 1), ("Show Teammates".into(), true));
+    assert_eq!(row(&mut s, 2), ("Lock Battle Map".into(), true));
+    assert_eq!(row(&mut s, 3), ("Change Opacity".into(), false));
 
     s.run("DropDownList1Button1:Click()").unwrap();
     assert!(
@@ -1034,7 +1034,7 @@ fn the_dropdown_and_the_opacity_slider_drive_the_saved_options() {
     s.run("BattlefieldMinimapTab:Click(\"RightButton\")")
         .unwrap();
     assert_eq!(
-        row(&s, 1),
+        row(&mut s, 1),
         ("Show Teammates".into(), false),
         "…and the menu re-initializes off the new value"
     );
@@ -1050,7 +1050,7 @@ fn the_dropdown_and_the_opacity_slider_drive_the_saved_options() {
     s.run("BattlefieldMinimapTab:Click(\"RightButton\")")
         .unwrap();
     s.run("DropDownList1Button3:Click()").unwrap();
-    assert!(shown(&s, "OpacityFrame"));
+    assert!(shown(&mut s, "OpacityFrame"));
     assert_eq!(
         s.eval::<(String, String, String, f64, f64)>(
             "local p, r, rp, x, y = OpacityFrame:GetPoint(1) return p, r:GetName(), rp, x, y"
@@ -1100,9 +1100,9 @@ fn the_dropdown_and_the_opacity_slider_drive_the_saved_options() {
 
     // Dismissing the frame runs `saveOpacityFunc`, which is what puts the value in the saved table.
     s.run("OpacityFrameCloseButton:Click()").unwrap();
-    assert!(!shown(&s, "OpacityFrame"));
+    assert!(!shown(&mut s, "OpacityFrame"));
     assert!(
-        (num(&s, "BattlefieldMinimapOptions.opacity") - 0.9).abs() < 1e-6,
+        (num(&mut s, "BattlefieldMinimapOptions.opacity") - 0.9).abs() < 1e-6,
         "the close saved the slider's value for next login"
     );
     quiet(&s);

@@ -318,7 +318,7 @@ impl UiErrorTexts {
 /// the log — but kept **named**, because the shape of the old comment (bytes cited for behaviour
 /// those bytes do not justify) is the same shape as the `removed_spell` error 2246 corrects.
 /// [`keyed_line`] and [`keyed_line_s`] carry the same divergence.
-pub(crate) fn ui_error_text(e: &UiError, get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+pub(crate) fn ui_error_text(e: &UiError, get: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     // Through the one shared filler (2045). This used `str::replace`, which fills EVERY `%s`
     // with the same argument — latent only because no message on this queue carried two yet.
     // The list's order is the reference's own push order, and a specifier with no argument left
@@ -403,16 +403,16 @@ impl Shown {
 ///
 /// Lives here rather than in each window because every keyed raise site needs exactly this and
 /// four of them had grown their own copy (decision 1821).
-pub(crate) fn keyed_line(script: &UiScript, key: &'static str) -> Option<Shown> {
-    let text = script.lua().globals().get::<String>(key).ok()?;
+pub(crate) fn keyed_line(script: &mut UiScript, key: &'static str) -> Option<Shown> {
+    let text = script.global_string(key)?;
     (!text.is_empty()).then(|| Shown::keyed(key, text))
 }
 
 /// [`keyed_line`] for a `%s`-shaped string: each argument fills the next `%s`, in order — the
 /// reference's `format`-with-pushed-arguments face of the same catalog rows (the battleground
 /// join verdict's map name, the joined-or-left player's name, 1974).
-pub(crate) fn keyed_line_s(script: &UiScript, key: &'static str, args: &[&str]) -> Option<Shown> {
-    let template = script.lua().globals().get::<String>(key).ok()?;
+pub(crate) fn keyed_line_s(script: &mut UiScript, key: &'static str, args: &[&str]) -> Option<Shown> {
+    let template = script.global_string(key)?;
     let args: Vec<benilla_ui::strings::Arg<'_>> = args
         .iter()
         .copied()
@@ -758,9 +758,9 @@ mod mount_error_tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| s.global_string(key);
 
         for (mount, codes) in [(true, 0..=9), (false, 0..=2)] {
             for code in codes {
@@ -792,14 +792,14 @@ mod ui_error_tests {
     /// and key-empty both silent (the GlobalStrings data-suppression face).
     #[test]
     fn fills_substitute_and_absent_keys_are_silent() {
-        let get = |key: &str| match key {
+        let mut get = |key: &str| match key {
             "REQ_S" => Some("Requires %s".to_string()),
             "REQ_SI" => Some("Requires %s %d".to_string()),
             "PLAIN" => Some("Can't attack while mounted.".to_string()),
             "EMPTY" => Some(String::new()),
             _ => None,
         };
-        let t = |e: &UiError| ui_error_text(e, &get);
+        let mut t = |e: &UiError| ui_error_text(e, &mut get);
         assert_eq!(
             t(&filled("REQ_S", Some("Herbalism"), None)).as_deref(),
             Some("Requires Herbalism")
@@ -828,9 +828,9 @@ mod ui_error_tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| s.global_string(key);
 
         assert_eq!(g("ERR_USE_LOCKED_WITH_SPELL_S").unwrap(), "Requires %s");
         assert_eq!(
@@ -858,7 +858,7 @@ mod ui_error_tests {
         // End to end through the formatter — the two gathering lines the director will see.
         let herb = filled("ERR_USE_LOCKED_WITH_SPELL_S", Some("Herbalism"), None);
         assert_eq!(
-            ui_error_text(&herb, &g).as_deref(),
+            ui_error_text(&herb, &mut g).as_deref(),
             Some("Requires Herbalism")
         );
         let vein = filled(
@@ -867,7 +867,7 @@ mod ui_error_tests {
             Some(155),
         );
         assert_eq!(
-            ui_error_text(&vein, &g).as_deref(),
+            ui_error_text(&vein, &mut g).as_deref(),
             Some("Requires Mining 155")
         );
     }
@@ -976,9 +976,9 @@ mod attack_actor_tests {
         let src = chain
             .read_file("Interface\\FrameXML\\GlobalStrings.lua")
             .expect("GlobalStrings.lua in the chain");
-        let s = benilla_ui::script::UiScript::new().expect("VM");
+        let mut s = benilla_ui::script::UiScript::new().expect("VM");
         s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
-        let g = |key: &str| s.lua().globals().get::<String>(key).ok();
+        let mut g = |key: &str| s.global_string(key);
 
         for key in [
             "ERR_NO_ATTACK_TARGET",               // 0xa0

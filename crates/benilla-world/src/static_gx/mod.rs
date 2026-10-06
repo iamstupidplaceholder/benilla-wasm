@@ -203,8 +203,16 @@ const WORD_MATTE: u32 = 1 << 28;
 /// arm for every comparison this chapter still owes; `=1` still reads as an explicit on for
 /// anything that predates the flip. Read once; the plugin registers nothing when off.
 pub fn enabled() -> bool {
+    // The retained pass binds storage buffers for both its light and per-item tables. WebGL2 has
+    // neither binding shape, so browser builds keep every batch on the ordinary entity/material
+    // path until a data-texture or instance-attribute replacement exists.
+    #[cfg(target_arch = "wasm32")]
+    return false;
+
+    #[cfg(not(target_arch = "wasm32"))]
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("WOW_STATIC_GX").as_deref() != Ok("0"))
+    #[cfg(not(target_arch = "wasm32"))]
+    return *ON.get_or_init(|| std::env::var("WOW_STATIC_GX").as_deref() != Ok("0"));
 }
 
 /// `WOW_WMO_BIAS=0` — B38's A/B diagnostic, honoured exactly where `model_material` honours
@@ -264,7 +272,7 @@ pub(crate) static GX_PERF: [std::sync::atomic::AtomicU64; 5] = [
 
 /// Scope guard timing one armed site into [`GX_PERF`] slot `i` — one line at the top of
 /// each measured fn; a no-op branch when the meter is off.
-pub(crate) struct GxPerfGuard(Option<(usize, std::time::Instant)>);
+pub(crate) struct GxPerfGuard(Option<(usize, benilla_time::Instant)>);
 impl Drop for GxPerfGuard {
     fn drop(&mut self) {
         if let Some((i, t0)) = self.0 {
@@ -276,7 +284,7 @@ impl Drop for GxPerfGuard {
     }
 }
 pub(crate) fn gx_perf_guard(i: usize) -> GxPerfGuard {
-    GxPerfGuard(gx_perf_enabled().then(|| (i, std::time::Instant::now())))
+    GxPerfGuard(gx_perf_enabled().then(|| (i, benilla_time::Instant::now())))
 }
 
 /// One diverted batch, held until its cell bakes (and retained after, so an owner-tile unload
@@ -927,7 +935,9 @@ impl Plugin for StaticGxPlugin {
         if !enabled() {
             return;
         }
-        info!("static-gx: ARMED (default since 1434; WOW_STATIC_GX=0 opts out) — the retained static-world pass (1429–1434)");
+        info!(
+            "static-gx: ARMED (default since 1434; WOW_STATIC_GX=0 opts out) — the retained static-world pass (1429–1434)"
+        );
         app.init_resource::<StaticGx>().add_systems(
             PostUpdate,
             // Chained: bake, then this frame's scene walk (after the camera settles), then

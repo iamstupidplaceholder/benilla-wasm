@@ -57,7 +57,7 @@
 //! expiry either (`cooldowns.rs`); the old model fired the list edge there too, so one stance
 //! switch (category 47, 1 s) re-showed the strip three times over.
 
-use std::time::Instant;
+use benilla_time::Instant;
 
 use bevy::prelude::*;
 

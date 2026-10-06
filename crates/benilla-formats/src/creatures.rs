@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::FileSource;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -476,7 +476,7 @@ pub(crate) fn creature_display_info_extra_schema() -> Schema {
 }
 
 /// Load the creature DBCs from the patch chain into a [`CreatureCatalog`].
-pub fn load_creature_catalog(chain: &mut Chain) -> Result<CreatureCatalog> {
+pub fn load_creature_catalog(chain: &mut impl FileSource) -> Result<CreatureCatalog> {
     let models = {
         let bytes = chain
             .read_file(CREATURE_MODEL_DATA)
@@ -555,7 +555,9 @@ pub fn load_creature_catalog(chain: &mut Chain) -> Result<CreatureCatalog> {
 }
 
 /// Load CreatureDisplayInfoExtra.dbc → `extendedDisplayInfoId` → [`NpcAppearance`].
-fn load_creature_display_info_extra(chain: &mut Chain) -> Result<HashMap<u32, NpcAppearance>> {
+fn load_creature_display_info_extra(
+    chain: &mut impl FileSource,
+) -> Result<HashMap<u32, NpcAppearance>> {
     let bytes = chain
         .read_file(CREATURE_DISPLAY_INFO_EXTRA)
         .with_context(|| format!("reading {CREATURE_DISPLAY_INFO_EXTRA}"))?;

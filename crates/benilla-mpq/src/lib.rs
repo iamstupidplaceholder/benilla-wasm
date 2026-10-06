@@ -42,7 +42,9 @@ use std::sync::Arc;
 use benilla_bytes::{capped, ByteExt};
 
 mod crypto;
+mod presence;
 use crypto::{decrypt_block, hash_string, hash_type};
+pub use presence::FilePresenceIndex;
 
 /// `MPQ\x1A` — the archive header signature (little-endian u32).
 const SIGNATURE: u32 = 0x1A51_504D;
@@ -222,6 +224,12 @@ impl Archive {
         self.index.find(name).is_some()
     }
 
+    /// Read-only metadata for exact by-name lookup on a host without archive IO.
+    /// Unlike listfiles, this covers unnamed entries and patch tombstones.
+    pub fn presence_index(&self) -> FilePresenceIndex {
+        FilePresenceIndex::from_tables(&self.index.hash_table, &self.index.block_table)
+    }
+
     /// The uncompressed size of `name`, if present. No I/O (read from the block table).
     pub fn file_size(&self, name: &str) -> Option<u32> {
         self.index.find(name).map(|b| b.file_size)
@@ -353,28 +361,35 @@ impl Archive {
 impl Index {
     /// Locate a file's block entry via the hash table (Blizzard's open-addressed probe).
     fn find(&self, name: &str) -> Option<BlockEntry> {
-        let len = self.hash_table.len();
-        if len == 0 {
-            return None;
-        }
-        let mask = (len - 1) as u32;
-        let start = (hash_string(name, hash_type::TABLE_OFFSET) & mask) as usize;
-        let want_a = hash_string(name, hash_type::NAME_A);
-        let want_b = hash_string(name, hash_type::NAME_B);
-        for i in 0..len {
-            let e = &self.hash_table[(start + i) % len];
-            if e.block_index == HASH_EMPTY {
-                return None; // never-used slot ends the chain
-            }
-            if e.block_index == HASH_DELETED {
-                continue;
-            }
-            if e.name_a == want_a && e.name_b == want_b {
-                return self.block_table.get(e.block_index as usize).copied();
-            }
-        }
-        None
+        self.block_table
+            .get(find_block_index(&self.hash_table, name)?)
+            .copied()
     }
+}
+
+/// The one production open-addressed MPQ lookup, shared with host metadata.
+fn find_block_index(hash_table: &[HashEntry], name: &str) -> Option<usize> {
+    let len = hash_table.len();
+    if len == 0 {
+        return None;
+    }
+    let mask = (len - 1) as u32;
+    let start = (hash_string(name, hash_type::TABLE_OFFSET) & mask) as usize;
+    let want_a = hash_string(name, hash_type::NAME_A);
+    let want_b = hash_string(name, hash_type::NAME_B);
+    for i in 0..len {
+        let e = &hash_table[(start + i) % len];
+        if e.block_index == HASH_EMPTY {
+            return None; // never-used slot ends the chain
+        }
+        if e.block_index == HASH_DELETED {
+            continue;
+        }
+        if e.name_a == want_a && e.name_b == want_b {
+            return Some(e.block_index as usize);
+        }
+    }
+    None
 }
 
 /// Scan 512-aligned boundaries for the MPQ header, resolving a `MPQ\x1B` user-data header to the real
@@ -630,6 +645,13 @@ mod tests {
         assert!(arc.contains("Interface\\a.txt"));
         assert!(!arc.is_delete_marker("Interface\\a.txt"));
         assert_eq!(arc.read_file("Interface\\a.txt").unwrap(), b"hello");
+        let index = FilePresenceIndex::decode(&arc.presence_index().encode()).unwrap();
+        assert_eq!(index.lookup("interface/a.TXT"), Some(true));
+        assert_eq!(index.lookup("absent"), None);
+        assert!(
+            !arc.contains("(listfile)"),
+            "lookup cannot depend on enumeration"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -646,6 +668,12 @@ mod tests {
         );
         assert!(arc.contains(name), "the hash entry exists");
         assert!(arc.is_delete_marker(name), "flagged as a tombstone");
+        let index = FilePresenceIndex::decode(&arc.presence_index().encode()).unwrap();
+        assert_eq!(index.lookup(name), Some(false));
+        assert_eq!(
+            index.lookup("interface/framexml/classtrainerframe.XML"),
+            Some(false)
+        );
         // The file is present on disk, so a NotFound here is the tombstone guard firing — not a
         // missing backing file.
         match arc.read_file(name) {

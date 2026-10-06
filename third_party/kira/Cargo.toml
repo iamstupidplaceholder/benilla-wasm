@@ -43,6 +43,7 @@ rustdoc-args = [
 ]
 
 [features]
+browser-streaming = []
 aac = [
     "symphonia",
     "symphonia/aac",
